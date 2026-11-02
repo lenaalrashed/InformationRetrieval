@@ -1,0 +1,1303 @@
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented
+Preference Optimization
+Jingyi Xu * 1 2 Xingyu Ren * 1 Zhoupeng Shou 3 Yumeng Zhang 1 Zhiqiang You † 1
+Abstract
+Large language models show potential in task-
+oriented dialogue systems, yet existing training
+methods often rely on token-level likelihood or
+preference optimization, which poorly align with
+long-horizon task success. To address this, we
+propose Goal-Oriented Preference Optimiza-
+tion (GOPO), a hierarchical reinforcement learn-
+ing framework that decouples strategy planning
+from response generation via an Expert Agent
+and a Customer Service Agent.
+The Expert
+Agent optimizes multi-turn goal preferences at
+the dialogue-trajectory level, while the Customer
+Service Agent generates responses strictly aligned
+with the selected strategy. We evaluate GOPO
+on public benchmarks and e-commerce customer
+service datasets, and introduce Task-focused Se-
+quential Engagement (TSE), a sequence-level
+metric derived from real e-commerce interac-
+tion data. On the Mgshop dataset, GOPO im-
+proves TSE by 7.7% and 10.3% over PPO and
+Memento, with consistent gains in sequence-level
+reward and generation quality. Furthermore, a
+14B model trained with GOPO achieves 2.7%
+and 1.5% higher TSE than Qwen-235B and GPT-
+5.2, respectively. Ablation studies confirm the
+Expert Agent’s critical role in long-horizon op-
+timization. GOPO demonstrates consistent im-
+provements across other datasets as well. This
+work establishes a new paradigm for task-oriented
+dialogue systems in commercial scenarios, with
+code and datasets to be made public.
+*Equal contribution .
+†Corresponding author.
+1NoDesk AI,
+Hangzhou, China 2School of Information Engineering, China Jil-
+iang University, Hangzhou, China 3College of Chemical and Bio-
+logical Engineering, Zhejiang University, Hangzhou, China. Cor-
+respondence to: Zhiqiang You <zhiqiang.you@nodeskai.com>.
+Preprint. February 23, 2026.
+1. Introduction
+Recent advances in large language models have substan-
+tially improved task-oriented dialogue systems in fluency
+and language understanding (Brown et al., 2020). However,
+in business-critical scenarios such as e-commerce and cus-
+tomer service, these systems often fall into an “efficiency
+trap”: despite strong technical metrics, they yield limited
+gains on core business KPIs, including conversion rate, user
+satisfaction, and first-contact resolution. This gap between
+linguistic proficiency and business effectiveness exposes
+fundamental limitations of current research paradigms (Tou-
+vron et al., 2023). We identify three interrelated challenges
+underlying this issue. First, optimization objectives are
+misaligned with business goals. Mainstream approaches
+such as supervised fine-tuning and RLHF prioritize tech-
+nical criteria like preference alignment and semantic rele-
+vance, while overlooking business outcomes, resulting in
+fluent yet ineffective responses that fail to drive conversion
+or resolve complex issues (Ouyang et al., 2022). Second,
+existing single-agent architectures lack strategic flexibility
+in complex multi-turn dialogues (Wang et al., 2025). By
+conflating strategy selection with response generation, they
+struggle to adapt to dynamic user intentions and emotional
+shifts, leading to repetitive or fragmented interactions and
+degraded user experience. Finally, standard operating proce-
+dure (SOP) compliance remains unreliable. Prompt-based
+soft constraints cannot consistently enforce enterprise rules
+such as mandatory disclaimers or commitment prohibitions,
+causing strategic intent to be diluted during execution and
+leading to unstable service quality and compliance risks.
+To address these challenges, we propose GOPO, a hierarchi-
+cal reinforcement learning (RL) framework for task-oriented
+dialogue. GOPO adopts a dual-agent architecture that de-
+couples strategy planning from response execution, compris-
+ing an Expert Agent for high-level decision-making and a
+Customer Service Agent for compliant response generation.
+The Expert Agent analyzes dialogue states and dynamically
+composes strategy chains from a skill pool, which are trans-
+lated into structured hard constraints and enforced by the
+Customer Service Agent to align strategic intent with gen-
+erated responses across multi-turn interactions. Moreover,
+GOPO employs a joint reward model grounded in business
+1
+arXiv:2602.15854v2 [cs.CL] 20 Feb 2026
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+0.7
+0.8
+0.9
+1.0
+TSE
+0.948
+0.770
+0.851
+0.852
+0.923
+0.746
+0.833
+0.829
+0.938
+0.761
+0.851
+0.849
+0.934
+0.756
+0.843
+0.845
+GOPO-Qwen3-14B
+Qwen-235B
+DeepSeek-R1
+GPT-5.2
+6.0
+7.0
+8.0
+GRE
+7.63
+6.55
+7.46
+7.43
+7.24
+5.57
+6.38
+6.42
+7.46
+6.46
+7.44
+7.41
+7.54
+5.83
+6.72
+6.71
+Mgshop
+Multimoz
+TmallBrand-A
+TmallBrand-B
+Dataset
+3.2
+3.4
+3.6
+3.8
+G-Eval
+3.688
+3.447
+3.757
+3.761
+3.564
+3.353
+3.753
+3.747
+3.476
+3.368
+3.728
+3.745
+3.529
+3.453
+3.596
+3.517
+Figure 1. TSE, GRE, and G-Eval Across Datasets: GOPO-Qwen3-14B vs. Qwen-235B, DeepSeek-R1, and GPT-5.2.
+end-state metrics, aligning long-horizon optimization with
+real business value. The primary contributions of this work
+are summarized as follows:
+• We propose GOPO, a hierarchical RL framework that
+decouples strategy planning from response generation
+via an Expert Agent and a Customer Service Agent,
+enabling long-horizon optimization in task-oriented
+dialogues.
+• We introduce Task-focused Sequential Engagement
+(TSE), a sequence-level evaluation metric derived from
+real e-commerce interactions, designed to better reflect
+long-horizon task success.
+• Extensive experiments on public benchmarks and real-
+world e-commerce customer service datasets show that
+GOPO consistently outperforms PPO, Memento, and
+strong large-model baselines in sequence-level reward,
+generation quality, and TSE.
+• Results further demonstrate that GOPO enables smaller
+models to outperform significantly larger models, and
+ablation studies confirm the Expert Agent’s key role in
+long-horizon preference optimization.
+The remainder of this paper is organized as follows. Section
+2 reviews the related works. Section 3 presents the method-
+ology of the GOPO framework in detail. Section 4 presents
+the experimental setup, results, and an in-depth analysis of
+the experimental findings. Finally, Section 5 concludes the
+paper and outlines directions for future research.
+2. Related works
+2.1. Agent Architectures in Task-Oriented Dialogue
+Systems
+Task-oriented dialogue systems in e-commerce serve as car-
+riers of business value (Sanjaya et al., 2023; Konda et al.,
+2021; Gamboa-Cruzado et al., 2023). Their core objective
+is to establish a closed loop of demand matching, trust build-
+ing, and order conversion through multi-turn interactions,
+making this a central research focus (Kanojiya et al., 2021).
+Existing approaches broadly fall into two categories: tradi-
+tional rule-based or modular pipeline systems, and LLM-
+based end-to-end single-agent methods (Puertas et al., 2024).
+The former rely on sequential NLU–DM–NLG pipelines,
+while the latter exemplified by ReAct (Wei et al., 2025) and
+its variants use LLMs as central controllers to implement a
+“think–act” loop for complex reasoning and tool use (Yao
+et al., 2022).
+Nevertheless, complex long-horizon business processes ex-
+pose key limitations. A single agent must jointly handle
+SOP-driven strategy selection and compliant response gener-
+ation, coupling decision logic with execution. Under uncer-
+tainty, this often results in suboptimal strategies, compliance
+failures, or stalled dialogues. To overcome single-agent limi-
+tations, the community has explored multi-agent approaches.
+CAMEL (Li et al., 2023) used a role-playing framework
+where two agents debate solutions, while other works de-
+signed agent teams with explicit role divisions, e.g., a router
+agent dispatching requests. Some work achieves zero-shot
+multi-agent coordination by training agents with a single
+partner across environments to learn general cooperative
+norms (Jha et al., 2025). Although these methods partially
+decompose tasks, they relied on natural language soft con-
+straints for inter-agent communication, which was unreli-
+able in strict SOP scenarios, as LLM stochasticity can dilute
+strategic intent. In contrast, GOPO employs a hierarchical
+dual-agent architecture with structured hard-constraint trans-
+mission, ensuring Expert Agent’s strategies are executed by
+the Customer Service Agent.
+2.2. Optimization Methods for Dialogue Policies
+RL has long been a core approach for optimizing dialogue
+policies (Feng et al., 2024; Wu et al., 2025). Classical meth-
+2
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+ods such as Proximal Policy Optimization (PPO) (Schul-
+man et al., 2017) maximized cumulative rewards, but in
+multi-turn dialogues rewards were sparse and delayed, with
+transaction success only observabled at the end of a conver-
+sation (Liu et al., 2025). This led to severe long-horizon
+credit assignment issues, making optimization inefficient
+and prone to local optima, such as over-emphasizing fluency
+while neglecting SOP compliance.
+To mitigate reward design challenges, preference-based
+optimization methods—particularly Direct Preference Op-
+timization (DPO) (Rafailov et al., 2023) and its variants
+have gained attention. DPO leveraged pairwise human
+preferences to bypass explicit reward modeling and online
+RL, and subsequent work extended this paradigm to real-
+time dialogue using large-scale offline data. Building on
+this line, Single-stream Policy Optimization (SPO) (Xu &
+Ding, 2025) and Stepwise Direct Preference Optimization
+(SDPO) (Kim et al., 2025a) introduced finer-grained supervi-
+sion. However, these approaches relied on static preferences
+and primarily optimize technical alignment metrics, without
+explicitly incorporating outcome-driven business signals
+such as user satisfaction or purchase conversion.
+Recent methods further explored long-horizon optimization
+by introducing trajectory-level or step-level signals. Me-
+mento (Zhou et al., 2025a) focused on trajectory-level pref-
+erence consistency, while COLLABLLM (Li et al., 2025)
+employed multiturn-aware rewards to encourage proactive
+intent discovery. SWEET-RL (Zhou et al., 2025b) addressed
+multi-turn credit assignment by training a critic with access
+to training-time information to provide step-level rewards.
+In contrast, GOPO adopts a joint reward model directly
+tied to business metrics and, through a hierarchical RL de-
+sign, delivers timely supervision that effectively addresses
+long-horizon credit assignment.
+2.3. SOP Compliance and Constraint Enforcement
+In heavily regulated industries such as finance, healthcare,
+and e-commerce, strict adherence to standard operating pro-
+cedures (SOPs) is critical for dialogue systems (Gao et al.,
+2018). Existing approaches mainly enforced constraints
+through prompt engineering or rule-based post-processing.
+However, prompt-based “soft constraints” are fragile to the
+generative flexibility of LLMs and cannot reliably ensure
+compliance. Post-processing filters act as passive remedies
+that fail to fundamentally prevent non-compliant outputs
+and may degrade response fluency and naturalness.
+Some studies introduced stronger constraints during decod-
+ing. For instance, constrained beam search (Chen et al.,
+2025) and vocabulary masking (Kim et al., 2025b) can en-
+force required keywords or block prohibited terms. While
+these techniques improved compliance to a limited extent,
+they struggled with complex logical constraints and may
+conflict with the model’s internal representations, resulting
+in degraded generation quality.
+GOPO addresses these limitations through a hard-constraint
+transmission mechanism. The Expert Agent not only de-
+termines SOP-level strategies but also compiles them into
+structured hard constraints that are integrated into the Cus-
+tomer Service Agent’s generation process. In addition, an
+SOP-matching reward module provides real-time compli-
+ance feedback at the execution level, forming a closed loop
+from strategy planning to response generation and enabling
+consistent adherence to SOPs.
+3. The GOPO Framework
+In this section, we introduce the GOPO framework, for-
+malize the task-oriented dialogue problem under business
+constraints, and present a joint reward and loss design that
+aligns hierarchical RL with practical business outcomes.
+3.1. Framework Overview
+Figure 2 presents the hierarchical dual-agent architecture
+of GOPO. The architecture consists of an Expert Agent
+for strategy planning and a Customer Service Agent for
+constrained response generation. Under a hierarchical RL
+paradigm, the Expert Agent composes skills from a prede-
+fined pool, decoupling policy planning from content genera-
+tion.
+1. State Perception: The system extracts dialogue state
+information (e.g., user intent and emotion).
+2. Skill Selection: Given the global state sE
+t , E selects
+a skill sequence as a macro-action aE
+t to define the
+turn-level strategy.
+3. Response Generation: Conditioned on aE
+t and local
+state sA
+t , A generates a compliant response aA
+t under
+hard constraints.
+4. Feedback and Transition: The environment returns a
+joint reward Rt and transitions to st+1.
+Despite introducing hierarchical dependence, this design
+reduces exploration complexity and gradient variance, en-
+abling stable long-horizon optimization.
+3.2. Problem Formalization
+We formalize the dynamic SOP task-oriented dialogue pro-
+cess as a Hierarchical Markov Decision Process (HMDP),
+represented by the tuple
+HMDP = ⟨SE, SA, AE, AA, RE, RA, Rtotal⟩,
+3
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Figure 2. Hierarchical Dual-Agent Architecture of GOPO with Decoupled Strategy and Generation.
+where independent MDPs are defined for E and A, coor-
+dinated via hierarchical dependencies between states and
+actions. Each element is defined as follows:
+• State of Expert Agent (sE
+t ∈SE): Captures global and
+temporal dialogue information. At time t, the state sE
+t
+includes:
+– Ht: Dialogue history of the most recent k turns.
+– ut: Current user intent label.
+– et: Current user emotion label.
+– aE
+t−1: The skill selected by E to establish tempo-
+ral dependency in decision-making.
+• Action (aE
+t
+∈AE): The action space of E. AE is
+discrete, representing the selection of one or more skills
+from the skill pool Pskill. Therefore, aE
+t ∈Pskill.
+• Reward (RE
+t ∈RE): The reward for E. RE
+t evaluates
+the long-term value of its skill choices.
+• State of Customer Service Agent(sA
+t ∈SA): SA fo-
+cuses on execution details of the current turn. sA
+t in-
+cludes:
+– Ut: The user’s utterance in the current turn.
+– aE
+t : The skill selected by E, serving as a hard
+execution constraint.
+– Bt: Relevant business context information, such
+as order status or inventory.
+• Action (aA
+t
+∈AA): The action space of A. AA is
+continuous, representing the generated response text
+sequence. aA
+t
+= (w1, w2, . . . , wm), where wi is a
+token from the vocabulary V .
+• Reward (RA
+t ∈RA): The reward for A, used to evalu-
+ate the quality and compliance of the response.
+• Joint Reward (Rt ∈Rtotal): A unified reward that
+jointly evaluates the strategy decision of E and the
+response execution of A. This reward signal is prop-
+agated back to both agents. Detailed discussion is
+provided in Section 3.3.
+Based on the MDP formulation, GOPO selects skills to
+define strategies for each dialogue turn and generates re-
+sponses that satisfy immediate dialogue requirements while
+ensuring strict compliance and maximizing long-term busi-
+ness objectives.
+Accordingly, GOPO adopts a hierarchical decision mech-
+anism in which E learns a macro-policy πE(aE
+t | sE
+t ) to
+select skill combinations that guide the dialogue toward
+business goals, while A learns a micro-policy πA(aA
+t | sA
+t )
+to generate high-quality, compliant responses that fit the
+current dialogue context. Formally, the optimization ob-
+jective of GOPO is to train the joint policy π = ⟨πE, πA⟩
+to maximize the expected cumulative reward of business
+outcome metrics, expressed as:
+max
+πE,πA Eτ∼π
+" T
+X
+t=0
+γtRt(sE
+t , sA
+t , aE
+t , aA
+t )
+#
+.
+(1)
+3.3. Reward and Loss Design
+The success of the GOPO framework hinges on the design
+of its reward and loss functions, which closely align the
+optimization process with actual business objectives.
+The Expert Agent reward RE
+t evaluates the quality of skill
+selection by measuring the relevance between a predicted
+skill sequence P = [p1, . . . , pm] and a Teacher-generated
+reference sequence T = [t1, . . . , tn]. The teacher reference
+sequence is generated offline and serves as a stable prefer-
+ence anchor during training, avoiding the need for real-time
+oracle supervision at deployment. To quantify sequence-
+level relevance, we build upon Discounted Cumulative Gain
+4
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+(DCG) (Qiu et al., 2022), a standard ranking-based met-
+ric that accounts for both relevance and position. For any
+predicted skill s, its relevance is defined as:
+Rel(s) =
+(
+n −index(s in T) + 1,
+if s ∈T,
+0,
+if s /∈T.
+(2)
+Based on this relevance definition, the DCG of the predicted
+skill sequence P = [p1, p2, . . . , pm] is computed as:
+DCG(P) =
+m
+X
+i=1
+2Rel(pi) −1
+log2(i + 1).
+(3)
+The Ideal DCG (IDCG) is defined as the DCG of the Teacher
+sequence itself, which can be expressed:
+IDCG(T) =
+n
+X
+j=1
+2Rel(tj) −1
+log2(j + 1),
+(4)
+which represents the theoretical maximum score. We then
+define Expert Skill Normalized Discounted Cumulative
+Gain (ESNDCG) as a normalized variant of DCG, which is
+then computed as
+ESNDCG(P, T) = DCG(P)
+IDCG(T).
+(5)
+Finally, the reward for E is defined as:
+RE
+t = ESNDCG(P, T).
+(6)
+Although ESNDCG relies on teacher-generated references
+for reward shaping, it provides a trajectory-level preference
+signal rather than a supervised target, with optimization car-
+ried out via policy gradients. In practice, both the predicted
+and teacher skill sequence lengths are capped at 5, ensur-
+ing numerical stability while emphasizing short-horizon,
+high-impact skill planning.
+The loss function for the Expert Agent adopts the standard
+policy gradient form with an added entropy regularization
+term to encourage exploration:
+Lt(θE) = −Et
+ ˆAE
+t · log πE(aE
+t | sE
+t ; θE)
+
+−α · H(πE(· | sE
+t ; θE)).
+(7)
+Here, ˆAE
+t denotes the advantage function, which is com-
+puted using the Actor-Critic architecture.
+The Customer Service Agent reward RA
+t evaluates response
+quality, compliance, and diversity. We employ a large lan-
+guage model (GPT-4) as an automatic evaluator, which
+scores each response along multiple predefined dimensions.
+The final reward is computed as a weighted sum of these
+dimension scores:
+RA
+t = α1S1 + α2S2 + α3S3 + α4S4,
+(8)
+where αi are normalized weights controlling the contribu-
+tion of each evaluation dimension, and Si represent the
+individual scores for each evaluation dimension.
+The loss function for the Customer Service Agent is a com-
+posite loss, combining policy gradient, skill compliance,
+and diversity:
+Lt(θA) = λp Lt,p(θA) + λs Lt,s(θA) + λd Lt,d(θA),
+(9a)
+Lt,p(θA) = −EaA
+t ∼πA
+
+RA
+t log πA(aA
+t | sA
+t )
+
+,
+(9b)
+Lt,s(θA) = d(aA
+t , aE
+t ),
+(9c)
+Lt,d(θA) = −
+X
+t
+X
+w∈V
+pθ(w | sA
+t ) log pθ(w | sA
+t ), (9d)
+Here, Lt,p is the policy gradient loss that maximizes the Cus-
+tomer Service Agent’s expected reward RA
+t , Lt,s enforces
+skill compliance via the semantic distance d(aA
+t , aE
+t ), and
+Lt,d is a negative-entropy term promoting response diversity.
+The total loss Lt(θA) is their weighted sum.
+To account for shifting dialogue priorities, GOPO uses a dy-
+namic, temporally-aware weighting to combine the Expert
+and Customer Service Agent rewards:
+Rt = wE
+t · RE
+t + wA
+t · RA
+t .
+(10)
+Here, the Expert Agent weight wE
+t increases over turns,
+shifting emphasis from early response quality to later strate-
+gic skill selection for business goals. We adopt a temporally
+adaptive scheme where wE
+t increases over turns while wA
+t
+remains strictly positive, continuously enforcing response-
+level quality and politeness constraints.
+4. Experiments
+To comprehensively evaluate the effectiveness of the GOPO
+framework, we conducted a series of extensive experiments.
+This section describes the experimental setup, main results,
+ablations, and qualitative analysis.
+4.1. Experimental Setup
+4.1.1. DATASETS
+We evaluate our method on four datasets spanning public
+benchmarks and real-world enterprise data.
+• Mgshop (Jannach et al., 2021): An internal test set
+designed to evaluate robustness under highly dynamic
+user emotions and rapidly changing intents.
+• Multiwoz (Budzianowski et al., 2018): A widely used
+multi-domain task-oriented dialogue benchmark for
+assessing general dialogue capabilities.
+5
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Table 1. Comparison of GOPO (Qwen-7B-Chat) with Large-Scale Baselines Across Multiple Datasets (TSE, GRE, BLEU).
+Model
+Mgshop
+Multiwoz
+TmallBrand-A
+TmallBrand-B
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+Untrained
+0.7454
+5.97
+0.091
+0.6127
+4.53
+0.075
+0.6791
+5.25
+0.083
+0.6685
+5.31
+0.082
+SFT
+0.8363
+6.25
+0.187
+0.7015
+4.92
+0.149
+0.7689
+5.59
+0.165
+0.7592
+5.64
+0.163
+PPO
+0.8584
+7.09
+0.190
+0.7496
+5.68
+0.169
+0.8040
+6.39
+0.181
+0.8126
+6.43
+0.183
+Memento
+0.8381
+7.13
+0.188
+0.7205
+5.75
+0.153
+0.7793
+6.44
+0.168
+0.7848
+6.38
+0.169
+GOPO(Ours)
+0.9243
+7.38
+0.211
+0.7543
+6.38
+0.172
+0.8393
+6.88
+0.192
+0.8417
+6.92
+0.193
+Table 2. Comparison of GOPO with Large-Scale Baselines Across Multiple Datasets (TSE, GRE, BLEU).
+Model
+Mgshop
+Multiwoz
+TmallBrand-A
+TmallBrand-B
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+Qwen-235B
+0.9227
+7.24
+0.182
+0.7462
+5.57
+0.165
+0.8327
+6.38
+0.114
+0.8294
+6.42
+0.166
+DeepSeek-R1
+0.9381
+7.46
+0.143
+0.7609
+6.46
+0.138
+0.8512
+7.44
+0.141
+0.8489
+7.41
+0.139
+GLM-4.7
+0.9365
+7.25
+0.150
+0.7598
+6.13
+0.148
+0.8487
+7.09
+0.153
+0.8301
+6.36
+0.151
+GPT-5.2
+0.9338
+7.54
+0.097
+0.7561
+5.83
+0.092
+0.8426
+6.72
+0.095
+0.8453
+6.71
+0.094
+Gemini-2.5
+0.9287
+7.35
+0.133
+0.7451
+6.16
+0.129
+0.8084
+6.91
+0.131
+0.8116
+6.88
+0.128
+GOPO-Qwen3-14B(Ours)
+0.9475
+7.63
+0.279
+0.7699
+6.55
+0.177
+0.8511
+7.46
+0.186
+0.8524
+7.43
+0.198
+• TmallBrand-A: An internal e-commerce customer ser-
+vice dataset reflecting complex interactions such as
+purchasing, inquiries, and refunds.
+• TmallBrand-B: An internal e-commerce customer ser-
+vice dataset from a different store, used to assess cross-
+domain generalization.
+4.1.2. EVALUATION METRICS
+We adopt a multi-dimensional evaluation framework to as-
+sess performance in sequential, conditional recommendation
+tasks, including:
+• Task-focused
+Sequential
+Engagement
+Success
+(TSE): A sequence-level metric measuring task com-
+pletion efficiency in task-focused dialogues, covering
+requirement matching, information delivery, and proac-
+tive guidance. The TSE score is defined as:
+TSE(k) = ω1I1γN1−1 + ω2I2γN2−N1−1
++ ω3I3γN3−N2−1.
+(11)
+Here, ωi are task weights, Ii indicate task completion,
+γ is a turn-based decay factor, and Ni denote task
+completion turns. TSE measures whether key tasks are
+completed efficiently.
+• Goal-oriented Response Effectiveness (GRE): A
+response-level metric evaluating how individual replies
+advance business objectives, computed by averaging
+LLM-based turn-level scores on politeness, product
+appropriateness, and action guidance.
+• BLEU (Papineni et al., 2002): Measures n-gram over-
+lap with reference responses, capturing surface-level
+lexical similarity.
+• G-Eval (Liu et al., 2023): An LLM-based metric as-
+sessing dialogue fluency and user experience via coher-
+ence, completeness, and emotional appropriateness.
+Overall, these metrics capture complementary aspects of
+performance across multiple levels, ranging from sequence-
+level goal achievement to response-level goal advancement,
+user experience, and surface-level similarity.
+4.1.3. BASELINE MODELS AND COMPARATIVE
+EXPERIMENTS
+We conducted two groups of comparative experiments:
+• Experiment 1: Baseline Comparison. We compare
+GOPO with untrained LLMs, SFT, PPO, and Memento
+as representative supervised and RL baselines.
+• Experiment 2: Comparison with Large Models. We
+benchmark GOPO against proprietary and open-source
+flagship models, including GPT-5.2 and Gemini-2.5
+(closed-source), as well as Qwen-235B, DeepSeek-R1,
+and GLM-4.7 (open-source). We also evaluate GOPO
+implementations on Qwen-7B-Chat, Qwen3-8B, and
+Qwen3-14B to assess scalability across model sizes.
+4.2. Main Results and Results Analysis
+4.2.1. ADVANTAGES OF GOPO OVER MAINSTREAM
+TRAINING FRAMEWORKS
+Across all four datasets, GOPO consistently outperforms the
+untrained model and strong baselines including SFT, PPO,
+and Memento. Specifically, GOPO improves TSE by 23%–
+26% and GRE by 23%–40% over the untrained model,
+demonstrating the effectiveness of goal-oriented training.
+Compared to SFT, GOPO achieves 7.5%–10% higher
+6
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Table 3. Comparison of Flagship Models Across Datasets on G-Eval Scores.
+Model
+Mgshop Multiwoz TmallBrand-A TmallBrand-B
+Qwen-235B
+3.564
+3.353
+3.753
+3.747
+DeepSeek-R1
+3.476
+3.368
+3.728
+3.745
+GLM-4.7
+3.672
+3.381
+3.525
+3.510
+GPT-5.2
+3.529
+3.453
+3.596
+3.517
+Gemini-2.5
+3.680
+3.407
+3.653
+3.534
+GOPO-Qwen3-14B(Ours)
+3.688
+3.447
+3.757
+3.761
+Table 4. Comparison of GOPO Variants on Multiple Datasets (TSE, GRE, BLEU).
+Model
+Mgshop
+Multiwoz
+TmallBrand-A
+TmallBrand-B
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+GOPO-Qwen-7B-Chat
+0.9243
+7.38
+0.211
+0.7543
+6.38
+0.172
+0.8393
+6.88
+0.192
+0.8417
+6.92
+0.193
+GOPO-Qwen3-8B
+0.9375
+7.44
+0.242
+0.7680
+6.51
+0.175
+0.8507
+7.21
+0.202
+0.8515
+7.43
+0.208
+GOPO-Qwen3-14B
+0.9475
+7.63
+0.279
+0.7699
+6.55
+0.177
+0.8511
+7.46
+0.186
+0.8524
+7.43
+0.198
+TSE, highlighting its advantage in sequence-conditioned,
+business-driven dialogue tasks beyond token-level NLG
+optimization. Relative to PPO, GOPO yields 0.6%–7.7%
+gains in TSE and 3%–20% in GRE, validating the benefit of
+dual-agent decomposition and business-aligned GRE design
+over single-agent RL. Finally, GOPO outperforms Memento
+by 9%–12% in TSE and 3%–8% in GRE, indicating strong
+robustness across training paradigms.
+4.2.2. COMPARISON WITH LARGE-SCALE FRONTIER
+MODELS
+We compare GOPO with large-scale frontier models, includ-
+ing Qwen-235B, DeepSeek-R1, GLM-4.7, GPT-5.2, and
+Gemini-2.5, and observe three key findings.
+First, GOPO achieves competitive performance with sig-
+nificantly fewer parameters. Despite being over an order
+of magnitude smaller (7B/8B vs. 235B+), GOPO-Qwen-
+7B and GOPO-Qwen3-8B attain comparable TSE scores.
+On Mgshop, GOPO-Qwen3-8B reaches a TSE of 0.9375,
+closely matching DeepSeek-R1 (0.9387).
+Second, SOP-based prompt constraints yield inconsistent
+gains for large models. While marginal improvements are
+observed for some models (e.g., Qwen-235B and GLM-4.7),
+others (e.g., Gemini-2.5 on Multiwoz) exhibit degraded per-
+formance, indicating the brittleness and model-dependence
+of prompt-level soft constraints.
+Finally, GOPO demonstrates superior stability across
+datasets and settings. Its hierarchical dual-agent architecture
+and explicit constraint propagation ensure reliable enforce-
+ment of business objectives, outperforming prompt-based
+approaches in both robustness and consistency.
+Overall, these results demonstrate that GOPO provides a
+more effective optimization paradigm for complex, Goal-
+Oriented dialogue tasks under realistic business constraints.
+4.2.3. PERFORMANCE ANALYSIS UNDER DIFFERENT
+GOPO PARAMETER SETTINGS
+The training trends and experimental results of the GOPO
+framework under different parameter settings are shown
+in Figure 3 and Table 4. It can be observed that as the
+model scale increases, GOPO achieves improvements in
+TSE, GRE, and BLEU across all datasets, with GOPO-
+Qwen3-14B performing the best. The medium-sized GOPO-
+Qwen3-8B also significantly outperforms GOPO-Qwen-7B-
+Chat, while the performance gains vary across datasets,
+with more noticeable improvements on Mgshop and the
+TmallBrand series. It is worth noting that the loss value of
+the Expert Agent remains relatively high and decreases only
+marginally during training. This behavior is expected given
+that the Expert Agent is optimized with a policy-gradient
+objective augmented by entropy regularization, where the
+loss magnitude reflects both non-trivial advantage estimates
+and sustained policy stochasticity rather than convergence
+to zero. Notably, despite the Expert loss stabilizing at a
+higher value, the overall reward converges reliably across
+all settings, indicating effective long-horizon optimization.
+4.3. Ablation Study
+To assess the contribution of each component in GOPO, we
+conduct ablation studies on Mgshop and TmallBrand-A. As
+shown in Table 5, we compare the full GOPO framework
+with a variant without the Expert Agent, as well as the
+corresponding untrained baseline.
+Removing the Expert Agent causes substantial performance
+degradation, confirming its critical role in long-horizon opti-
+mization. On TmallBrand-A, TSE drops by 5.7% and GRE
+decreases by 13.3%. Notably, although BLEU slightly in-
+creases, TSE declines sharply, indicating that without strate-
+gic guidance the model produces conservative yet inefficient
+responses. This further exposes the limitation of BLEU as a
+surface-level metric for task-oriented dialogue.
+7
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Figure 3. Convergence Performance of GOPO Under Different Parameter Settings.
+Table 5. Ablation Study of GOPO-14B on Mgshop and TmallBrand-A Datasets.
+Model
+Mgshop
+TmallBrand-A
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+Full GOPO
+0.9475
+7.63
+0.279
+0.8511
+7.46
+0.186
+GOPO w/o Expert Agent
+0.9371
+7.16
+0.217
+0.8023
+6.47
+0.227
+Full Baseline
+0.7353
+6.92
+0.251
+0.6371
+6.43
+0.213
+Baseline w/o Expert Agent
+0.4327
+6.08
+0.240
+0.1818
+5.19
+0.182
+Table 6. Performance of Customer Service Agents Evaluated with Trained GOPO Expert Agent on Mgshop and TmallBrand-A Datasets.
+Customer Service Agent
+Mgshop Dataset
+TmallBrand-A Dataset
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+GOPO-Qwen3-14B
+0.9475
+7.63
+0.279
+0.8511
+7.46
+0.186
+Qwen-235B
+0.9352
+7.45
+0.214
+0.8428
+7.37
+0.201
+DeepSeek-R1
+0.9453
+7.55
+0.242
+0.8503
+7.03
+0.245
+Gemini-2.5
+0.9268
+7.52
+0.220
+0.8025
+6.83
+0.131
+Table 7. Performance of Fixed GOPO Customer Service Agent with Different Expert Agents on Mgshop and TmallBrand-A Datasets.
+Expert Agent
+Mgshop Dataset
+TmallBrand-A Dataset
+TSE
+GRE
+BLEU
+TSE
+GRE
+BLEU
+GOPO-Qwen3-14B
+0.9475
+7.63
+0.279
+0.8511
+7.46
+0.186
+Qwen-235B
+0.8714
+7.40
+0.193
+0.8291
+6.27
+0.203
+DeepSeek-R1
+0.7854
+6.73
+0.234
+0.8395
+6.84
+0.146
+Gemini-2.5
+0.7384
+5.30
+0.251
+0.8163
+6.55
+0.228
+Compared to the untrained baseline, Full GOPO achieves
+significant gains, improving TSE by 28.9% and 33.6%,
+and GRE by 10.3% and 16.0% on the two datasets. These
+results demonstrate that the ESNDCG-driven hierarchical
+RL objective effectively guides the model toward efficient
+task completion.
+Interestingly, even without specialized training, the dual-
+agent architecture alone yields clear improvements over
+the single-agent baseline, suggesting that decoupling strat-
+egy planning from response generation better matches the
+structure of task-oriented dialogue.
+Finally, mixed-agent experiments in Tables 6 and 7 show
+consistent performance drops when either agent is re-
+placed by a non-jointly trained counterpart, confirming that
+GOPO’s effectiveness arises from the synergistic optimiza-
+tion of both agents rather than any single component.
+5. Conclusion
+This paper addresses misalignment in task-oriented dialogue
+systems under complex business scenarios. We propose
+GOPO, a hierarchical RL framework with dual agents, sep-
+arating strategy planning from response generation. The
+Expert Agent chooses sequences of skills, while the Cus-
+tomer Service Agent executes responses following strict
+compliance, guiding the system toward desired business
+outcomes. GOPO combines SOP compliance with a joint
+reward over entire dialogues, shifting optimization from
+preference imitation to direct business value maximization.
+Experiments on multiple real-world datasets show GOPO
+consistently outperforms strong baselines, including large
+proprietary models on TSE and GRE metrics. Current eval-
+uation partly relies on offline TSE from real dialogues, with
+ongoing online tests confirming effectiveness and stability.
+Future work includes automated policy and skill discovery,
+8
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+expanding the skill pool dynamically, and adapting across
+domains. Overall, GOPO provides a practical and extensible
+framework for task-oriented dialogue systems and opens
+new directions for optimizing large multi-agent models to-
+ward specific objectives.
+References
+Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan,
+J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry,
+G., Askell, A., et al. Language models are few-shot
+learners. In Larochelle, H., Ranzato, M., Hadsell, R.,
+Balcan, M. F., and Lin, H. (eds.), Advances in Neural
+Information Processing Systems, volume 33, pp. 1877–
+1901, Vancouver, Canada, 2020. Curran Associates Inc.
+Budzianowski, P., Wen, T., Tseng, B., Casanueva, I., Ultes,
+S., Ramadan, O., and Gaˇsi´c, M. MultiWOZ: A large-scale
+multi-domain wizard-of-oz dataset for task-oriented dia-
+logue modelling. In Proceedings of the 2018 Conference
+on Empirical Methods in Natural Language Processing,
+pp. 5016–5026, Brussels, Belgium, 2018. Association for
+Computational Linguistics.
+Chen, S. et al. Reinforcement learning constrained beam
+search for parameter optimization of paper drying under
+flexible constraints. arXiv preprint arXiv:2501.12542,
+2025.
+Feng, P., He, Y., Huang, G., Lin, Y., Zhang, H., Zhang, Y.,
+and Li, H. AGILE: A novel reinforcement learning frame-
+work of LLM agents. Advances in Neural Information
+Processing Systems, 37:5244–5284, 2024.
+Gamboa-Cruzado, J., Menendez-Morales, C., Carpio, C.
+F. D., L´opez-Goycochea, J., Alva-Ar´evalo, A., and Var-
+gas, C. R. Use of chatbots in e-commerce: A comprehen-
+sive systematic review. Journal of Theoretical and Ap-
+plied Information Technology, 101(4):1172–1183, 2023.
+Gao, J., Galley, M., and Li, L. Neural approaches to con-
+versational ai. In The 41st international ACM SIGIR
+conference on research & development in information
+retrieval, pp. 1371–1374, 2018.
+Jannach, D., Manzoor, A., Cai, W., and Chen, L. A survey
+on conversational recommender systems. ACM Comput-
+ing Surveys (CSUR), 2021.
+Jha, K., Carvalho, W., Liang, Y., Du, S. S., Kleiman-
+Weiner, M., and Jaques, N.
+Cross-environment co-
+operation enables zero-shot multi-agent coordination.
+In Singh, A., Fazel, M., Hsu, D., Lacoste-Julien,
+S., Berkenkamp, F., Maharaj, T., Wagstaff, K., and
+Zhu, J. (eds.), Proceedings of the 42nd International
+Conference on Machine Learning (ICML 2025), vol-
+ume 267 of Proceedings of Machine Learning Re-
+search, pp. 27198–27220, Vancouver, Canada, 13–19 Jul
+2025. PMLR. URL https://proceedings.mlr.
+press/v267/jha25b.html.
+Kanojiya, M., Chothani, S., Gosalia, N., et al. Ecommerce
+chatbot (online shopping app). SSRN Electronic Journal,
+2021.
+9
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Kim, D., Kim, Y., Song, W., Kim, H., Kim, Y., Kim, S.,
+and Park, C. sDPO: Don’t use your data all at once.
+In Proceedings of the 31st International Conference on
+Computational Linguistics: Industry Track, pp. 366–373,
+Abu Dhabi, UAE, 2025a. Association for Computational
+Linguistics.
+Kim, J., Shah, K., Kontonis, V., Kakade, S. M., and Chen,
+S. Train for the worst, plan for the best: Understand-
+ing token ordering in masked diffusions. arXiv preprint
+arXiv:2502.06768, 2025b.
+Konda, A. K. R., Jimada, S., Cherukuri, P. A. A., et al.
+Chatbot implementation for enhancement of student
+understanding—a natural language processing approach.
+In Proceedings of Integrated Intelligence Enable Net-
+works and Computing (IIENC 2020), pp. 171–180, Sin-
+gapore, 2021. Springer Singapore.
+Li, G., Yu, X., Fu, H., Chen, X., Zheng, Y., Wang, W.,
+Hou, J., Wang, P., Wang, Y., Su, J., et al. CAMEL:
+Communicative agents for “mind” exploration of large
+language model society. Advances in Neural Information
+Processing Systems, 36:51991–52008, 2023.
+Li, G., Wu, S., Galley, M., Peng, B., Cheng, H., Dou, Y.,
+Cai, W., Zou, J., Leskovec, J., and Gao, J. CollabLLM:
+From passive responders to active collaborators. arXiv
+preprint arXiv:2502.00640, 2025.
+Liu, J., Qian, C., Su, Z., Zong, Q., Huang, S., He, B.,
+and Fung, Y. R.
+Costbench: Evaluating multi-turn
+cost-optimal planning and adaptation in dynamic en-
+vironments for llm tool-use agents.
+arXiv preprint
+arXiv:2511.02734, 2025.
+Liu, Y., Iter, D., Xu, Y., Wang, S., Xu, R., and Zhu, C. G-
+Eval: NLG evaluation using GPT-4 with better human
+alignment. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing, pp.
+2511–2522, Singapore, 2023. Association for Computa-
+tional Linguistics.
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright,
+C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K.,
+Ray, A., et al. Training language models to follow instruc-
+tions with human feedback. In Koyejo, S., Mohamed, S.,
+Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.),
+Advances in Neural Information Processing Systems, pp.
+27730–27744, New Orleans, LA, USA, 2022. Curran
+Associates Inc.
+Papineni, K., Roukos, S., Ward, T., and Zhu, W. J. BLEU:
+A method for automatic evaluation of machine transla-
+tion. In Proceedings of the 40th Annual Meeting of the
+Association for Computational Linguistics, pp. 311–318,
+Philadelphia, PA, USA, 2002. Association for Computa-
+tional Linguistics.
+Puertas, S. M., Manzano, M. D. I., L´opez, C. S., and Ribeiro-
+Cardoso, P. Purchase intentions in a chatbot environment:
+An examination of the effects of customer experience.
+Oeconomia Copernicana, 15(1):145–194, 2024.
+Qiu, Z.-H., Hu, Q., Zhong, Y., Zhang, L., and Yang, T.
+Large-scale stochastic optimization of NDCG surrogates
+for deep learning with provable convergence. In Proceed-
+ings of the 39th International Conference on Machine
+Learning, pp. 18122–18152. PMLR, 2022.
+Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D.,
+Ermon, S., and Finn, C. Direct preference optimiza-
+tion: Your language model is secretly a reward model.
+Advances in neural information processing systems, 36:
+53728–53741, 2023.
+Sanjaya, W., Calvin, Muhammad, R., Meiliana, and Fajar,
+M. Systematic literature review on implementation of
+chatbots for commerce use. Procedia Computer Science,
+227:432–438, 2023. doi: 10.1016/j.procs.2023.10.543.
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and
+Klimov, O. Proximal policy optimization algorithms.
+arXiv preprint arXiv:1707.06347, 2017.
+Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux,
+M. A., Lacroix, T., Rozi`ere, B., Goyal, N., Hambro, E.,
+Azhar, F., et al. Llama 2: Open foundation and fine-tuned
+chat models. arXiv preprint arXiv:2307.09288, 2023.
+Wang, Z. Z., Mao, J., Fried, D., and Neubig, G. Agent work-
+flow memory. In Singh, A., Fazel, M., Hsu, D., Lacoste-
+Julien, S., Berkenkamp, F., Maharaj, T., Wagstaff, K.,
+and Zhu, J. (eds.), Proceedings of the 42nd Interna-
+tional Conference on Machine Learning (ICML 2025),
+volume 267 of Proceedings of Machine Learning Re-
+search, pp. 63897–63911, Vancouver, Canada, 13–19 Jul
+2025. PMLR. URL https://proceedings.mlr.
+press/v267/wang25bx.html.
+Wei, X., Dong, Y., Wang, X., Zhang, X., Zhao, Z., Shen, D.,
+Xia, L., and Yin, D. Beyond ReAct: A planner-centric
+framework for complex tool-augmented LLM reasoning.
+arXiv preprint arXiv:2511.10037, 2025.
+Wu, A., Mazar´e, L., Zeghidour, N., and D´efossez, A. Align-
+ing spoken dialogue models from user interactions. arXiv
+preprint arXiv:2506.21463, 2025.
+Xu, Z. and Ding, Z. Single-stream policy optimization.
+arXiv preprint arXiv:2509.13232, 2025.
+Yao, S., Zhao, J., Yu, D., Du, Y., Shafran, I., Narasimhan,
+K., and Cao, Y. ReAct: Synergizing reasoning and act-
+ing in language models. In The eleventh international
+conference on learning representations, 2022.
+10
+
+Decoupling Strategy and Execution in Task-Focused Dialogue via Goal-Oriented Preference Optimization
+Zhou, H., Chen, Y., Guo, S., Yan, X., Lee, K. H., Wang,
+Z., Lee, K. Y., Zhang, G., Shao, K., Yang, L., et al.
+Memento: Fine-tuning LLM agents without fine-tuning
+LLMs. arXiv preprint arXiv:2508.16153, 2025a.
+Zhou, Y., Jiang, S., Tian, Y., Weston, J., Levine, S.,
+Sukhbaatar, S., and Li, X. SWEET-RL: Training multi-
+turn LLM agents on collaborative reasoning tasks. arXiv
+preprint arXiv:2503.15478, 2025b.
+11

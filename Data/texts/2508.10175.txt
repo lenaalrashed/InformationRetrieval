@@ -1,0 +1,3088 @@
+Estimating Machine Translation Difficulty
+Lorenzo Proietti1,∗
+Stefano Perrella1,∗
+Vilém Zouhar2,∗
+Roberto Navigli1
+Tom Kocmi3
+1Sapienza NLP Group, Sapienza University of Rome
+2ETH Zurich
+3 Cohere
+{lproietti,perrella,navigli}@diag.uniroma1.it
+vzouhar@ethz.ch
+kocmi@cohere.com
+Abstract
+Machine translation quality has steadily im-
+proved over the years, achieving near-perfect
+translations in recent benchmarks. These high-
+quality outputs make it difficult to distinguish
+between state-of-the-art models and to identify
+areas for future improvement. In this context,
+automatically identifying texts where machine
+translation systems struggle holds promise for
+developing more discriminative evaluations and
+guiding future research.
+In this work, we address this gap by formal-
+izing the task of translation difficulty estima-
+tion, defining a text’s difficulty based on the
+expected quality of its translations. We intro-
+duce a new metric to evaluate difficulty es-
+timators and use it to assess both baselines
+and novel approaches.
+Finally, we demon-
+strate the practical utility of difficulty estima-
+tors by using them to construct more challeng-
+ing benchmarks for machine translation. Our
+results show that dedicated models outperform
+both heuristic-based methods and LLM-as-a-
+judge approaches, with Sentinel-src achiev-
+ing the best performance. Thus, we release
+two improved models for difficulty estimation,
+Sentinel-src-24 and Sentinel-src-25, which can
+be used to scan large collections of texts and
+select those most likely to challenge contempo-
+rary machine translation systems.
+1
+Introduction
+Not all data samples are equal: Machine learning
+models may struggle with some samples more than
+others. The ability to automatically assess sam-
+ple difficulty is indispensable at various stages of
+model development. For example, during train-
+ing, organizing samples from the easiest to the
+hardest, known as Curriculum Learning, improves
+both performance and training efficiency (Bengio
+et al., 2009; Wang et al., 2022; Soviany et al., 2022).
+*Equal contribution.
+Even during inference, computational costs can be
+reduced by early-exiting on easy examples (Teer-
+apittayanon et al., 2016; Schwartz et al., 2020).
+Evaluating models also benefits from estimates
+of sample difficulty, as too easy or too difficult
+benchmarks fail to effectively differentiate between
+models (Lalor et al., 2018; Rodriguez et al., 2021).
+This issue is particularly relevant in Machine Trans-
+lation (MT), with recent state-of-the-art models ob-
+taining near-perfect scores and performing close
+to the human level (Kocmi et al., 2024a; Proietti
+et al., 2025). With easy test sets, practitioners might
+struggle to differentiate between top-performing
+models and assess whether there is headroom for
+further model improvement. Additionally, while
+the MT Test Suites subtask of WMT (Kocmi et al.,
+2024a) targets specific complex translation phe-
+nomena, no systematic investigation of the broader
+concept of general translation difficulty has been
+carried out.
+To address this gap, we explore the notion of
+sample difficulty in machine translation. First, we
+propose a definition of translation difficulty and
+formally introduce translation difficulty estimation
+as a novel task, where the source text’s difficulty is
+automatically predicted. We then present difficulty
+estimation correlation (DEC), a measure designed
+to evaluate the performance of difficulty estima-
+tion methods. Finally, we test baselines and newly
+proposed approaches to difficulty estimation and
+validate their practical utility in the downstream
+application of creating a challenging benchmark,
+which involves automatically selecting subsets of
+challenging samples from a large corpus.
+We find that approaches such as word rarity, syn-
+tactic complexity, or even LLM-as-a-Judge under-
+perform dedicated solutions in capturing transla-
+tion difficulty. Specifically, we find Sentinel-src–
+a model trained to predict the expected transla-
+tion quality of a given text based solely on the
+source text itself (Perrella et al., 2024) – to out-
+arXiv:2508.10175v2 [cs.CL] 28 Aug 2025
+
+perform other methods at estimating translation
+difficulty. Therefore, we train two improved ver-
+sions, called Sentinel-src-24 and Sentinel-src-25,
+and release them publicly.1
+2
+Related Work
+Previous works can be divided into two categories
+depending on whether their focus is human or ma-
+chine translation difficulty.
+Human translation difficulty.
+The earliest
+works (Fang, 1959; Hale and Campbell, 2002) at-
+tempted to connect general text complexity to trans-
+lation difficulty for humans. A more modern in-
+vestigation by Mishra et al. (2013) framed human
+translation difficulty as the time needed to translate
+a sentence, and estimated it using data on transla-
+tors’ eye movements. They use text length, word
+polysemy degree, and syntactic complexity as pre-
+dictors of translation difficulty. Vanroy et al. (2019)
+examined the correlation between error count, word
+translation entropy, and syntactic equivalence with
+translation duration, gaze, and other proxies for hu-
+man translation difficulty. More recently, Lim et al.
+(2023, 2024) used word alignment distributions and
+decoder perplexity to predict human translation dif-
+ficulty.
+Machine translation difficulty.
+To implement
+a Curriculum Learning training schedule, Kocmi
+and Bojar (2017) estimated sample difficulty based
+on sentence length, word rarity, and the number
+of coordinating conjunctions in the text. Simi-
+larly, Platanios et al. (2019) used sentence length
+and rarity as proxies for difficulty. Beyond these
+linguistically-motivated criteria, Zhang et al. (2018)
+and Liu et al. (2020) predicted translation difficulty
+using the confidence and other intrinsics of the
+translation model in generating the text. Almeida
+(2017) treated difficulty estimation as a binary clas-
+sification task, although they also used features
+from the target text, making it closer to quality esti-
+mation. Zhan et al. (2021b) used an artificial crowd-
+based approach that leverages automatic metrics
+and discovered that long segments, low-frequency
+words, and proper nouns are the most challenging
+to machine translate. Finally, Zhan et al. (2021a)
+estimated text’s difficulty using the embedding sim-
+ilarity between its tokens and those of its transla-
+tions.
+1Models: hf.co/collections/Prosho/translation-difficulty-
+estimators-6816665c008e1d22426eb6c4.
+Code: github.com/zouharvi/translation-difficulty-estimation.
+Closer to our work, Don-Yehiya et al. (2022)
+defined the PreQuEL task as predicting the quality
+of a given text’s translation before the translation
+is generated. However, they adopted the evaluation
+of the WMT 2020 Quality Estimation Shared Task
+(Specia et al., 2020), which was designed for qual-
+ity estimation rather than for assessing difficulty
+estimators. Furthermore, their test set included
+only two language directions, with all translations
+produced by the same MT model. Additionally,
+they did not explore the broader space of difficulty
+estimators or investigate their use in constructing
+challenging benchmarks.
+In contrast, we define translation difficulty esti-
+mation as a distinct task with a dedicated evaluation
+metric. Moreover, we benchmark a wide range of
+difficulty estimation approaches using test sets that
+span 11 language directions, with 11 to 19 transla-
+tions per segment across language pairs, produced
+by both MT models and human translators. As
+a result, our work constitutes the first extensive
+evaluation of translation difficulty estimators, es-
+tablishing a new state of the art for the task.
+3
+The Difficulty Estimation Task
+The difficulty of translating a given text can depend
+on multiple factors. A text may be challenging,
+for example, due to its length, syntactic complex-
+ity, idiomatic language, or the presence of rare
+or specialized vocabulary. Some aspects that af-
+fect translation difficulty may even depend on the
+translation direction, meaning that the same source
+text might be more difficult to translate into one
+language than into another. Moreover, translation
+difficulty might not be uniform across translators,
+as it can vary with the translator’s cultural back-
+ground and linguistic familiarity – in the case of
+human translators – or based on factors such as
+the number of parameters, training data, and model
+architecture – in the case of machine translation
+models.
+Given these considerations, we avoid defining
+translation difficulty in absolute terms, as such a
+definition may not generalize well. Instead, we de-
+fine difficulty relative to a given target language and
+to the accuracy of a particular translator, whether
+human or automatic. More specifically, given a text
+x, a model2 m, and a target language l, we assign
+to x a difficulty score dm,l(x) equal to the quality
+2For brevity, we use “model” to refer both to human trans-
+lators and automatic models.
+
+score assigned to a translation of x into language
+l produced by m. Lower scores indicate a lower
+translation quality and, therefore, greater difficulty
+associated with the source text.
+As an example, suppose we have two texts, x1
+and x2, and their respective translations t1 and t2
+into language l, both produced by model m. A
+human rater evaluates these translations on a scale
+from 1 to 100, assigning a score of 60 to the first
+and 90 to the second. Then, dm,l(x1) = 60 and
+dm,l(x2) = 90. Since dm,l(x1) < dm,l(x2), then
+x1 is more difficult to translate into l than x2, for
+model m. Importantly, the lower the score d, the
+higher the difficulty and vice versa.
+Task Definition.
+Given a source text x, a model
+m, and a target language l, Difficulty Estimation is
+the task of automatically predicting dm,l(x). Differ-
+ent from Quality Estimation, difficulty estimation
+models do not have access to the translations whose
+quality is being estimated. Indeed, difficulty esti-
+mation can be seen as the task of estimating the
+expected quality of a given text’s translation.
+Evaluation.
+We evaluate difficulty estimation
+methods according to their ability to rank texts
+based on difficulty.
+Consider a collection of
+texts X = x1, x2, . . . , xN, a collection of tar-
+get languages L = l1, l2, . . . , lL, and a col-
+lection of models translating into language l:
+Ml = m1, m2, . . . , mMl.
+Let us also define
+the vector of ground-truth difficulty scores for
+model m and language l as Dm,l = dm,l(x1),
+dm,l(x2), . . . , dm,l(xN) and the corresponding pre-
+dictions of a difficulty estimation method as
+ˆDm,l = ˆdm,l(x1), ˆdm,l(x2), . . . , ˆdm,l(xn). We
+measure the translation Difficulty Estimation Cor-
+relation (DEC) by averaging the Kendall’s rank
+correlation coefficients τb across models and lan-
+guages:
+DEC =
+1
+|L|
+X
+l∈L
+1
+|Ml|
+X
+m∈Ml
+τb
+ ˆDm,l, Dm,l
+
+.
+(1)
+We refer the reader to Appendix A for further de-
+tails on how the Kendall correlation coefficient τb
+is computed.
+Contrasting DEC with standard MT meta-
+evaluation strategies.
+The evaluation approach
+used in 1, termed “Group-by-System” by Deutsch
+et al. (2023), makes DEC fundamentally differ-
+ent from other meta-evaluation strategies used in
+MT evaluation and Quality Estimation, which typ-
+ically rely on the Group-by-Item method instead
+(Deutsch et al., 2023). Group-by-Item calculates
+the correlation between assessments assigned to
+different translations of the same source text (i.e.,
+the same evaluation item), and then averages these
+correlations across all source texts. The primary
+benefit of this method is that it mitigates spuri-
+ous correlations between source text features (e.g.,
+length) and translation quality judgments (Perrella
+et al., 2024).
+However, we argue that these features are pre-
+cisely what define a text’s translation difficulty.
+Since our goal is to measure translation difficulty,
+we define DEC using Group-by-System.
+This
+method computes the correlation between human
+and metric assessments for translations of different
+source texts that were produced by the same MT
+system, and then averages the correlations across
+MT systems. By holding the MT system constant,
+this evaluation directly measures a metric’s ability
+to identify which source texts were more challeng-
+ing for that system to translate.
+This distinction is crucial. Indeed, using Group-
+by-System to meta-evaluate standard MT or qual-
+ity estimation metrics would favor those that pre-
+dict source difficulty rather than purely translation
+quality. Conversely, using Group-by-Item to eval-
+uate difficulty estimators would be inappropriate,
+as these estimators assign the same score to all
+translations of a given source.
+4
+Methods for Difficulty Estimation
+In this section, we describe several difficulty es-
+timation methods. We include both common and
+novel approaches. Specifically, we categorize diffi-
+culty estimators into four groups: heuristic-based,
+learned, LLM-as-a-Judge, and artificial crowd-
+based. We refer the reader to Appendix C for im-
+plementation details regarding all the considered
+models.
+4.1
+Heuristic-based estimators
+We refer to estimators as heuristic-based if they
+rely on simple text features. This category includes
+estimators previously shown to correlate with other
+measures of difficulty (Mishra et al., 2013; Kocmi
+and Bojar, 2017; Araghi and Palangkaraya, 2024).
+• Text length is the number of tokens in a text.
+• Word rarity is the negative average of the fre-
+quencies (estimated from a reference corpus)
+
+of the words in a text.
+• Syntactic complexity is approximated as the
+height of the dependency tree associated with
+a text.
+4.2
+Learned estimators
+Learned machine translation metrics are often
+trained to predict the quality of a translation given
+its source text and, optionally, a reference trans-
+lation (Rei et al., 2020; Guerreiro et al., 2024b;
+Juraska et al., 2023, 2024). Similarly, neural mod-
+els can be trained to predict the difficulty of a
+text. Previous research has explored training simi-
+lar models for related purposes:
+• PreCOMET is a suite of source-based regres-
+sors based on XLM-RoBERTa (Conneau et al.,
+2020) that predict the usefulness of a sample
+for evaluation (Zouhar et al., 2025b). Specif-
+ically, PreCOMETdiversity prioritizes samples
+likely to elicit diverse machine translation out-
+puts, while PreCOMETdifficulty estimates diffi-
+culty as defined by item response theory (San-
+tor and Ramsay, 1998).
+• Sentinel-src metric is a regression model
+based on XLM-RoBERTa.
+Perrella et al.
+(2024) trained Sentinel-src to estimate transla-
+tion quality from the source alone – i.e., with-
+out accessing the candidate translation – with
+the goal of learning spurious correlations be-
+tween features of the source texts and transla-
+tion quality scores.
+4.3
+LLM-as-a-Judge
+LLM-as-a-Judge approaches have seen wide adop-
+tion across a range of applications (Zheng et al.,
+2023; Bavaresco et al., 2024). In this work, we in-
+vestigate the effectiveness of the LLM-as-a-Judge
+paradigm for the task of difficulty estimation, using
+GPT-4o (OpenAI, 2024) and CommandA (Cohere
+Team, 2025). We prompt these models to deter-
+mine the proficiency level required to translate a
+given text, optionally providing information about
+the target language, and return a scalar score be-
+tween 0 and 120 indicating the difficulty level of
+the given text. See the prompts in Example 2.
+4.4
+Crowd-based Estimators
+The methods discussed so far estimate translation
+difficulty based solely on the source text, and op-
+tionally, the target language. However, having de-
+fined translation difficulty as the expected quality
+of a model’s translations (Section 3), we now intro-
+duce difficulty estimators that more closely mimic
+this definition.
+Artificial Crowd.
+Artificial crowd-based meth-
+ods first translate a source text and then use
+reference-less MT metrics to estimate the qual-
+ity of the resulting translations.3 Specifically, we
+translate the source texts from the test set using
+a diverse set of models to ensure variety in ar-
+chitecture and size: three instruction-tuned LLMs
+(Gemma-3-27B-IT, Qwen2.5-72B-IT, CommandA)
+and one standard encoder-decoder machine transla-
+tion model (NLLB-moe-54B). For the evaluation
+step, we employ two state-of-the-art, reference-less
+MT metrics: XCOMET-QE-XXL (Guerreiro et al.,
+2024a) and MetricX-24-Hybrid-QE-XXL (Juraska
+et al., 2024), hereafter referred to as XCOMET and
+MetricX, respectively. The final difficulty score
+for each source text is the average quality score
+assigned to its translations by one of these metrics.
+This approach is inspired by the artificial crowd
+methods for efficient subset selection proposed by
+Zouhar et al. (2025b).
+True Crowd.
+To establish a performance upper
+bound for Artificial Crowd estimators, we also
+define True Crowd estimators. Unlike Artificial
+Crowd, True Crowd estimators use XCOMET and
+Metric to score the translations produced by the ac-
+tual systems whose difficulty we aim to measure –
+namely, the translations that constitute the WMT24
+test set used in our experiments.
+Since they rely on the “ground-truth” transla-
+tions, True Crowd estimators are effectively equiva-
+lent to quality estimators. Thus, they are not proper
+difficulty estimators; we employ them solely to
+report an upper bound on the performance of Arti-
+ficial Crowd estimators.
+5
+Experiments
+We benchmark the estimators using the difficulty
+estimation correlation measure (DEC, Equation 1).
+5.1
+Experimental Setup
+We measure DEC on the test sets released at the
+WMT 2024 General MT and Metrics shared tasks
+(Kocmi et al., 2024a; Freitag et al., 2024). These
+test sets include a selection of source texts trans-
+lated into multiple languages by automatic models
+3Reference-less MT metrics estimate the quality of a trans-
+lation by comparing it only to its source text, without requiring
+reference translations.
+
+and human translators. Each translation is paired
+with quality annotations produced by human an-
+notators following either the Error Span Annota-
+tion (ESA, Kocmi et al., 2024b) or the Multidi-
+mensional Quality Metrics (MQM, Lommel et al.,
+2014; Freitag et al., 2021) annotation protocols.
+Here we report results with the ESA annotation
+protocol. See Appendix Table 6 for results with the
+MQM protocol, and Appendix Tables 4 and 5 for
+data statistics.
+We test all methods listed in Section 4. Addi-
+tionally, we improve the top-performing learned
+estimator, Sentinel-src, by expanding the train-
+ing data used by Perrella et al. (2024) and train-
+ing two new models, dubbed Sentinel-src-24 and
+Sentinel-src-25. The former is trained with data
+from previous WMT editions up to WMT 2023,
+while the latter also includes the WMT 24 test set.4
+See Appendix B for further details regarding the
+training pipeline and parameters of Sentinel-src-24
+and Sentinel-src-25.
+5.2
+Results
+We present the results in Table 1, with methods
+organized by category as described in Section 4.
+We also mark each method with the information
+it uses (i.e., true translations or target language),
+as detailed in the caption of Table 1, and include
+three distinct oracles to provide the reader with
+upper-bound performance values. The definition of
+Oracles can be found in Appendix E.
+Heuristic-based and Learned methods.
+These
+estimators base their predictions only on the input
+text. Consequently, the difficulty scores they assign
+to each text are the same across all target languages
+and models.5 Within this group, all learned esti-
+mators outperform the heuristic-based ones. Fur-
+thermore, Sentinel-src-24 achieves the highest dif-
+ficulty estimation correlation overall, also higher
+than Sentinel-src from Perrella et al. (2024), high-
+lighting the effectiveness of our re-training.
+LLM-as-a-Judge.
+LLM judges are optionally
+provided with the target language. For both models,
+the target language information improves perfor-
+mance. This is especially true for CommandA,
+where the target language information leads to a
+0.032 points increase in correlation. However, the
+overall LLM judges’ performance is poor, with
+4For this reason, Sentinel-src-25 is not included in the
+results in Table 1.
+5I.e., ∀m1, m2∈M, l1, l2∈L : ˆdm1,l1(x) = ˆdm2,l2(x).
+Method
+Trans. Lang.
+DEC
+Oracle
+Oracle
+1.000
+Oracle
+0.301
+Oracle
+0.224
+Heuristic
+Text Length
+0.121
+Syntactic Complexity
+0.080
+Word Rarity
+−0.040
+Learned
+Sentinel-src-24
+0.182
+Sentinel-src
+0.175
+PreCOMET Difficulty
+0.153
+PreCOMET Diversity
+0.142
+LLM
+Judge
+Command A
+0.072
+Command A
+0.104
+GPT-4o
+0.077
+GPT-4o
+0.080
+Crowd
+Based
+True (XCOMET)
+0.221
+True (MetricX)
+0.207
+Artificial (XCOMET)
+0.177
+Artificial (MetricX)
+0.166
+Random
+0.003
+Table 1:
+Difficulty Estimation Correlation (DEC)
+achieved by each method. We categorize the methods
+based on the type of information they have access to.
+Text-only estimators, such as the heuristic and learned
+ones, rely solely on the source text whose difficulty is
+being estimated. Instead, some methods also incorpo-
+rate information of the target language (Lang.) or of the
+true translation included in the test set (Trans.).
+scores even lower than the much simpler Text
+Length heuristics.
+Crowd-based estimators.
+As expected, the True
+Crowd methods, which utilize ground-truth trans-
+lations and thus serve as an upper bound, yield
+the highest correlation. Since their performance
+depends solely on the employed reference-less met-
+rics, this result also demonstrates that XCOMET
+outperforms MetricX on this task by a noticeable
+margin.
+Instead, Artificial Crowd methods’ performance
+is comparable to that of Sentinel-src-24. However,
+Artificial Crowd approaches are considerably more
+resource-intensive than learned methods, as they
+require both the translation of source texts and a
+subsequent quality estimation step.
+5.3
+Discussion
+Through our evaluation, we find that:
+• Heuristic-based estimators, commonly used
+in previous works, are outperformed by most
+other methods.
+
+IOL
+GPT-4
+Claude3.5
+Tower70B
+Human
+0.137
+0.137
+0.127
+0.109
+Tower70B
+0.176
+0.158
+0.151
+Claude3.5
+0.178
+0.221
+GPT-4
+0.202
+Table 2: Average (across language directions) Kendall
+τb correlation matrix for human and four MT models.
+• LLM-as-a-Judge approaches are also sur-
+passed by most methods, including the much
+simpler Text Length heuristic.
+• The performance of learned methods – i.e.,
+models explicitly trained to predict text diffi-
+culty – is matched only by Artificial Crowd
+estimators, which are, however, considerably
+more expensive to operate.
+• Sentinel-src-24 sets a state-of-the-art in dif-
+ficulty estimation, outperforming all other
+evaluated estimators.6
+Based on these results, Section 6 examines the
+ability of the top estimators from each category –
+excluding True Crowd estimators, for the reasons
+discussed in Section 4.4 – on the downstream task
+of constructing difficult benchmarks.
+Furthermore, even if Artificial Crowd estimators
+are included, using them for benchmark creation
+implicitly assumes that the generated test data will
+be used to evaluate models other than those in-
+volved in the difficulty estimation. In fact, because
+Artificial Crowd relies on an intermediate transla-
+tion step, it would bias the resulting test set against
+the models used in its construction.
+Full results with significance testing – including
+those restricted to the MQM-annotated portion of
+WMT24 – are provided in Appendix D.
+5.4
+Comparing Human and Machine
+Translation Difficulty
+In this section, we examine whether the texts that
+models find difficult to translate are also challeng-
+ing for humans. To do this, we use the difficulty
+scores dm,l assigned to each source text in the
+WMT 24 test sets, varying m across human trans-
+lators and MT models. We measure the Kendall’s
+τb between the scores of all pairs of translators, av-
+eraging them across all language directions. For
+6We intentionally exclude True Crowd estimators, which,
+as discussed in Section 4.4, are not genuine difficulty esti-
+mators and instead serve only as upper bounds for Artificial
+Crowd.
+All
+Top model
+Top translation
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+ESA Score
+Freq.
+Ukrainian
+0
+50
+100
+ESA Score
+Chinese
+Figure 1: Distribution of human scores assigned to the
+translations of the texts included in the WMT 2024 test
+set (Kocmi et al., 2024a). We report the scores of all
+models (ALL), the scores of the top-performing model
+for each language (Top model), and the scores of the
+best translation for each input text (Top translation). The
+chosen bin width is 15 ESA points.
+consistency, we restrict the analysis to the models
+and human translators for which we have annotated
+translations for all language directions, namely,
+one human translator and the following four mod-
+els: Unbabel-Tower70B (Alves et al., 2024), IOL-
+Research (Zhang, 2024), Claude-3.5, and GPT-4
+(OpenAI, 2024).
+The results in Table 2 show that the correla-
+tions with the human translator are consistently
+lower (ranging 0.109 to 0.137) than those be-
+tween machine translation models (ranging 0.151
+to 0.221). This suggests that human translators
+may perceive translation difficulty differently from
+automatic models.
+Notably, the highest agree-
+ment is observed between GPT-4 and Claude-3.5,
+which might be due to both models being general-
+purpose LLMs, unlike Unbabel-Tower70B and
+IOL-Research, which were explicitly trained for
+machine translation.
+6
+Creating Difficult Benchmarks
+In this section, we use the top-performing difficulty
+estimators to create difficult machine translation
+benchmarks. First, we show that the test set em-
+ployed at the WMT 2024 General MT shared task
+(Kocmi et al., 2023) is too easy for current MT
+models. Then, we define the task of selecting a dif-
+
+Random
+LLM-as-a-Judge
+Length
+Artificial Crowd
+Sentinel
+Oracle-src
+Oracle-tgt
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+65
+70
+75
+80
+85
+Average Score
+Oracle-src
+Oracle-tgt
+Sentinel
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+10%
+12%
+15%
+17%
+20%
+22%
+%Perfect
+Oracle-src
+Oracle-tgt
+Sentinel
+Random
+Figure 2: Average score and proportion of “perfect” source texts when creating a difficult test set. Lower values
+are better. Averaged across all language pairs from WMT24 on which the subset selection is simulated. Random
+selection shows 99% confidence t-test interval from 10 runs.
+ficult subset of samples from a given dataset, and
+evaluate our estimators.
+WMT24 is easy.
+In Figure 1, we report the dis-
+tribution of scores assigned by human annotators
+to the translations of the WMT 2024 General MT
+shared task (Kocmi et al., 2024a). Notably, the
+best model for each language attains almost always
+90 to 100 ESA points, and so does at least one
+system for each input text. This is particularly
+concerning for the English-to-Spanish translation
+direction, where top systems barely made any er-
+rors. These findings highlight the need to create
+more difficult benchmarks. To do this, we use dif-
+ficulty estimators to sample difficult texts out of a
+larger collection.
+6.1
+Setup
+Given a large set of source texts X, we aim to
+extract a subset X ′ ⊆X of maximum difficulty
+of size |X ′| = B. In practice, we select B texts
+with the highest difficulty as determined by the top-
+performing difficulty estimators. As discussed in
+Section 5.2, we exclude True Crowd estimators.
+We again rely on the WMT 24 test set, which
+we use as X (see Section 5 for further details).
+Specifically, we focus on its English source texts,
+which were translated into Czech, Spanish, Hindi,
+Icelandic, Japanese, Russian, Ukrainian, and Chi-
+nese, as well as its Czech sources translated into
+Ukrainian. Accordingly, since we select B source
+texts from X, any subset X ′ ⊆X necessarily con-
+tains only English and Czech source texts, while
+target languages are considered solely for evalua-
+tion purposes.
+Task definition.
+We assign a single difficulty
+score ˆd(x) to each sample x ∈X. For source
+text-only difficulty estimators, such as heuristics
+and learned methods, this is straightforward, as
+they rely solely on the given source text. Instead,
+for Artificial Crowd methods, we assign to each
+text x the average quality score of its translations,
+estimated using XCOMET, averaging across both
+the employed MT models and the target languages.
+Finally, we construct X ′ by selecting the B most
+difficult source texts.
+Evaluation.
+One goal of constructing a difficult
+benchmark is to identify samples where contempo-
+rary models still struggle, in order to expose their
+shortcomings and guide improvements in future
+iterations. Therefore, we evaluate the usefulness of
+difficulty estimators based on the drop in the aver-
+age human score obtained by the models’ transla-
+tions on the test set. As additional information, we
+also report the proportion of “perfect” outputs (i.e.,
+those that received a full score of 100/100 ESA
+points from human annotators) that remain in the
+subsampled test set. The exact formulas for these
+measures are provided in Appendix C.
+6.2
+Results
+We extract several X ′ ∈X by varying the size of
+the subsample, and report the curves of the Average
+Score and %Perfect measures in Figure 2. First,
+we wish to highlight that the oracles serve as a per-
+formance upper-bound only in terms of Average
+Score, and not in terms of %Perfect, because they
+
+Source
+Diversity
+Unique
+length errors embd
+chrF outputs
+Random
+0.00
+0.00
+0.00
+0.00
+0.00
+LLM-as-a-Judge −0.61
+0.26
+0.19
+0.23
+−0.60
+Length
+−1.00
+0.25
+0.31
+0.24
+−0.52
+Artificial Crowd −0.63
+0.04 −0.11 −0.17
+−0.46
+Sentinel
+−0.66
+0.12 −0.01 −0.09
+−0.36
+Oracle-src
+−0.22 −0.16 −0.47 −0.49
+−0.28
+Oracle-tgt
+−0.22 −0.16 −0.47 −0.49
+−0.28
+Table 3: Pearson correlations between difficulty esti-
+mators and variables of interest (source length, number
+of errors per source word, output diversity, and propor-
+tion of unique outputs). All estimators assign lower
+values to more difficult source texts. Therefore, nega-
+tive correlation indicates a positive correlation between
+difficulty and the variable of interest. See Appendix
+Figure 7 for detailed visualization and Appendix C for
+implementation details.
+are designed to select the sources with the lowest
+average score, rather than the lowest %Perfect. In
+this respect, oracle-src selects the sources with the
+lowest average difficulty score across models and
+target languages; instead, oracle-tgt selects a differ-
+ent source text for each target language, averaging
+difficulty scores only across MT models. As we
+can see from Figure 2, text length heuristics and
+LLM-as-a-Judge-based methods show very close
+performance to random subset selection, especially
+in terms of Average Score. Instead, Sentinel-src-24
+and Artificial Crowd perform closer to the oracles,
+even surpassing oracle-src in terms of %Perfect.
+In Appendix F, we report detailed quantitative re-
+sults for the scenario where we subsample 25%
+of the test set, including per-domain performance
+breakdowns.
+Additionally, returning to the original lament of
+existing test sets being too easy (Figure 1), in Ap-
+pendix Figure 6 we show how the score distribution
+changes when selecting difficult texts.
+6.3
+Potential Pitfalls of Selecting by Difficulty
+Selecting samples by anything other than random
+sampling may harbor unexpected dangers. For ex-
+ample, the texts selected by a difficulty estimator
+might be grammatically incorrect or poorly formed.
+Here, we investigate potential pitfalls one might
+encounter when using difficulty as a subsampling
+criterion. Specifically, we focus on:
+• Source length: Longer texts are more difficult
+to translate compared to shorter ones. We are
+0.00
+0.10
+0.20
+0.30
+Average Kendall τb
+ONLINE-B
+Aya23
+CommandR-plus
+IOL_Research
+Llama3-70B
+IKUN-C
+GPT-4
+IKUN
+Unbabel-Tower70B
+Claude-3.5
+Gemini-1.5-Pro
+MT model
+Sentinel
+Artificial Crowd
+Figure 3: Average Kendall τb between difficulty esti-
+mators and the human judgments assigned to the MT
+models in the WMT24 test set. For each MT model and
+difficulty estimator, circles mark the average correlation
+across en→X language pairs and bars report ±1 stan-
+dard deviation.
+interested in quantifying the extent to which
+difficulty estimators rely on text length.
+• Source errors: Translating incomprehensible
+source texts is naturally difficult. Neverthe-
+less, it might be undesirable to create test sets
+containing many garbled sources.
+• Output diversity: When creating a bench-
+mark, source texts that lead to more diverse
+outputs are more desirable, as they help distin-
+guish between models. See Appendix C for
+implementation details.
+We present the correlation between difficulty es-
+timators’ predictions and these variables of interest
+in Table 3 and Appendix Figure 7. We wish to
+remind the reader that we defined difficulty using
+translation quality, meaning that lower estimators’
+scores indicate higher difficulty. Therefore, a neg-
+ative correlation with difficulty scores should be
+interpreted as a strong correlation with the concept
+of difficulty, as estimated by our models.
+As expected, all estimators show a strong nega-
+tive correlation with source length, indicating they
+are all biased toward selecting longer outputs. On
+the contrary, this does not seem to be the case for
+Source errors, suggesting that our difficulty estima-
+tors do not prioritize texts containing many errors.
+Finally, our results suggest that Sentinel-src-24 and
+Artificial Crowd select source texts that lead to
+more diverse outputs.
+
+Bias toward MT models.
+A practical concern
+when creating a test set using difficulty as the se-
+lection criterion is the potential bias toward certain
+MT models. An estimator’s difficulty scores may
+select the texts that some MT models find more
+challenging than others, thereby biasing the result-
+ing benchmark. To investigate this, we measure
+the alignment between our two best-performing
+difficulty estimators – i.e., Sentinel-src-24 and Ar-
+tificial Crowd (XCOMET) – and the concept of
+translation difficulty, as defined it in Section 3, for
+each MT model in isolation. Specifically, for each
+model and each en→X translation direction, we
+measure the Kendall’s τb correlation between the
+difficulty scores from the estimators and the human
+quality judgments assigned to that model’s transla-
+tions. Then, we average these correlations across
+language pairs, reporting the mean and standard de-
+viation to capture the variability across translation
+directions. To ensure the averages are robust, this
+analysis only includes MT models that translated
+the WMT24 source texts into at least five target
+languages. The results are presented in Figure 3.
+Overall, the mean Kendall τb correlations fall
+within a narrow range and have comparable stan-
+dard deviations. This suggests that the notion of
+difficulty captured by both estimators aligns rela-
+tively uniformly with MT models’ perceived diffi-
+culty. However, we note two exceptions: ONLINE-
+B exhibits a higher correlation than average with
+Sentinel-src-24, whereas Gemini-1.5-Pro shows
+a lower average correlation with both estimators.
+While this is a preliminary investigation, this find-
+ing suggests that a benchmark created using these
+estimators could be disproportionately difficult for
+ONLINE-B and easier for Gemini-1.5-Pro. We
+leave for future work a deeper investigation into
+whether this discrepancy stems from a bias in the
+difficulty estimations or simply from variance, es-
+pecially given that the correlations were averaged
+over a limited number of translation directions.
+6.4
+Qualitative Analysis
+We manually inspected 200 source texts, half of
+which were deemed easy and half difficult by
+Sentinel-src-25, and we separated them into 10
+length-based buckets. In general, difficulty levels
+assigned by Sentinel-src-25 align well with human
+perception of difficulty. Indeed, we find that diffi-
+cult segments often contain complex constructions
+(Example 1.1), consist of incomplete sentences,
+such as headlines (Example 1.2), or include in-
+1 (difficult): City get a nice easy draw at home.
+2 (difficult): Alex Bregman Predicted To Betray Astros,
+Sign With Shocking Blue Jays
+3 (difficult): Some folks really do deserve a badge of hon-
+our for their pedantry (C8). Veronica Coyne of Springfield
+claims that "when bemoaning the loss of the express lane
+at Woolies "12 items or less," a friend told me she’d never
+used it on principle as it should have been "12 items or
+fewer.""
+4 (easy): Washington
+5 (easy): Developing the next generation of hybrid vehi-
+cles in Europe
+6 (easy): We cannot allow this to happen. This legislation
+is enormously unpopular. It is exactly what the American
+people do not want. It must not be passed by Congress.
+Example 1: The most difficult and easiest English
+source texts from the WMT24 dataset, as selected by
+Sentinel-src.
+direct speech (Example 1.3). On the other hand,
+the segments classified as easy by Sentinel-src-25
+are typically single words, have simple sentence
+structures, or are concatenations of short, simple
+sentences (Example 1.4 to Example 1.6).
+7
+Conclusion
+In this work, we formally define the task of trans-
+lation difficulty estimation and introduce the Dif-
+ficulty Estimation Correlation (DEC), a dedicated
+measure to evaluate the performance of difficulty
+estimators. We conduct a comprehensive evalua-
+tion of both existing and newly proposed estima-
+tors, finding that models explicitly trained for the
+task significantly outperform traditional, heuristic-
+based methods and LLM-as-a-judge approaches.
+Our analysis identifies Sentinel-src-24 as the cur-
+rent state-of-the-art in translation difficulty esti-
+mation. We further validate the performance of
+difficulty estimators in the downstream task of cre-
+ating difficult benchmarks, demonstrating that they
+successfully identify samples where modern MT
+models underperform. Also in this downstream
+task, Sentinel-src-24 remains the top-performing
+method. Building on these findings, we develop
+Sentinel-src-25 by incorporating additional data
+into the training pipeline of Sentinel-src-24, and
+release both models publicly. Finally, we conduct
+a qualitative analysis of Sentinel-src-25’s predic-
+tions, offering intuitive insights into the types of
+texts it deems difficult.
+
+Limitations
+The concept of translation difficulty.
+This work
+is based on the assumption that we can proxy the
+difficulty of a given text using the quality of the
+translations it produces. While we acknowledge
+that translation difficulty should ideally be an in-
+trinsic property of the source – independent of any
+specific translation model – this working assump-
+tion serves our purposes, particularly for the down-
+stream application of creating challenging machine
+translation benchmarks. Indeed, our research ob-
+jective is to identify texts that are difficult for con-
+temporary MT models to translate, rather than to
+explore the abstract, model-independent notion of
+translation difficulty.
+Impact of the target language on translation
+difficulty.
+As discussed in Section 3, the diffi-
+culty of translating a given text may depend on
+the target language, as corroborated theoretically
+by Bugliarello et al. (2020). We recognize that
+this aspect is only briefly mentioned, and we do
+not provide an investigation into this phenomenon.
+Nonetheless, our experiments support this hypoth-
+esis: the performance of the LLM-as-a-Judge im-
+proves when the model is given information about
+the target language. We therefore encourage fu-
+ture research to explore the influence of the target
+language on translation difficulty more thoroughly
+and to investigate how this information might be in-
+corporated into other difficulty estimation methods
+effectively.
+Using the WMT 2024 test set to analyze diffi-
+culty estimators.
+In Section 6.3, we investigated
+potential concerns of subsampling large data sets
+using our difficulty estimators. However, to do this,
+we used the WMT 2024 test set, which has a limi-
+tation. The sources contained in this test set were
+vetted by humans, making the distribution of the
+phenomena we investigate artificial. To mitigate
+this issue, we conduct the same analysis using a
+larger batch of data and report results in Appendix
+Figure 5.
+Ethics Statement
+We foresee no ethical issues with our work.
+References
+Ana Sofia Vieira de Jesus Almeida. 2017. Difficulty
+estimation of machine translation. MSc Thesis.
+Duarte Miguel Alves, José Pombal, Nuno M Guerreiro,
+Pedro Henrique Martins, João Alves, Amin Farajian,
+Ben Peters, Ricardo Rei, Patrick Fernandes, Sweta
+Agrawal, Pierre Colombo, José G. C. de Souza, and
+Andre Martins. 2024. Tower: An open multilingual
+large language model for translation-related tasks. In
+First Conference on Language Modeling.
+Sahar Araghi and Alfons Palangkaraya. 2024. The link
+between translation difficulty and the quality of ma-
+chine translation: A literature review and empirical
+investigation. Language Resources and Evaluation,
+58(4):1093–1114.
+Marta Bañón, Pinzhen Chen, Barry Haddow, Kenneth
+Heafield, Hieu Hoang, Miquel Esplà-Gomis, Mikel L.
+Forcada, Amir Kamran, Faheem Kirefu, Philipp
+Koehn, Sergio Ortiz Rojas, Leopoldo Pla Sempere,
+Gema Ramírez-Sánchez, Elsa Sarrías, Marek Strelec,
+Brian Thompson, William Waites, Dion Wiggins, and
+Jaume Zaragoza. 2020. ParaCrawl: Web-scale ac-
+quisition of parallel corpora. In Proceedings of the
+58th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 4555–4567. Association
+for Computational Linguistics.
+Anna Bavaresco, Raffaella Bernardi, Leonardo Berto-
+lazzi, Desmond Elliott, Raquel Fernández, Albert
+Gatt, Esam Ghaleb, Mario Giulianelli, Michael
+Hanna, Alexander Koller, André F. T. Martins,
+Philipp Mondorf, Vera Neplenbroek, Sandro Pezzelle,
+Barbara Plank, David Schlangen, Alessandro Sug-
+lia, Aditya K Surikuchi, Ece Takmaz, and Alberto
+Testoni. 2024. LLMs instead of human judges? a
+large scale empirical study across 20 NLP evaluation
+tasks. Preprint, arXiv:2406.18403.
+Yoshua Bengio, Jérôme Louradour, Ronan Collobert,
+and Jason Weston. 2009. Curriculum learning. In
+Proceedings of the 26th Annual International Confer-
+ence on Machine Learning, ICML ’09, page 41–48,
+New York, NY, USA. Association for Computing
+Machinery.
+Emanuele Bugliarello, Sabrina J. Mielke, Antonios
+Anastasopoulos, Ryan Cotterell, and Naoaki Okazaki.
+2020. It’s easier to translate out of English than into
+it: Measuring neural translation difficulty by cross-
+mutual information. In Proceedings of the 58th An-
+nual Meeting of the Association for Computational
+Linguistics, pages 1640–1649. Association for Com-
+putational Linguistics.
+Cohere Team. 2025. Command a: An enterprise-ready
+large language model. Preprint, arXiv:2504.00698.
+Alexis Conneau, Kartikay Khandelwal, Naman Goyal,
+Vishrav Chaudhary, Guillaume Wenzek, Francisco
+Guzmán, Edouard Grave, Myle Ott, Luke Zettle-
+moyer, and Veselin Stoyanov. 2020. Unsupervised
+cross-lingual representation learning at scale. In Pro-
+ceedings of the 58th Annual Meeting of the Associa-
+tion for Computational Linguistics, pages 8440–8451.
+Association for Computational Linguistics.
+
+Daniel Deutsch, Rotem Dror, and Dan Roth. 2021. A
+statistical analysis of summarization evaluation met-
+rics using resampling methods. Transactions of the
+Association for Computational Linguistics, 9:1132–
+1146.
+Daniel Deutsch, George Foster, and Markus Freitag.
+2023. Ties matter: Meta-evaluating modern metrics
+with pairwise accuracy and tie calibration. In Pro-
+ceedings of the 2023 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 12914–
+12929. Association for Computational Linguistics.
+Shachar Don-Yehiya, Leshem Choshen, and Omri
+Abend. 2022. PreQuEL: Quality estimation of ma-
+chine translation outputs in advance. In Proceedings
+of the 2022 Conference on Empirical Methods in
+Natural Language Processing, pages 11170–11183.
+Association for Computational Linguistics.
+Achilles Fang. 1959. Some reflections on the difficulty
+of translation. In On translation, pages 111–134.
+Harvard University Press.
+Marina
+Fomicheva,
+Shuo
+Sun,
+Erick
+Fonseca,
+Chrysoula Zerva, Frédéric Blain, Vishrav Chaudhary,
+Francisco Guzmán, Nina Lopatina, Lucia Specia, and
+André F. T. Martins. 2022. MLQE-PE: A multilin-
+gual quality estimation and post-editing dataset. In
+Proceedings of the Thirteenth Language Resources
+and Evaluation Conference, pages 4963–4974. Euro-
+pean Language Resources Association.
+Markus Freitag, George Foster, David Grangier, Viresh
+Ratnakar, Qijun Tan, and Wolfgang Macherey. 2021.
+Experts, errors, and context: A large-scale study of
+human evaluation for machine translation. Transac-
+tions of the Association for Computational Linguis-
+tics, 9:1460–1474.
+Markus Freitag, Nitika Mathur, Daniel Deutsch, Chi-
+Kiu Lo, Eleftherios Avramidis, Ricardo Rei, Brian
+Thompson, Frederic Blain, Tom Kocmi, Jiayi Wang,
+David Ifeoluwa Adelani, Marianna Buchicchio,
+Chrysoula Zerva, and Alon Lavie. 2024. Are LLMs
+breaking MT metrics? results of the WMT24 metrics
+shared task. In Proceedings of the Ninth Conference
+on Machine Translation, pages 47–81. Association
+for Computational Linguistics.
+Markus Freitag, Nitika Mathur, Chi-kiu Lo, Elefthe-
+rios Avramidis, Ricardo Rei, Brian Thompson, Tom
+Kocmi, Frederic Blain, Daniel Deutsch, Craig Stew-
+art, Chrysoula Zerva, Sheila Castilho, Alon Lavie,
+and George Foster. 2023. Results of WMT23 met-
+rics shared task: Metrics might be guilty but refer-
+ences are not innocent. In Proceedings of the Eighth
+Conference on Machine Translation, pages 578–628.
+Association for Computational Linguistics.
+Gemma, Aishwarya Kamath, Johan Ferret, Shreya
+Pathak, Nino Vieillard, Ramona Merhej, Sarah Perrin,
+Tatiana Matejovicova, Alexandre Ramé, Morgane
+Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey
+Cideron, Jean bastien Grill, Sabela Ramos, Edouard
+Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev,
+and 197 others. 2025. Gemma 3 technical report.
+Preprint, arXiv:2503.19786.
+Yvette Graham, Timothy Baldwin, Alistair Moffat, and
+Justin Zobel. 2013. Continuous measurement scales
+in human evaluation of machine translation. In Pro-
+ceedings of the 7th Linguistic Annotation Workshop
+and Interoperability with Discourse, pages 33–41.
+Association for Computational Linguistics.
+Nuno M. Guerreiro, Ricardo Rei, Daan van Stigt, Luisa
+Coheur, Pierre Colombo, and André F. T. Mar-
+tins. 2024a.
+xcomet: Transparent machine trans-
+lation evaluation through fine-grained error detection.
+Transactions of the Association for Computational
+Linguistics, 12:979–995.
+Nuno M Guerreiro, Ricardo Rei, Daan van Stigt,
+Luisa Coheur, Pierre Colombo, and André FT Mar-
+tins. 2024b. xcomet: Transparent machine transla-
+tion evaluation through fine-grained error detection.
+Transactions of the Association for Computational
+Linguistics, 12:979–995.
+Sandra Hale and Stuart Campbell. 2002. The interac-
+tion between text difficulty and translation accuracy.
+Babel, 48(1):14–33.
+Juraj Juraska, Daniel Deutsch, Mara Finkelstein, and
+Markus Freitag. 2024. MetricX-24: The Google sub-
+mission to the WMT 2024 metrics shared task. In
+Proceedings of the Ninth Conference on Machine
+Translation, pages 492–504. Association for Compu-
+tational Linguistics.
+Juraj Juraska, Mara Finkelstein, Daniel Deutsch, Aditya
+Siddhant, Mehdi Mirzazadeh, and Markus Freitag.
+2023. MetricX-23: The Google submission to the
+WMT 2023 metrics shared task.
+In Proceedings
+of the Eighth Conference on Machine Translation,
+pages 756–767. Association for Computational Lin-
+guistics.
+Tom Kocmi, Eleftherios Avramidis, Rachel Bawden,
+Ondˇrej Bojar, Anton Dvorkovich, Christian Feder-
+mann, Mark Fishel, Markus Freitag, Thamme Gowda,
+Roman Grundkiewicz, Barry Haddow, Marzena
+Karpinska, Philipp Koehn, Benjamin Marie, Christof
+Monz, Kenton Murray, Masaaki Nagata, Martin
+Popel, Maja Popovi´c, and 3 others. 2024a. Findings
+of the WMT24 general machine translation shared
+task: The LLM era is here but MT is not solved yet.
+In Proceedings of the Ninth Conference on Machine
+Translation, pages 1–46. Association for Computa-
+tional Linguistics.
+Tom Kocmi, Eleftherios Avramidis, Rachel Bawden,
+Ondˇrej Bojar, Anton Dvorkovich, Christian Fed-
+ermann, Mark Fishel, Markus Freitag, Thamme
+Gowda, Roman Grundkiewicz, Barry Haddow,
+Philipp Koehn, Benjamin Marie, Christof Monz,
+Makoto Morishita, Kenton Murray, Masaaki Nagata,
+Toshiaki Nakazawa, Martin Popel, and 3 others. 2023.
+Findings of the 2023 conference on machine trans-
+lation (WMT23): LLMs are here but not quite there
+
+yet. In Proceedings of the Eighth Conference on
+Machine Translation, pages 1–42. Association for
+Computational Linguistics.
+Tom Kocmi, Rachel Bawden, Ondˇrej Bojar, Anton
+Dvorkovich, Christian Federmann, Mark Fishel,
+Thamme Gowda, Yvette Graham, Roman Grund-
+kiewicz, Barry Haddow, Rebecca Knowles, Philipp
+Koehn, Christof Monz, Makoto Morishita, Masaaki
+Nagata, Toshiaki Nakazawa, Michal Novák, Martin
+Popel, and Maja Popovi´c. 2022. Findings of the
+2022 conference on machine translation (WMT22).
+In Proceedings of the Seventh Conference on Ma-
+chine Translation (WMT), pages 1–45. Association
+for Computational Linguistics.
+Tom Kocmi and Ondˇrej Bojar. 2017. Curriculum learn-
+ing and minibatch bucketing in neural machine trans-
+lation. In Proceedings of the International Confer-
+ence Recent Advances in Natural Language Process-
+ing, RANLP 2017, pages 379–386. INCOMA Ltd.
+Tom Kocmi, Vilém Zouhar, Eleftherios Avramidis,
+Roman Grundkiewicz, Marzena Karpinska, Maja
+Popovi´c, Mrinmaya Sachan, and Mariya Shmatova.
+2024b. Error span annotation: A balanced approach
+for human evaluation of machine translation. In Pro-
+ceedings of the Ninth Conference on Machine Trans-
+lation, pages 1440–1453. Association for Computa-
+tional Linguistics.
+John P. Lalor, Hao Wu, Tsendsuren Munkhdalai, and
+Hong Yu. 2018. Understanding deep learning perfor-
+mance through an examination of test set difficulty:
+A psychometric case study. In Proceedings of the
+2018 Conference on Empirical Methods in Natural
+Language Processing, pages 4711–4716. Association
+for Computational Linguistics.
+Zheng Wei Lim, Trevor Cohn, Charles Kemp, and Eka-
+terina Vylomova. 2023. Predicting human translation
+difficulty using automatic word alignment. In Find-
+ings of the Association for Computational Linguis-
+tics: ACL 2023, pages 11590–11601. Association for
+Computational Linguistics.
+Zheng Wei Lim, Ekaterina Vylomova, Charles Kemp,
+and Trevor Cohn. 2024. Predicting human translation
+difficulty with neural machine translation. Transac-
+tions of the Association for Computational Linguis-
+tics, 12:1479–1496.
+Xuebo Liu, Houtim Lai, Derek F. Wong, and Lidia S.
+Chao. 2020. Norm-based curriculum learning for
+neural machine translation. In Proceedings of the
+58th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 427–436. Association for
+Computational Linguistics.
+Arle Lommel, Hans Uszkoreit, and Aljoscha Burchardt.
+2014. Multidimensional quality metrics (MQM): A
+framework for declaring and describing translation
+quality metrics. Tradumàtica, 0(12):0455–463.
+Felipe Maia Polo, Lucas Weber, Leshem Choshen,
+Yuekai Sun, Gongjun Xu, and Mikhail Yurochkin.
+2024. tinyBenchmarks: Evaluating LLMs with fewer
+examples. In Proceedings of the 41st International
+Conference on Machine Learning, volume 235 of
+Proceedings of Machine Learning Research, pages
+34303–34326. PMLR.
+Nitika Mathur, Timothy Baldwin, and Trevor Cohn.
+2020. Tangled up in BLEU: Reevaluating the eval-
+uation of automatic machine translation evaluation
+metrics. In Proceedings of the 58th Annual Meet-
+ing of the Association for Computational Linguistics,
+pages 4984–4997. Association for Computational
+Linguistics.
+Abhijit Mishra, Pushpak Bhattacharyya, and Michael
+Carl. 2013. Automatically predicting sentence trans-
+lation difficulty. In Proceedings of the 51st Annual
+Meeting of the Association for Computational Lin-
+guistics (Volume 2: Short Papers), pages 346–351.
+Association for Computational Linguistics.
+Jinjie Ni, Yifan Song, Deepanway Ghosal, Bo Li,
+David Junhao Zhang, Xiang Yue, Fuzhao Xue, Zian
+Zheng, Kaichen Zhang, Mahir Shah, Kabir Jain,
+Yang You, and Michael Shieh. 2024a. MixEval-X:
+Any-to-Any evaluations from real-world data mix-
+tures. Preprint, arXiv:2410.13754.
+Jinjie Ni, Fuzhao Xue, Xiang Yue, Yuntian Deng,
+Mahir Shah, Kabir Jain, Graham Neubig, and Yang
+You. 2024b.
+MixEval: Deriving wisdom of the
+crowd from LLM benchmark mixtures. Preprint,
+arXiv:2406.06565.
+NLLB, Marta R. Costa-jussà, James Cross, Onur Çelebi,
+Maha Elbayad, Kenneth Heafield, Kevin Heffer-
+nan, Elahe Kalbassi, Janice Lam, Daniel Licht, Jean
+Maillard, Anna Sun, Skyler Wang, Guillaume Wen-
+zek, Al Youngblood, Bapi Akula, Loic Barrault,
+Gabriel Mejia Gonzalez, Prangthip Hansanti, and
+20 others. 2022.
+No language left behind: Scal-
+ing human-centered machine translation. Preprint,
+arXiv:2207.04672.
+OpenAI. 2024.
+GPT-4 technical report.
+Preprint,
+arXiv:2303.08774.
+Stefano
+Perrella,
+Lorenzo
+Proietti,
+Alessandro
+Scirè,
+Edoardo
+Barba,
+and
+Roberto
+Navigli.
+2024. Guardians of the machine translation meta-
+evaluation: Sentinel metrics fall in! In Proceedings
+of the 62nd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 16216–16244. Association for Computational
+Linguistics.
+Emmanouil Antonios Platanios, Otilia Stretcu, Graham
+Neubig, Barnabas Poczos, and Tom Mitchell. 2019.
+Competence-based curriculum learning for neural
+machine translation.
+In Proceedings of the 2019
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, Volume 1 (Long and Short
+Papers), pages 1162–1172. Association for Compu-
+tational Linguistics.
+
+Lorenzo Proietti, Stefano Perrella, and Roberto Navigli.
+2025. Has machine translation evaluation achieved
+human parity? the human reference and the limits of
+progress. In Proceedings of the 63rd Annual Meeting
+of the Association for Computational Linguistics (Vol-
+ume 2: Short Papers), pages 790–813. Association
+for Computational Linguistics.
+Qwen, :, An Yang, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan
+Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin
+Yang, Jiaxi Yang, Jingren Zhou, and 25 oth-
+ers. 2025.
+Qwen2.5 technical report.
+Preprint,
+arXiv:2412.15115.
+Ricardo Rei, Craig Stewart, Ana C Farinha, and Alon
+Lavie. 2020. COMET: A neural framework for MT
+evaluation. In Proceedings of the 2020 Conference
+on Empirical Methods in Natural Language Process-
+ing (EMNLP), pages 2685–2702. Association for
+Computational Linguistics.
+Nils Reimers and Iryna Gurevych. 2019.
+Sentence-
+BERT: Sentence embeddings using Siamese BERT-
+networks. In Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natu-
+ral Language Processing (EMNLP-IJCNLP), pages
+3982–3992. Association for Computational Linguis-
+tics.
+Parker Riley, Daniel Deutsch, George Foster, Viresh
+Ratnakar, Ali Dabirmoghaddam, and Markus Freitag.
+2024. Finding replicable human evaluations via sta-
+ble ranking probability. In Proceedings of the 2024
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies (Volume 1: Long Papers),
+pages 4908–4919. Association for Computational
+Linguistics.
+Pedro Rodriguez, Joe Barrow, Alexander Miserlis
+Hoyle, John P. Lalor, Robin Jia, and Jordan Boyd-
+Graber. 2021. Evaluation examples are not equally
+informative: How should that change NLP leader-
+boards? In Proceedings of the 59th Annual Meet-
+ing of the Association for Computational Linguistics
+and the 11th International Joint Conference on Natu-
+ral Language Processing (Volume 1: Long Papers),
+pages 4486–4503. Association for Computational
+Linguistics.
+Jie Ruan, Xiao Pu, Mingqi Gao, Xiaojun Wan, and
+Yuesheng Zhu. 2024. Better than random: Reliable
+NLG human evaluation with constrained active sam-
+pling. Proceedings of the AAAI Conference on Artifi-
+cial Intelligence, 38(17):18915–18923.
+Darcy A Santor and James O Ramsay. 1998. Progress
+in the technology of measurement: Applications of
+item response models. Psychological assessment,
+10(4):345.
+Roy
+Schwartz,
+Gabriel
+Stanovsky,
+Swabha
+Swayamdipta, Jesse Dodge, and Noah A. Smith.
+2020. The right tool for the job: Matching model
+and instance complexities.
+In Proceedings of
+the 58th Annual Meeting of the Association for
+Computational
+Linguistics,
+pages
+6640–6651.
+Association for Computational Linguistics.
+Petru Soviany, Radu Tudor Ionescu, Paolo Rota, and
+Nicu Sebe. 2022. Curriculum learning: A survey.
+Int. J. Comput. Vision, 130(6):1526–1565.
+Lucia Specia, Zhenhao Li, Juan Pino, Vishrav Chaud-
+hary, Francisco Guzmán, Graham Neubig, Nadir Dur-
+rani, Yonatan Belinkov, Philipp Koehn, Hassan Saj-
+jad, Paul Michel, and Xian Li. 2020. Findings of
+the WMT 2020 shared task on machine translation
+robustness. In Proceedings of the Fifth Conference
+on Machine Translation, pages 76–91. Association
+for Computational Linguistics.
+Robyn Speer. 2022. rspeer/wordfreq: V3.0.
+Surat Teerapittayanon, Bradley McDanel, and H.T.
+Kung. 2016. Branchynet: Fast inference via early ex-
+iting from deep neural networks. In 2016 23rd Inter-
+national Conference on Pattern Recognition (ICPR),
+pages 2464–2469.
+Bram Vanroy, Orphee de clercq, and Lieve Macken.
+2019. Correlating process and product data to get an
+insight into translation difficulty. Perspectives.
+Xin Wang, Yudong Chen, and Wenwu Zhu. 2022.
+A survey on curriculum learning. IEEE Transac-
+tions on Pattern Analysis and Machine Intelligence,
+44(9):4555–4576.
+Guillaume Wenzek, Vishrav Chaudhary, Angela Fan,
+Sahir Gomez, Naman Goyal, Somya Jain, Douwe
+Kiela, Tristan Thrush, and Francisco Guzmán. 2021.
+Findings of the WMT 2021 shared task on large-scale
+multilingual machine translation. In Proceedings of
+the Sixth Conference on Machine Translation, pages
+89–99. Association for Computational Linguistics.
+Runzhe Zhan, Xuebo Liu, Derek F. Wong, and Lidia S.
+Chao. 2021a. Difficulty-aware machine translation
+evaluation. In Proceedings of the 59th Annual Meet-
+ing of the Association for Computational Linguistics
+and the 11th International Joint Conference on Natu-
+ral Language Processing (Volume 2: Short Papers),
+pages 26–32. Association for Computational Linguis-
+tics.
+Runzhe Zhan, Xuebo Liu, Derek F. Wong, and Lidia S.
+Chao. 2021b. Variance-aware machine translation
+test sets. In Thirty-fifth Conference on Neural In-
+formation Processing Systems Datasets and Bench-
+marks Track (Round 1).
+Wenbo Zhang. 2024. IOL research machine transla-
+tion systems for WMT24 general machine translation
+shared task. In Proceedings of the Ninth Conference
+on Machine Translation, pages 147–154. Association
+for Computational Linguistics.
+
+Xuan Zhang, Gaurav Kumar, Huda Khayrallah, Ken-
+ton Murray, Jeremy Gwinnup, Marianna J Mar-
+tindale, Paul McNamee, Kevin Duh, and Marine
+Carpuat. 2018. An empirical exploration of curricu-
+lum learning for neural machine translation. Preprint,
+arXiv:1811.00739.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin,
+Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang,
+Joseph E. Gonzalez, and Ion Stoica. 2023. Judging
+LLM-as-a-Judge with MT-Bench and chatbot arena.
+Preprint, arXiv:2306.05685.
+Vilém Zouhar, Tom Kocmi, and Mrinmaya Sachan.
+2025a. AI-assisted human evaluation of machine
+translation. In Proceedings of the 2025 Conference
+of the Nations of the Americas Chapter of the Asso-
+ciation for Computational Linguistics: Human Lan-
+guage Technologies (Volume 1: Long Papers), pages
+4936–4950. Association for Computational Linguis-
+tics.
+Vilém Zouhar, Peng Cui, and Mrinmaya Sachan. 2025b.
+How to select datapoints for efficient human evalua-
+tion of NLG models? Preprint, arXiv:2501.18251.
+
+EN→DE
+EN→ES
+JA→ZH
+#Source texts
+486
+622
+559
+#Translators
+19
+15
+15
+Table 4:
+Statistics of the test set released at the
+WMT 2024 Metrics Shared Task (Freitag et al., 2024).
+“#Source texts” indicates the number of source texts in
+the test set, and “#Translators” indicates the number of
+available translations for each source text.
+A
+Kendall τb
+Kendall’s τ variant b is defined as:
+τb =
+C −D
+p
+(C + D + Tg)(C + D + Th)
+.
+(2)
+Here C and D are the numbers of concordant and
+discordant pairs when comparing gold scores ri
+with hypothesis scores ˆri: a pair (i, j) is concordant
+if (ri −rj)(ˆri −ˆrj) > 0 and discordant if (ri −
+rj)(ˆri −ˆrj) < 0. Th counts pairs tied only in the
+hypothesis (ˆri = ˆrj and ri̸ = rj), and Tg counts
+pairs tied only in the gold (ri = rj and ˆri̸ = ˆrj);
+pairs tied in both rankings are ignored.
+We use Kendall’s τb rather than Pearson correla-
+tion because τb evaluates relative order (ranks) and
+is therefore more robust to scale differences and
+outliers. This is important in our setting: as visible
+in Figure 1, most WMT24 segment-level scores lie
+in a narrow band (e.g., [90, 100]), which magnifies
+the effect of outliers on Pearson, whereas τb de-
+pends only on pairwise rankings. This behavior is
+also discussed by Mathur et al. (2020).
+B
+Training Sentinel-src-24 and
+Sentinel-src-25
+Our new learned difficulty estimation models,
+Sentinel-src-24 and Sentinel-src-25, follow the
+same architecture and training pipeline used for
+the Sentinel-src model introduced by Perrella et al.
+(2024). Both models are based on XLM-RoBERTa
+large as the backbone encoder, followed by a multi-
+layer feedforward network on top of the [CLS]
+token. They are trained to minimize the Mean
+Squared Error (MSE) between predicted and hu-
+man scalar scores.
+We adopt the same two-stage training approach
+as the Sentinel-src model. In the first stage, the
+model is trained on Direct Assessment (DA, Gra-
+ham et al., 2013) data. In the second stage, it is
+fine-tuned on MQM annotations. The key differ-
+ences between our models and Sentinel-src lie in
+the training data used at each stage.
+• Stage 1: DA training. For Sentinel-src-24,
+we extend the DA training data used by Per-
+rella et al. (2024) by including annotations
+from WMT 21 (Wenzek et al., 2021), as
+well as DA+SQM annotations from WMT 22
+(Kocmi et al., 2022) and WMT 23 (Kocmi
+et al., 2023). Sentinel-src-25 further includes
+the ESA annotations from WMT 24. For both
+model versions, we also incorporate MLQE-
+PE data (Fomicheva et al., 2022) in the train-
+ing set for this stage.
+• Stage 2: MQM fine-tuning. In this phase,
+we expand the MQM training set by adding
+MQM annotations from WMT 23 (Freitag
+et al., 2023). Unlike the Sentinel-src train-
+ing pipeline, we do not average multiple
+scores per translation. Instead, we include
+all available annotations as individual train-
+ing instances, preserving variability across
+raters. This applies to WMT 20 and WMT 22
+MQM datasets, which include three human
+scores per translation (Freitag et al., 2021; Ri-
+ley et al., 2024). Similarly to the first training
+stage on DA, in the case of the Sentinel-src-25
+model, we also include MQM annotations
+from WMT 24.
+Following the approach of Perrella et al. (2024), we
+treat each pair consisting of a source text segment
+and its associated human score as an independent
+training instance. Since human scores are assigned
+to individual translations, multiple annotations may
+exist for the same source text. We do not combine
+these scores in any way but include them all in
+the training data for both DA and MQM stages.
+Training hyperparameters match those used by Per-
+rella et al. (2024) for Sentinel-src. All models were
+trained using a single NVIDIA GeForce RTX 4090
+GPU. The estimated training time is approximately
+three GPU hours for the first (DA) stage and one
+GPU hour for the second (MQM) fine-tuning stage.
+These estimates apply to both Sentinel-src-24 and
+Sentinel-src-25.
+C
+Implementation Details
+• For the word rarity heuristic, we com-
+pute word frequencies using the wordfreq
+Python library (Speer, 2022).
+• For the syntactic complexity heuristic and
+text length, we obtain dependency trees and
+
+EN→ES
+EN→HI
+EN→IS
+EN→JA
+EN→RU
+EN→UK
+EN→ZH
+EN→CS
+CS→UK
+#Source texts
+634
+634
+634
+634
+634
+634
+634
+634
+1954
+#Translators
+14
+11
+11
+13
+14
+11
+13
+16
+12
+Table 5: Statistics of the test set released at the WMT 2024 General Machine Translation Shared Task (Kocmi et al.,
+2024a). “#Source texts” indicates the number of source texts in the test set, and “#Translators” indicates the number
+of available translations for each source text.
+corresponding tokens using spaCy. Specif-
+ically, we use language-specific pipelines:
+i)
+en_core_web_sm
+for
+English,
+ii)
+ja_core_news_sm for Japanese, and iii)
+spacy_udpipe for Czech.
+• For the output diversity assessment (Sec-
+tion 6.3), we compute multilingual sen-
+tence embeddings from the source texts
+using
+sentence-transformers/paraphrase-
+multilingual-MiniLM-L12-v2 (Reimers and
+Gurevych, 2019).
+Specifically, for each
+pair of translations, we measure the inner
+product between their multilingual sentence
+embeddings and their chrF score computed
+one against the other.
+For the artificial crowd, we use the following:
+• NLLB-moe-54B: sparsely-gated mixture-of-
+experts encoder-decoder translation model
+(NLLB et al., 2022).
+• Gemma-3-27B-IT: multimodal instruction-
+tuned LLM from the Gemma family (Gemma
+et al., 2025).
+• Qwen2.5-72B-IT: largest instruction-tuned
+LLM from the Qwen2.5 family (Qwen et al.,
+2025).
+• CommandA: 111B-parameter LLM for real-
+world enterprise use cases (Cohere Team,
+2025).
+For evaluation of Section 6 we use average model
+score and %Perfect.
+For average model score,
+given X ′ ⊆X and a set of models Ml, we report
+for each subset X ′ ⊆X with |X ′| = B:
+AvgScore =
+1
+B·|Ml|
+X
+x∈X ′
+m∈Ml
+dm,l(x) ,
+(3)
+which is the average human score on the subset.
+For proportion of perfect translations, we use:
+%Perfect=
+1
+B·|Ml|
+X
+x∈X ′
+m∈Ml
+1[dm,l(x)=100%] (4)
+D
+Complete Results
+Table 6 presents the difficulty estimation correla-
+tion scores of all considered methods when the
+ground truth is based on MQM annotations, rather
+than ESA.
+Instead, Tables 7 and 8 present the per-language
+breakdown of all methods’ difficulty estimation cor-
+relation scores on the ESA-annotated and MQM-
+annotated WMT24 test data, respectively. These ta-
+bles also include ranks derived from statistical sig-
+nificance analysis. Specifically, we used the PERM-
+BOTH hypothesis test, introduced by Deutsch et al.
+(2021).
+E
+Oracles
+Oracle methods use the true human judgments used
+to derive difficulty scores, as detailed in Section 3.
+We consider three oracles that differ in the type of
+information they have access to:
+• Oracle (source text + target language + tar-
+get translation) assigns to each source text x
+the true dm,l(x), for each m and l.
+• Oracle (source text + target language) es-
+timates the difficulty of x by averaging the
+true dm,l(x) across all models (∀m ∈Ml),
+meaning that its estimates do not vary across
+models, but only across target languages.
+• Oracle (source text only) averages the true
+dm,l(x) across both models and target lan-
+guages, assigning the same score to each
+source text regardless of target language or
+translator.
+F
+Creating Difficult Benchmarks –
+Quantitative Results
+To quantitatively evaluate the effectiveness of our
+difficulty estimators for constructing challenging
+benchmarks, we simulate a 25% budget scenario.
+That is, for each method, we select the 25% most
+difficult source texts from the WMT 24 test sets and
+
+Method
+System
+Lang
+DEC
+Oracle
+Oracle
+1.000
+Oracle (source text + target lang)
+0.430
+Oracle (source text only)
+0.404
+Heuristic
+Text Length
+0.222
+Syntactic Complexity
+0.170
+Word Rarity
+−0.052
+Learned
+Sentinel-src-24
+0.246
+Sentinel-src
+0.235
+PreCOMET Difficulty
+0.169
+PreCOMET Diversity
+0.167
+LLM
+Judge
+Command A (source text only)
+0.114
+Command A (source text + target lang)
+0.120
+GPT-4o (source text only)
+0.090
+GPT-4o (source text + target lang)
+0.090
+Crowd
+Based
+True (XCOMET-QE-XXL)
+0.278
+True (MetricX-24-Hybrid-QE-XXL)
+0.248
+Artificial (XCOMET-QE-XXL)
+0.207
+Artificial (MetricX-24-Hybrid-QE-XXL)
+0.185
+Random
+0.002
+Table 6: Difficulty Estimation Correlation (DEC) achieved by each method on the MQM-annotated WMT24. We
+categorize the methods based on the type of information they have access to. Text-only estimators, such as the
+heuristic and learned ones, rely solely on the source text whose difficulty is being estimated. Instead, some methods
+also incorporate information on the target language of translation, while others further leverage knowledge of the
+specific translator who produced the translations in the test set.
+assess the resulting subset using human annotations
+of translation quality.
+Table 9 and Table 10 report the results of this
+evaluation for the ESA and MQM human annota-
+tion protocols, respectively, averaged across all lan-
+guage directions in the corresponding test sets. We
+consider two quantitative indicators: (1) AvgScore,
+the average human score assigned to the selected
+subset (lower indicates higher difficulty), and (2)
+%Perfect, the proportion of model outputs in the
+selected subset that receive a perfect human score
+(lower is also better).
+Results
+confirm
+the
+strong
+performance
+of our dedicated difficulty estimation model,
+Sentinel-src-24,
+which achieves substantially
+lower AvgScore and %Perfect values than random
+selection. It also achieves the best results among
+all automatic methods that rely solely on the
+source text. In particular, in Table 9, it is out-
+performed in AvgScore only by Artificial Crowd
+(XCOMET), a more computationally intensive
+approach that requires translating each source
+text with multiple large models and evaluating
+those translations using an XXL MT metric.
+Furthermore,
+Artificial Crowd methods can
+produce difficulty scores conditioned on the target
+language, unlike Sentinel-src-24, which relies
+exclusively on the source text. On the other hand,
+Sentinel-src-24 obtains the best %Perfect score in
+Table 9. In Table 10, Sentinel-src-24 outperforms
+all automatic methods in both AvgScore and
+%Perfect, including Artificial Crowd.
+As for the other automatic methods, the Text
+Length heuristic consistently outperforms LLM-
+as-a-Judge (based on Command A), despite the
+latter requiring significantly more computational
+resources. Notably, in both Table 9 and Table 10,
+Command A only marginally improves over ran-
+dom selection, reinforcing the limitations of LLM-
+as-a-Judge methods already observed in Table 1.
+Tables 11 and 12 provide a fine-grained break-
+down of results across the WMT 24 domains
+(News, Social, Literary, and Speech) for the
+ESA and MQM test sets, respectively.
+These
+results show that the overall patterns hold con-
+sistently across domains. While absolute perfor-
+mance varies, Sentinel-src-24 and Artificial Crowd
+achieve the strongest results in nearly all domain-
+specific evaluations.
+This analysis supports the practical utility of dif-
+ficulty estimation for controlled test set construc-
+tion and confirms that learned estimators such as
+Sentinel-src-24 offer effective and reliable means
+for identifying source segments where MT systems
+
+are more likely to struggle.
+G
+Related work for Benchmark Creation
+We extend the related work in Section 2 by discus-
+sion on previous attempts to automatically create
+challenging subsets.
+Maia Polo et al. (2024, tinyBenchmarks) and
+Rodriguez et al. (2021) make heavy use of Item Re-
+sponse Theory (Santor and Ramsay, 1998), which
+is a set of statistical models for educational testing
+of human subjects. However, this is not applicable
+to machine translation, where the quality of the
+output is represented as a continuous score. Other
+works (Ni et al., 2024b,a; Ruan et al., 2024; Zouhar
+et al., 2025b) attempt to be more broadly applica-
+ble to natural language generation tasks, though
+their optimization goals are usually efficient testing
+(i.e. obtaining the same model ranking with fewer
+evaluated examples) rather than creating difficult
+testsets.
+For machine translation specifically, Zhan et al.
+(2021a) use proxy of machine translation difficulty
+to inform better evaluation. Again, Zouhar et al.
+(2025a) automatically remove examples that are
+too easy from the evaluation set, corresponding to
+our True Crowd with quality estimation.
+
+Random
+Oracle
+Syntax Complexity
+LLM-as-a-Judge
+Artificial Crowd
+Sentinel
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+0.450
+0.475
+0.500
+0.525
+0.550
+0.575
+Closest Neighbour
+Cosine Similarity
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+0.100
+0.120
+0.140
+0.160
+0.180
+Average Pairwise
+Cosine Similarity
+Figure 4: Average similarity between two closest (left) and any two (right) source texts in X based on embeddings
+and cosine similarity. The left curves go up because the vector space saturates and nearest neighbours become closer.
+Random selection shows 99% confidence t-test interval from 10 runs.
+Random
+Length
+Syntax Complexity
+Sentinel
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+0.450
+0.500
+0.550
+0.600
+0.650
+0.700
+Closest Neighbour
+Cosine Similarity
+10%
+30%
+50%
+70%
+90%
+Proportion of original data
+0.060
+0.080
+0.100
+0.120
+0.140
+Average Pairwise
+Cosine Similarity
+Figure 5: In contrast to Figure 4, we have collected contemporary news articles (40k segments through crawling,
+Bañón et al., 2020) to evaluate how our difficulty sampling would perform in a real world. Average similarity
+between two closest (left) and any two (right) source texts based on embeddings and cosine similarity in X on
+raw 40k English segments (not WMT24). The left curves go up because the vector space saturates and nearest
+neighbours become closer. Random selection shows 99% confidence t-test interval from 10 runs. LLM-as-a-Judge
+and Artificial crowd were not included due to compute costs. Oracle is not present due to the absence of model
+outputs and human scores.
+
+All
+Top model
+Top translation
+All data
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+Freq.
+Ukrainian
+0
+50
+100
+Chinese
+Artificial crowd (top 25%)
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+Freq.
+Ukrainian
+0
+50
+100
+Chinese
+Oracle-src (top 25%)
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+Freq.
+Ukrainian
+0
+50
+100
+Chinese
+Oracle-tgt (top 25%)
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+Freq.
+Ukrainian
+0
+50
+100
+Chinese
+Sentinel-src-24 (top 25%)
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+ESA Score
+Freq.
+Ukrainian
+0
+50
+100
+ESA Score
+Chinese
+LLM-as-a-Judge (top 25%)
+Freq.
+Czech
+Spanish
+Freq.
+Hindi
+Icelandic
+Freq.
+Japanese
+Russian
+0
+50
+100
+ESA Score
+Freq.
+Ukrainian
+0
+50
+100
+ESA Score
+Chinese
+Figure 6: Distribution of human scores for machine translation models in WMT 2024 (Kocmi et al., 2024a) of all
+models, top model in each language, and top model for each input segment. Subset selection methods select top
+25% most difficult segments. Extends Figure 1.
+
+Average
+CS→UK
+EN→CS
+EN→ES
+EN→HI
+EN→IS
+EN→JA
+EN→RU
+EN→UK
+EN→ZH
+Rank
+DEC
+DEC
+DEC
+DEC
+DEC
+DEC
+DEC
+DEC
+DEC
+DEC
+Oracle
+1
+1.000
+1.000
+1.000
+1.000
+1.000
+1.000
+1.000
+1.000
+1.000
+1.000
+Oracle (source text + target lang)
+2
+0.301
+0.298
+0.303
+0.280
+0.271
+0.381
+0.252
+0.320
+0.305
+0.302
+Oracle (source text only)
+3
+0.224
+0.298
+0.246
+0.201
+0.176
+0.238
+0.172
+0.253
+0.213
+0.218
+True Crowd (XCOMET-QE-XXL)
+3
+0.221
+0.203
+0.271
+0.194
+0.213
+0.273
+0.173
+0.238
+0.195
+0.233
+True Crowd (MetricX-24-Hybrid-QE-XXL)
+4
+0.207
+0.211
+0.256
+0.184
+0.212
+0.221
+0.176
+0.229
+0.175
+0.203
+Sentinel-src-24
+5
+0.182
+0.167
+0.216
+0.169
+0.173
+0.220
+0.142
+0.204
+0.150
+0.197
+Artificial Crowd (XCOMET-QE-XXL)
+6
+0.177
+0.175
+0.192
+0.146
+0.179
+0.240
+0.128
+0.194
+0.160
+0.183
+Sentinel-src
+6
+0.175
+0.164
+0.205
+0.159
+0.171
+0.223
+0.118
+0.201
+0.141
+0.190
+Artificial Crowd (MetricX-24-Hybrid-QE-XXL)
+7
+0.166
+0.181
+0.174
+0.121
+0.162
+0.247
+0.128
+0.180
+0.136
+0.162
+PreCOMET Difficulty
+8
+0.153
+0.137
+0.193
+0.131
+0.139
+0.188
+0.120
+0.166
+0.131
+0.170
+PreCOMET Diversity
+9
+0.142
+0.059
+0.167
+0.134
+0.129
+0.213
+0.120
+0.159
+0.130
+0.165
+Text Length
+10
+0.121
+0.024
+0.133
+0.129
+0.143
+0.206
+0.078
+0.142
+0.100
+0.132
+LLM-as-a-Judge (Command A, tgt-based)
+11
+0.104
+0.077
+0.100
+0.098
+0.120
+0.190
+0.068
+0.117
+0.072
+0.097
+Syntactic Complexity
+12
+0.080
+0.018
+0.078
+0.072
+0.112
+0.181
+0.035
+0.090
+0.050
+0.079
+LLM-as-a-Judge (GPT-4o, tgt-based)
+12
+0.080
+0.061
+0.067
+0.072
+0.116
+0.179
+0.035
+0.079
+0.037
+0.071
+LLM-as-a-Judge (GPT-4o, src-based)
+13
+0.077
+0.038
+0.066
+0.072
+0.111
+0.188
+0.029
+0.083
+0.036
+0.071
+LLM-as-a-Judge (Command A, src-based)
+14
+0.072
+0.045
+0.063
+0.062
+0.103
+0.169
+0.026
+0.079
+0.029
+0.072
+Random
+15
+0.003
+-0.001
+0.004
+0.004
+-0.008
+0.010
+0.008
+0.005
+0.008
+0.000
+Word Rarity
+16
+-0.040
+0.016
+-0.034
+-0.044
+-0.065
+-0.093
+-0.032
+-0.043
+-0.022
+-0.043
+Table 7: Difficulty Estimation Correlation (DEC) achieved by each method, per language, on the ESA-annotated WMT24. Ranks represent clusters of statistical significance and
+are computed following Freitag et al. (2024), which leverage the PERM-BOTH hypothesis test introduced by Deutsch et al. (2021).
+
+Average
+EN→DE
+EN→ES
+JA→ZH
+Rank
+DEC
+DEC
+DEC
+DEC
+Oracle
+1
+1.000
+1.000
+1.000
+1.000
+Oracle (source text + target lang)
+2
+0.430
+0.505
+0.280
+0.503
+Oracle (source text only)
+3
+0.404
+0.488
+0.221
+0.503
+True Crowd (XCOMET-QE-XXL)
+4
+0.278
+0.309
+0.208
+0.315
+True Crowd (MetricX-24-Hybrid-QE-XXL)
+5
+0.248
+0.268
+0.192
+0.284
+Sentinel-src-24
+5
+0.246
+0.278
+0.168
+0.291
+Sentinel-src
+6
+0.235
+0.273
+0.165
+0.268
+Text Length
+7
+0.222
+0.262
+0.147
+0.256
+Artificial Crowd (XCOMET-QE-XXL)
+8
+0.207
+0.243
+0.159
+0.220
+Artificial Crowd (MetricX-24-Hybrid-QE-XXL)
+9
+0.185
+0.209
+0.145
+0.201
+Syntactic Complexity
+10
+0.170
+0.158
+0.073
+0.278
+PreCOMET Difficulty
+10
+0.169
+0.219
+0.129
+0.159
+PreCOMET Diversity
+10
+0.167
+0.241
+0.143
+0.117
+LLM-as-a-Judge (Command A, tgt-based)
+11
+0.120
+0.122
+0.088
+0.150
+LLM-as-a-Judge (Command A, src-based)
+11
+0.114
+0.117
+0.060
+0.165
+LLM-as-a-Judge (GPT-4o, tgt-based)
+12
+0.090
+0.096
+0.064
+0.110
+LLM-as-a-Judge (GPT-4o, src-based)
+12
+0.090
+0.111
+0.049
+0.109
+Random
+13
+0.002
+0.003
+0.004
+0.000
+Word Rarity
+14
+-0.052
+-0.114
+-0.043
+0.001
+Table 8: Difficulty Estimation Correlation (DEC) achieved by each method, per language, on the MQM-annotated
+WMT24. Ranks represent clusters of statistical significance and are computed following Freitag et al. (2024), which
+leverage the PERM-BOTH hypothesis test introduced by Deutsch et al. (2021).
+Method
+AvgScore
+%Perfect
+Random
+84.4
+21.0%
+Oracle (source text only)
+74.9
+13.3%
+Oracle (source text + target lang)
+71.6
+11.4%
+Text Length
+82.7
+14.1%
+Sentinel-src-24
+79.1
+12.1%
+Artificial Crowd (XCOMET-QE-XXL)
+78.3
+13.3%
+Command A (source text + target lang)
+83.0
+16.1%
+Table 9: Comparison of methods for selecting the most difficult 25% of samples from the ESA test set, evaluated
+using (1) the average human score on the selected subset and (2) the proportion of model outputs in the selected
+subset that achieve a perfect human score. Results are calculated per language pair and then averaged. The entire
+test set has an average score (AvgScore) of 84.4 and a percentage of perfect outputs (%Perfect) of 20.7%.
+Method
+AvgScore
+%Perfect
+Random
+-2.5
+58.8%
+Oracle (source text only)
+-6.6
+32.7%
+Oracle (source text + target lang)
+-6.8
+30.5%
+Text Length
+-4.5
+43.6%
+Sentinel-src-24
+-5.1
+39.6%
+Artificial Crowd (XCOMET-QE-XXL)
+-4.4
+43.8%
+Command A (source text + target lang)
+-3.1
+51.1%
+Table 10: Comparison of methods for selecting the most difficult 25% of samples from the MQM test set, evaluated
+using (1) the average human score on the selected subset and (2) the proportion of model outputs in the selected
+subset that achieve a perfect human score. Results are calculated per language pair and then averaged. The entire
+test set has an average score (AvgScore) of -2.5 and a percentage of perfect outputs (%Perfect) of 57.7%.
+
+AvgScore
+%Perfect
+Method
+News
+Social
+Literary
+Speech
+News
+Social
+Literary
+Speech
+Random
+86.5
+84.7
+84.7
+80.3
+19.3% 22.6%
+19.7%
+12.3%
+Oracle (source text only)
+82.5
+75.8
+76.0
+71.1
+14.1% 16.9%
+11.0%
+7.0%
+Oracle (source text + target lang)
+79.6
+71.3
+72.9
+68.3
+11.8% 13.7%
+8.0%
+4.7%
+Text Length
+84.6
+83.1
+78.4
+82.0
+15.0% 15.5%
+9.7%
+11.8%
+Sentinel-src-24
+84.1
+80.2
+78.7
+77.5
+14.4% 15.1%
+10.0%
+8.6%
+Artificial Crowd (XCOMET-QE-XXL)
+84.6
+79.6
+77.6
+75.6
+15.3% 16.6%
+11.9%
+8.1%
+Command A (source text + target lang)
+84.9
+82.1
+79.7
+78.8
+15.5% 17.4%
+10.6%
+10.2%
+Table 11: Fine-grained evaluation of the most difficult 25% of test set samples from the ESA test set, selected
+independently for each domain (News, Social, Literary, Speech) and averaged across the language pairs. Results are
+shown for AvgScore (average human score) and %Perfect (proportion of model outputs with a perfect human score).
+AvgScore
+%Perfect
+Method
+News
+Social
+Literary
+Speech
+News
+Social
+Literary
+Speech
+Random
+−1.4
+−1.4
+−3.5
+−5.5
+64.6% 68.9%
+56.5%
+37.5%
+Oracle (source text only)
+−4.5
+−3.1
+−5.9
+−10.5
+37.0% 45.6%
+40.9%
+24.6%
+Oracle (source text + target lang)
+−4.7
+−3.4
+−5.9
+−11.0
+33.6% 41.8%
+40.7%
+22.2%
+Text Length
+−3.3
+−2.0
+−5.2
+−6.0
+47.4% 58.5%
+46.4%
+37.2%
+Sentinel-src-24
+−2.7
+−2.2
+−4.9
+−7.1
+48.7% 56.5%
+48.5%
+30.2%
+Artificial Crowd (XCOMET-QE-XXL)
+−2.5
+−2.0
+−3.5
+−7.6
+51.0% 57.8%
+50.4%
+30.4%
+Command A (source text + target lang)
+−2.3
+−1.6
+−4.1
+−4.4
+50.0% 64.2%
+51.2%
+40.5%
+Table 12: Fine-grained evaluation of the most difficult 25% of test set samples from the MQM test set, selected
+independently for each domain (News, Social, Literary, Speech) and averaged across the language pairs. Results are
+shown for AvgScore (average human score) and %Perfect (proportion of model outputs with a perfect human score).
+
+0
+100
+200
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+Random
+=-0.03 (Pearson)
+=-0.02 (Spearman)
+0.5
+1.0
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+=0.01 (Pearson)
+=-0.02 (Spearman)
+1.0
+0.8
+0.6
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+=0.02 (Pearson)
+=0.01 (Spearman)
+0
+50
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+=0.04 (Pearson)
+=0.02 (Spearman)
+0.0
+0.5
+1.0
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+=-0.06 (Pearson)
+=-0.05 (Spearman)
+0
+100
+200
+100
+80
+60
+40
+20
+LLM-as-a-Judge
+=-0.61 (Pearson)
+=-0.68 (Spearman)
+0.5
+1.0
+100
+80
+60
+40
+20
+=-0.60 (Pearson)
+=-0.59 (Spearman)
+1.0
+0.8
+0.6
+100
+80
+60
+40
+20
+=0.19 (Pearson)
+=0.21 (Spearman)
+0
+50
+100
+80
+60
+40
+20
+=0.23 (Pearson)
+=0.22 (Spearman)
+0.0
+0.5
+1.0
+100
+80
+60
+40
+20
+=0.26 (Pearson)
+=0.01 (Spearman)
+0
+100
+200
+200
+150
+100
+50
+0
+Length
+=-1.00 (Pearson)
+=-0.99 (Spearman)
+0.5
+1.0
+200
+150
+100
+50
+0
+=-0.52 (Pearson)
+=-0.74 (Spearman)
+1.0
+0.8
+0.6
+200
+150
+100
+50
+0
+=0.31 (Pearson)
+=0.35 (Spearman)
+0
+50
+200
+150
+100
+50
+0
+=0.24 (Pearson)
+=0.25 (Spearman)
+0.0
+0.5
+1.0
+200
+150
+100
+50
+0
+=0.25 (Pearson)
+=0.02 (Spearman)
+0
+100
+200
+0.4
+0.6
+0.8
+1.0
+Artificial Crowd
+=-0.63 (Pearson)
+=-0.63 (Spearman)
+0.5
+1.0
+0.4
+0.6
+0.8
+1.0
+=-0.46 (Pearson)
+=-0.59 (Spearman)
+1.0
+0.8
+0.6
+0.4
+0.6
+0.8
+1.0
+=-0.11 (Pearson)
+=-0.11 (Spearman)
+0
+50
+0.4
+0.6
+0.8
+1.0
+=-0.17 (Pearson)
+=-0.17 (Spearman)
+0.0
+0.5
+1.0
+0.4
+0.6
+0.8
+1.0
+=0.04 (Pearson)
+=-0.13 (Spearman)
+0
+100
+200
+3
+2
+1
+0
+Sentinel
+=-0.66 (Pearson)
+=-0.67 (Spearman)
+0.5
+1.0
+3
+2
+1
+0
+=-0.36 (Pearson)
+=-0.63 (Spearman)
+1.0
+0.8
+0.6
+3
+2
+1
+0
+=-0.01 (Pearson)
+=-0.10 (Spearman)
+0
+50
+3
+2
+1
+0
+=-0.09 (Pearson)
+=-0.17 (Spearman)
+0.0
+0.5
+1.0
+3
+2
+1
+0
+=0.12 (Pearson)
+=-0.10 (Spearman)
+0
+100
+200
+50
+60
+70
+80
+90
+100
+Oracle-src
+=-0.22 (Pearson)
+=-0.26 (Spearman)
+0.5
+1.0
+50
+60
+70
+80
+90
+100
+=-0.28 (Pearson)
+=-0.35 (Spearman)
+1.0
+0.8
+0.6
+50
+60
+70
+80
+90
+100
+=-0.47 (Pearson)
+=-0.39 (Spearman)
+0
+50
+50
+60
+70
+80
+90
+100
+=-0.49 (Pearson)
+=-0.44 (Spearman)
+0.0
+0.5
+1.0
+50
+60
+70
+80
+90
+100
+=-0.16 (Pearson)
+=-0.13 (Spearman)
+0
+100
+200
+Length
+50
+60
+70
+80
+90
+100
+Oracle-tgt
+=-0.22 (Pearson)
+=-0.26 (Spearman)
+0.5
+1.0
+Output Uniqueness
+50
+60
+70
+80
+90
+100
+=-0.28 (Pearson)
+=-0.35 (Spearman)
+1.0
+0.8
+0.6
+Output Diversity (Embedding)
+50
+60
+70
+80
+90
+100
+=-0.47 (Pearson)
+=-0.39 (Spearman)
+0
+50
+Output Diversity (chrF)
+50
+60
+70
+80
+90
+100
+=-0.49 (Pearson)
+=-0.44 (Spearman)
+0.0
+0.5
+1.0
+Grammaticality
+50
+60
+70
+80
+90
+100
+=-0.16 (Pearson)
+=-0.13 (Spearman)
+Figure 7: Relationship between selectors and variables of interest (source length, source number of errors per
+word, output diversity measured by pairwise embeddings inner product and chrF, and proportion of unique outputs).
+For all methods, lower values indicate more difficult source texts, so negative correlation implies stronger positive
+connection between difficulty and the target variable. See Table 3 for an aggregated perspective.
+
+Prompt for LLM-as-a-judge (source text only):
+You are given a source text. Your goal is to determine the approximate proficiency level required to translate this text, based
+on a detailed analysis of its complexity. The final result should be reported as a single numeric score on a scale of 0 to
+120, where higher numbers correspond to a higher difficulty (i.e., more advanced language proficiency requirements). You
+should also relate this numeric score to commonly recognized proficiency levels (e.g., A1, A2, B1, B2, C1, C2). Here is the
+expected mapping: 0-20 for A1 (Beginner); 21-40 for A2 (Elementary); 41-60 for B1 (Intermediate); 61-80 for B2 (Upper
+Intermediate); 81-100 for C1 (Advanced); 101-120 for C2 (Mastery).
+Instructions: First, examine the text to identify features that affect reading difficulty, including complexity of vocabulary,
+grammar, semantic density, and any specialized knowledge required. Then, provide a brief explanation of your reasoning for
+each major factor. Consider whether the text includes domain-specific terminology, cultural references, idiomatic expressions,
+or advanced grammatical constructions. Finally, assign a numeric score from 0 to 120 and map that score to one of the
+CEFR levels. Conclude with a final statement that clearly states your numeric score and the corresponding proficiency level
+surrounded by triple square brackets, for example [[[86, C1 (Advanced)]]]
+Analyze following text:
+{src}
+Prompt for LLM-as-a-judge (source text + target language):
+You are given a source text. Your goal is to determine the approximate proficiency level required to translate this text into
+{target_language}, based on a detailed analysis of its complexity. The final result should be reported as a single numeric score
+on a scale of 0 to 120, where higher numbers correspond to a higher difficulty (i.e., more advanced language proficiency
+requirements). You should also relate this numeric score to commonly recognized proficiency levels (e.g., A1, A2, B1, B2,
+C1, C2). Here is the expected mapping: 0-20 for A1 (Beginner); 21-40 for A2 (Elementary); 41-60 for B1 (Intermediate);
+61-80 for B2 (Upper Intermediate); 81-100 for C1 (Advanced); 101-120 for C2 (Mastery).
+Instructions: First, examine the text to identify features affecting the translation into {target_language}, which affect reading
+difficulty, including complexity of vocabulary, grammar, semantic density, and any specialized knowledge required. Then,
+provide a brief explanation of your reasoning for each major factor. Consider whether the text includes domain-specific
+terminology, cultural references, idiomatic expressions, or advanced grammatical constructions. Finally, assign a numeric
+score from 0 to 120 and map that score to one of the CEFR levels. Conclude with a final statement that clearly states
+your numeric score and the corresponding proficiency level surrounded by triple square brackets, for example [[[86, C1
+(Advanced)]]].
+Analyze following text:
+{src}
+Example 2: Prompts used to estimate the difficulty of a given text using LLM-as-a-judge (Section 4.3).

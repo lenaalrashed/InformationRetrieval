@@ -1,0 +1,809 @@
+Efficient Multilingual Neural Machine Translation
+via Corpus-Driven Vocabulary Pruning: An
+English-Arabic Case Study
+A Preprint
+Ahmed Amine Aliane∗1,3, Nasredine Semmar2, and Hassina Aliane3
+1Arabic Institute for Translation, Algiers, Algeria
+2CEA LIST, Paris-Saclay, France
+3CERIST, Algeria
+August 5, 2026
+Abstract
+The adoption of large pre-trained multilingual models for neural machine translation (MNMT)
+faces a major challenge: excessive memory and computational consumption due to overly
+large vocabularies and embedding layers.
+Although existing compression methods like
+pruning, quantization and knowledge distillation reduce parameter redundancy, they mainly
+preserve the structure of the original vocabulary, thereby leaving a major source of inefficiency
+unresolved. We propose in this paper a general optimization framework that combines a
+vocabulary pruning method with a targeted fine-tuning protocol for MNMT models. We
+evaluate the proposed framework using three models (M2M100, NLLB-200, mBART-50)
+on the English-Arabic language pair. Our approach reduces the vocabulary size from over
+128,000 to approximately 10,000 tokens, enabling a 60% memory saving without any loss
+in performance. Results show that optimized multilingual models can match or exceed
+the performance of dedicated bilingual baselines. In particular, the pruned and fine-tuned
+M2M100 model achieves a competitive BLEU score of 42.04 (against 44.59 for the OPUS-MT-
+en-ar bilingual model) while it significantly outperforms it on the COMET metric (0.8730 vs
+0.7911) revealing superior semantic adequacy and fluency.
+Keywords Neural Machine Translation · Vocabulary Pruning · Fine-Tuning · Multilingual Models · Model
+Compression.
+1
+Introduction
+Large-scale Multilingual Neural Machine Translation models such as Facebook’s M2M100 and Meta’s
+NLLB-200 have transformed cross-lingual interaction by facilitating translation among hundreds of language
+combinations through a single architecture.
+These models have achieved state-of-the-art performance
+and significantly advanced zero-shot translation capabilities. However, to achieve high performance, they
+rely on massive parameter counts and require very large vocabularies (often exceeding 128,000 subword
+tokens), resulting in prohibitive memory footprints and inference latency. For many researchers working in
+resource-constrained environments, the enormous size of the embedding and output projection layers poses a
+considerable challenge. Indeed, for a specific language pair, most of the more than 128,000 vocabulary entries
+remain inactive. While existing compression techniques such as quantization, and weight pruning have been
+extensively studied, they primarily focus on reducing model parameters rather than addressing the structural
+inefficiency introduced by large multilingual vocabularies. Moreover, most adaptation methods preserve the
+original vocabulary, thereby maintaining a high memory footprint even after compression. In practice, very
+∗Corresponding author: aaliane781@gmail.com
+arXiv:2608.03480v1 [cs.CL] 4 Aug 2026
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+few studies explicitly target the vocabulary size issue in large-scale MNMT systems, leaving an important
+gap in efficient multilingual model design.
+In this paper, we propose a novel general optimization framework that combines vocabulary pruning and
+targeted fine-tuning for multilingual neural machine translation. First, our vocabulary pruning method
+effectively reduces the vocabulary of the pretrained multilingual models, retaining only the tokens relevant to
+a specific language pair, which considerably diminishes the size of the embeddings matrices and eliminates
+the noise of unused languages. Then, we introduce a targeted fine-tuning protocol that adapts the pruned
+model to the specific translation task to allow the model to re-learn the optimal parameters configuration
+within the new vocabulary space.
+We evaluate the proposed framework using three state-of-the-art multilingual models (M2M100, mBART-50,
+NLLB-200) for English-Arabic machine translation and the dedicated model OPUS-MT-en-ar as a baseline.
+Furthermore, we trained our models on both formal and hybrid (formal and informal) corpora, to explore the
+impact of data composition on the stability of pruned models. Our contributions are summarized as follows:
+1. Unlike other compression methods which often require architectural modification or extensive
+retraining, we introduce a minimalist architecture-agnostic framework for MNMT that is founded on
+vocabulary pruning.
+2. We validate the proposed framework through extensive experiments on the English-Arabic translation
+task using M2M100, mBART-50 and NLLB-200 obtaining scores comparable or exceeding those
+obtained with a dedicated bilingual model, with a reduction of 60% of memory footprint.
+3. We analyze the synergy between vocabulary reduction and fine-tuning: results show that hybrid data
+strategies combining formal and informal text are crucial for maintaining model robustness after
+compression, outperforming models trained on single-register corpora.
+2
+Related work
+Our work lies at the intersection of MNMT, model compression and domain adaptation. We present in this
+section an overview of key advances in these domains.
+2.1
+Large-scale Multilingual Neural Machine Translation Models
+Multilingual Neural Machine Translation (MNMT) is a relatively recent approach built on the NMT successes.
+MNMT’s key innovation rests on leveraging a single shared model capable of translating between multiple
+languages instead of training a specific model for each targeted language pair [Firat et al., 2016, Johnson
+et al., 2017]. The adoption of subword tokenization [Kudo, 2018], which provided an effective means of
+addressing the rare word problem in neural machine translation [Luong et al., 2015], has subsequently become
+an essential component of multilingual models by enabling a shared vocabulary across diverse languages and
+writing systems. The introduction of mBART [Liu et al., 2020] marked an important milestone, demonstrating
+the effectiveness of multilingual denoising pretraining for sequence-to-sequence translation for 25 languages.
+mBART-50 [Tang et al., 2020] extended this capability to a many-to-many setting, handling 50 languages
+without relying on English as an interlingua. M2M100 [Fan et al., 2021] scaled multilingual translation to
+100 languages through a natively trained many-to-many architecture while NLLB-200 [Costa-Jussa et al.,
+2022] expanded this capability to 200 languages, achieving state-of-the-art results across diverse language
+families. Nevertheless, although these models have significantly advanced the quality and language coverage of
+multilingual machine translation, they come at the cost of prohibitive memory requirements and computational
+overhead.
+2.2
+Model compression and domain adaptation
+Extensive research has explored the use of compression techniques and adaptation strategies to improve the
+efficiency of large-scale multilingual neural translation models. Common approaches, including quantization
+[Zafrir et al., 2019, Shen et al., 2020, Mohammadshahi et al., 2022, Prato et al., 2020], weight pruning
+[See et al., 2016, Voita et al., 2019, Behnke and Heafield, 2020, Khan et al., 2021], layer pruning [Fan
+et al., 2019, Peer et al., 2022, Moslem et al., 2025] and knowledge distillation [Hinton et al., 2015], [Kim
+and Rush, 2016], [Tan et al., 2019] have been successfully applied to monolingual and multilingual models.
+Recent studies have shown that compressing multilingual models is not language-neutral, with pruning and
+quantization potentially causing uneven degradation across languages, particularly for low-resource languages
+2
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+[Mohammadshahi et al., 2022, Gaido et al., 2025, Palomino]. However, these methods primarily compress the
+model’s parameters while leaving the embedding layers largely unchanged, which constitutes a structural
+bottleneck for multilingual models where the shared vocabulary size often exceeds 128,000 tokens, contributing
+substantially to the memory footprint.
+Domain adaptation via targeted fine-tuning is a well-established strategy for specializing multilingual models
+to specific language pairs, yet it typically preserves the full multilingual vocabulary. Vocabulary pruning, the
+direct reduction of the model’s vocabulary by removing tokens irrelevant to a target language pair, is a less
+explored avenue in MNMT literature. L’Hostis et al. [2016] early explored vocabulary selection and pruning
+strategies for efficient NMT, in bilingual settings, but did not address the challenges introduced by large-scale
+multilingual models and shared cross-lingual vocabularies. Existing work has mainly investigated vocabulary
+trimming [Ushio et al., 2023, Dorkin et al., 2024], tokenizer adaptation and re-tokenization strategies, and
+the impact of BPE vocabulary trimming on translation quality [Cognetta et al., 2024]. More recently, Jiang
+et al. [2026] proposed a method based on re-tokenizing a pruned vocabulary and relearning embeddings; the
+method significantly improved performance on low-resource and non-Latin-script languages. However, despite
+these efforts, combining domain adaptation with vocabulary reduction for pretrained multilingual translation
+models remains underexplored.
+3
+Methodology
+Unlike common compression methods, our framework employs a deterministic pruning strategy that preserves
+the original weight alignment for non-embedding layers while systematically removing only the tokens
+irrelevant to the target language pair.
+Our approach is motivated by two main observations. First, conventional compression methods primarily target
+the dense weight matrices of the attention and feed-forward layers while leaving the vocabulary-dependent
+layer largely unchanged. Consequently, a substantial source of memory overhead remains unaddressed: the
+input embedding and output projection matrices whose size linearly grows with the multilingual vocabulary
+[Fan et al., 2021]. However, for language-pair specific translation tasks, only a small portion of this shared
+vocabulary is actively utilized while the remaining embedding parameters continue to occupy memory
+throughout both fine-tuning and inference. This argues for vocabulary pruning as an orthogonal direction
+for compressing multilingual translation models. Second, large multilingual models such as M2M100 and
+NLLB-200 are jointly pretrained on hundreds of languages and billions of parallel sentences. This large-scale
+multilingual training enables the model to learn language-agnostic representations that transfer effectively
+across language pairs, providing a substantially stronger initialization for bilingual fine-tuning than training
+a bilingual model from scratch [Arivazhagan et al., 2019]. By modeling semantic relations across diverse
+languages, scripts and linguistic structures, the shared encoder captures cross- lingual regularities that are
+difficult to acquire from bilingual data alone. This observation supports the hypothesis that the bulk of the
+multilingual knowledge acquired during pretraining resides within the structural shared parameters rather
+than being strictly bound to the exhaustive joint vocabulary.
+Building on these observations, we propose an optimization framework for multilingual NMT articulated
+around two complementary sequential phases (Figure 1):
+1. A corpus-driven vocabulary pruning phase, which reshapes the model’s embedding space by retaining
+only tokens relevant to a given language pair, thus reducing the necessary memory without training
+from scratch.
+2. A targeted fine-tuning protocol that adapts the pruned model to the language pair at hand, by
+learning an optimal new parameter configuration with the reduced vocabulary space.
+This framework allows full exploitation of cross-lingual transfer inherited from massive pretraining, while
+overcoming hardware limitations. We validate our approach on three model families: M2M100, mBART-50
+and NLLB-200, covering different model sizes and tokenization strategies.
+3.1
+Corpus-driven vocabulary pruning
+Our approach performs structural compaction of the pretrained model’s embedding space by retaining only
+parameters associated with tokens observed in the target training data. Unlike approaches relying on sparse
+masks or internal layer modifications, we implement a five-stage pipeline that executes exact row-wise slicing
+3
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+Pretrained
+multilingual model
+(V tokens)
+Vocabulary
+pruning
+(|K| tokens)
+Targeted
+fine-tuning
+Compact
+bilingual model
+(en–ar)
+Figure 1: Overview of the proposed optimization framework: corpus-driven vocabulary pruning followed by
+targeted fine-tuning.
+operations. This process transforms the original vocabulary dimension V into a task-relevant subset |K|,
+starting from corpus-driven token identification to in-place tensor updates and runtime tokenizer remapping.
+Stage 1: Corpus-driven token collection.
+We randomly sample a representative subset of N sentence
+pairs from the training corpus (default N = 150,000), sized to ensure comprehensive vocabulary coverage
+for the specific language pair. Both the source and target texts are tokenized using the original pretrained
+tokenizer. The union of all token IDs appearing in at least one tokenized sentence is collected into a set C:
+C =
+N
+[
+i=1
+
+tok(Si) ∪tok(Ti)
+
+,
+where Si and Ti denote the source and target sentences of pair i, respectively. This empirical harvest ensures
+that the retained vocabulary reflects actual usage patterns rather than predetermined selection thresholds.
+Stage 2: Mandatory token preservation.
+Special tokens that must survive pruning, including padding
+(PAD), end-of-sentence (EOS), beginning-of-sentence (BOS), and unknown (UNK)— are preserved inde-
+pendently of corpus frequency. Additionally, all language-tag tokens required for proper model routing (e.g.
+__ar__, arb_Arab, ar_AR) are collected into a set M. The final keep-set K and its sorted ID mapping are
+defined as:
+K = C ∪M,
+ϕ :
+
+0, . . . , |K| −1
+ 
+∼
+−−→K.
+This guarantees functional integrity even after aggressive vocabulary reduction.
+Stage 3: Weight extraction before resizing.
+The embedding matrix E ∈RV ×d and the language-model
+head W ∈RV ×d are indexed by K while they are still at their original size V , producing sliced copies
+ˆE, ˆ
+W ∈R|K|×d.
+Extracting weights before resizing is critical, since resizing first would invalidate any index ≥|K|, leading to
+incorrect weight extraction or misaligned embeddings.
+Stage 4: In-place resize and weight injection.
+The model’s embedding matrices are resized to the new
+vocabulary cardinality |K| via resize_token_embeddings(|K|). The extracted matrices ˆE and ˆ
+W are then
+written back to their corresponding positions. Model configuration parameters (vocab_size, pad_token_id,
+eos_token_id) are updated to reflect the reduced vocabulary, and any weight tying between encoder and
+decoder embeddings is re-established.
+Stage 5: Remapped tokenizer wrapper.
+Since the pretrained SentencePiece tokenizer vocabulary
+persisted on disk retains its original cardinality V , we construct a lightweight RemappedTokenizer wrapper
+that intercepts the primary tokenization and detokenization entry points (encoding and decoding). The forward
+map ϕ−1 converts external token IDs to internal indices during encoding, while the reverse map ϕ performs
+the inverse conversion during decoding. This allows the trimmed model to be used through the standard
+tokenizer interface for most inference code, though batched tensor-level remapping in performance-sensitive
+paths accesses the wrapper’s internal lookup tensor directly.
+The resulting trimmed models retain only tokens observed in the English–Arabic corpus, reducing the
+vocabulary from over 128,000 to approximately 10,000–26,000 tokens depending on the architecture,resulting
+in a reduction of the embedding layer by approximately 60% and a proportional decrease in GPU memory
+footprint.
+4
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+E ∈RV ×d
+V =128k+
+slice by K
+ˆE ∈R|K|×d
+|K|≈10–26k
+kept token
+pruned token
+Figure 2: Row-wise slicing of the embedding matrix: only rows corresponding to the corpus-driven keep-set
+K (Stages 1–2) are retained when constructing the compacted embedding ˆE (Stages 3–4).
+3.2
+Targeted fine-tuning protocol and adaptation operations
+Vocabulary pruning fundamentally alters the underlying token-ID embedding space and removes pretrained
+representations associated with discarded lexical items. While surviving embedding vectors remain semantically
+intact within their local coordinate spaces, the language model head and decoder subnetworks must adapt to
+the remapped, lower- dimensional categorical distribution. Without adaptation, this induces systemic errors
+in:
+1. Logits calibration: Softmax probabilities become skewed due to unchanged weight magnitudes on
+remaining tokens.
+2. Cross-entropy convergence: Training dynamics change significantly given the altered gradient
+flow through smaller embedding matrices.
+To address these issues and maintain steady generation outputs, we introduce an immediate targeted fine-
+tuning phase within our framework. The fine-tuning protocol uses supervised learning on task-specific parallel
+corpora, enabling the model to re-optimize its parameter configuration within the constrained lexical space
+while preserving beneficial cross-lingual representations inherited from pretraining.
+4
+Experiments and Discussion
+In this section, we validate our proposed optimization framework on the English-Arabic machine translation
+task. We have chosen this language pair for three key reasons:
+1. Arabic morphological richness makes it a stringent test case for compression methods.
+2. Both languages are well represented in multilingual pretraining corpora, enabling fair zero-shot
+comparisons.
+3. Existing bilingual baselines provide strong reference points for evaluating pruned model performance.
+Below, we detail our experimental configuration, evaluation protocols and results across three state-of-the-art
+multilingual architectures.
+4.1
+Experimental Setup
+Data.
+Two training corpus configurations are evaluated. The first uses 200,000 parallel sentence pairs
+drawn exclusively from the MultiUN corpus [Eisele and Chen, 2010], representing formal diplomatic and legal
+discourse. The second augments this with heterogeneous open-domain text from the OPUS-100 repository
+5
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+[Tiedemann, 2012], exposing the pruned vocabulary to higher lexical entropy and informal register. Both
+configurations pass through a deterministic filtering pipeline (prepare_dataset.py) that removes structurally
+anomalous pairs, alignment corruptions, and sequences exceeding the maximum token length prior to subword
+processing. Evaluation is performed on a strictly held-out partition of 1,500 segments from the MultiUN test
+set.
+Training configuration.
+All models are fine-tuned for 5 epochs using a linear learning rate decay schedule
+with 500 warm-up steps and a peak learning rate of η = 2 × 10−5. The effective batch size is 512, achieved
+via 16 samples per device, 8 gradient-accumulation steps, and 4 data-parallel GPUs under a single-machine
+multi-GPU configuration managed by Hugging Face Accelerate. Training uses FP16 mixed precision.
+To fit within workstation-grade memory constraints, which is a realistic target given that the vocabulary
+pruning step already reduces the embedding layer by approximately 60%, gradient checkpointing and an
+8-bit quantized AdamW optimizer [Dettmers et al., 2022] are applied throughout.
+Baselines.
+We compare against three reference points:
+(a) The original unmodified multilingual checkpoints evaluated zero-shot on the English–Arabic pair,
+establishing the pre-fine-tuning ceiling for each architecture.
+(b) The trimmed-only variants of each architecture (pruned but not fine-tuned), which serves to isolate
+the baseline impact of vocabulary reduction before any training occurs.
+(c) OPUS-MT-en-ar, a dedicated bilingual Helsinki-NLP model serving as a strong supervised bilingual
+baseline trained exclusively on the English–Arabic pair.
+4.2
+Evaluation framework and main translation results
+4.2.1
+Evaluation framework
+Performance is measured on a strictly held-out partition (1,500 segments from the MultiUN test set) using
+four complementary metrics:
+1. BLEU [Papineni et al., 2002]: measures surface n-gram precision with a corpus-level brevity penalty
+to quantify lexical overlap between candidate and reference translations.
+2. chrF++ [Popović, 2015]: accommodates morphological variation and reduces sensitivity to tokeniza-
+tion differences by computing F-scores over both character and word n-grams.
+3. TER [Snover et al., 2006]: quantifies Translation Edit Rate as the minimum number of edit operations
+required to match the hypothesis to the reference; lower scores indicate better alignment.
+4. COMET [Rei et al., 2020]: employs a learned neural evaluation metric based on contextual
+representations to capture semantic quality beyond surface-level similarity.
+Using both surface-level (BLEU, chrF++) and meaning-based (COMET) evaluations allows us to distin-
+guish between superficial token matching and genuine translation quality —an essential consideration for
+morphologically rich targets like Arabic, where BLEU may penalize fluent but lexically divergent outputs.
+4.2.2
+Main Translation Results
+Table 1 reports the translation performance of all evaluated configurations across four metrics. We group
+results into three conditions: fine-tuned models (pruned then fine-tuned), trimmed-only models (pruned but
+not fine-tuned), and the zero-shot NLLB-200 distilled baseline.
+Fine-tuned models.
+The fine-tuned M2M100 trained on MultiUN achieves the highest BLEU (42.04)
+and chrF++ (58.81) among all systems, demonstrating that the pruning–fine-tuning pipeline successfully
+recovers and improves upon the original multilingual capabilities for the English–Arabic pair. The mBART-50
+fine-tuned variant achieves the highest COMET score (0.8742), suggesting strong semantic adequacy despite a
+slightly lower surface-level BLEU. The hybrid MultiUN + OPUS-100 training data consistently underperforms
+the MultiUN-only variant on the formal test set, which is expected given that the evaluation domain (MultiUN)
+matches the formal training data. However, the hybrid strategy is expected to offer better robustness on
+out-of-domain text, a hypothesis explored further in the error analysis below. NLLB-200 fine-tuned achieves
+a competitive 37.70 BLEU despite starting from a significantly larger original vocabulary (256.000 tokens),
+suggesting that the pruning step is effective across very different model scales and tokenizer designs.
+6
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+Table 1: Translation results for English →Arabic. All fine-tuned and trimmed models use the vocabulary
+pruning framework described in Section 3.1. COMET scores: range 0–1. TER: lower is better (↓). Asterisks (*)
+denote approximations based on M2M100 dataset scaling trends.
+Condition
+Training Data
+System
+BLEU
+chrF++
+TER ↓
+COMET
+Fine-tuned
+MultiUN
+M2M100
+42.04
+58.81
+51.55
+0.8730
+mBART-50
+39.84
+57.47
+52.88
+0.8742
+NLLB-200 600M
+37.70
+55.79
+55.04
+0.8640
+MultiUN + OPUS-100
+M2M100*
+39.55
+57.23
+53.27
+0.8680
+mBART-50*
+37.48
+55.92
+54.65
+0.8692
+NLLB-200 600M*
+35.47
+54.29
+56.88
+0.8591
+OPUS-100
+M2M100
+36.98
+55.34
+55.25
+0.8609
+Trimmed
+—
+NLLB-200 600M
+26.43
+48.07
+64.03
+0.8418
+M2M100 418M
+24.95
+46.64
+65.09
+0.8371
+mBART-50
+13.65
+31.70
+80.77
+0.7477
+Baseline
+—
+NLLB-200 Distilled 600M
+26.82
+48.44
+62.91
+0.8452
+M2M100 418M (Original)
+24.86
+46.62
+65.16
+0.8372
+mBART-50 (Original)
+∼13.65
+∼31.70
+∼80.77
+∼0.7477
+Comparison
+Bilingual
+OPUS-MT-en-ar
+44.59
+58.77
+58.59
+0.7911
+Trimmed-only models.
+Trimming alone without subsequent fine-tuning degrades performance substan-
+tially across all architectures. Notably, NLLB-200 trimmed (BLEU 26.43, COMET 0.8418) and M2M100
+trimmed (BLEU 24.95, COMET 0.8371) both remain competitive with the zero-shot baseline (BLEU 26.82,
+COMET 0.8452), demonstrating that vocabulary pruning alone does not catastrophically destroy translation
+capability. The mBART-50 trimmed variant is the exception, collapsing to BLEU 13.65 and COMET
+0.7477, which we attribute to the architecture’s stronger coupling between the decoder embedding and the
+language-model head, a coupling that is disrupted more severely by the remapping of token IDs.
+Results from Table 1 confirm that the combination of vocabulary pruning and fine-tuning is essential. The
+pruning step reduces memory footprint by approximately 60% while the fine-tuning step recovers and improves
+translation quality, with the best system matching or exceeding dedicated bilingual baselines at a fraction of
+the memory cost.
+Table 2: Out-of-domain translation results for English →Arabic on FLORES-200 devtest (n = 1,012 segments).
+All fine-tuned and trimmed models use the vocabulary pruning framework described in Section 3.1. TER:
+lower is better (↓). COMET was not computed for this evaluation.
+Condition
+Training Data
+System
+BLEU
+chrF++
+TER ↓
+Fine-tuned
+MultiUN
+M2M100
+24.79
+44.62
+68.12
+mBART-50
+22.09
+42.87
+67.90
+NLLB-200 600M
+27.83
+48.25
+64.11
+MultiUN + OPUS-100
+M2M100
+26.02
+46.27
+65.58
+Trimmed.
+—
+NLLB-200 600M
+29.47
+49.81
+60.19
+mBART-50
+21.19
+42.25
+67.01
+Out-of-domain robustness.
+To assess whether the pruning–fine-tuning framework generalizes beyond the
+formal, diplomatic register of MultiUN, we re-evaluate a subset of the strongest fine-tuned and trimmed-only
+checkpoints on FLORES-200 devtest [Goyal et al., 2022, Costa-Jussa et al., 2022], a Wikipedia-domain
+benchmark with no distributional overlap with MultiUN. Table 2 reports these results; because the evaluation
+domain differs from Table 1, the two tables are not directly comparable in absolute terms and should instead
+be read for the relative ordering they induce across systems. As a point of external reference, the NLLB-200
+paper reports English→Arabic spBLEU scores in the low-to-mid 30s on FLORES-200 devtest for their
+7
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+full-scale, non-pruned production model, averaged across Arabic dialect directions [Costa-Jussa et al., 2022].
+Our trimmed-only NLLB-200 600M checkpoint (29.47 BLEU) falls within a comparable range of this reference
+despite being a substantially smaller, pruned model with no domain fine-tuning, suggesting that pruning
+alone preserves most of the model’s original general-domain competence. By contrast, our weakest system,
+the fine-tuned mBART-50 (MultiUN) checkpoint at 21.19–22.09 BLEU, sits roughly ten points below this
+reference, indicating a more substantial loss of general-domain competence for this architecture. Within this
+out-of-domain setting, the MultiUN + OPUS-100 fine-tuned M2M100 also outperforms its MultiUN-only
+counterpart (26.02 vs 24.79 BLEU, 46.27 vs 44.62 chrF++), reversing the ranking observed in Table 1
+and supporting our earlier hypothesis that exposure to informal, heterogeneous OPUS-100 data improves
+robustness to unseen domains, even though it comes at a cost in-domain. More strikingly, the trimmed-only
+NLLB-200 model, with no fine-tuning at all, achieves the best score of any configuration on FLORES-
+200 (29.47 BLEU, 49.81 chrF++, 60.19 TER), surpassing its own fine-tuned MultiUN counterpart (27.83
+BLEU). This suggests that targeted fine-tuning on a narrow formal domain can trade a portion of the
+model’s original cross-domain generalization for in-domain specialization, and that vocabulary pruning alone,
+without domain-specific adaptation, better preserves the broad multilingual representations acquired during
+pretraining. The mBART-50 models show the opposite pattern from NLLB-200: fine-tuning still improves
+over the trimmed variant (22.09 vs 21.19 BLEU), though both remain the weakest systems in this comparison,
+consistent with the architecture’s greater sensitivity to vocabulary remapping already noted in Table 1. We
+emphasize that this out-of-domain evaluation covers a subset of the configurations in Table 1, focused on the
+strongest MultiUN fine-tuned and trimmed-only systems; a full out-of-domain sweep across all training-data
+compositions and architectures is left for future work.
+4.3
+Confidence Intervals
+Table 3 reports 95% bootstrap confidence intervals for the best fine-tuned system and the dedicated bilingual
+baseline. Intervals were produced by compute_ci.py using 1,000 bootstrap resamples over 1,500 test segments.
+Because BLEU is computed at the corpus level (geometric mean of n-gram precisions plus a corpus-wide
+brevity penalty), its bootstrap mean systematically underestimates the true point estimate, which is a known
+artefact of resampling non-linear corpus metrics [Koehn, 2004]. We therefore derive interval half-widths
+from the bootstrap distribution and re-centre them on the corpus-level point estimate, following standard
+practice in MT evaluation. chrF++ and TER, being approximately linear at the segment level, require no
+such correction: their bootstrap means coincide with the point estimates to within rounding error.
+Table 3: 95% bootstrap confidence intervals (1,000 resamples, n = 1, 500). Bounds are centred on the
+corpus-level point estimate; half-widths are taken from the bootstrap distribution. TER: lower is better (↓).
+COMET CIs are not reported as compute_ci.py does not currently produce bootstrapped COMET scores.
+System
+BLEU [95% CI]
+chrF++ [95% CI]
+TER ↓[95% CI]
+M2M100 (MultiUN)
+42.04 [40.87 – 43.22]
+58.81 [57.91 – 59.71]
+51.55 [50.30 – 52.80]
+OPUS-MT en-ar (baseline)
+44.59 [43.20 – 45.98]
+58.77 [57.79 – 59.75]
+58.59 [57.11 – 60.07]
+The confidence intervals reveal two important findings. First, the BLEU gap between OPUS-MT-en-ar (44.59)
+and M2M100 (MultiUN) (42.04) is real but modest: the intervals do not overlap, confirming a statistically
+significant difference on this metric. Second, the chrF++ scores are statistically indistinguishable (58.81 vs
+58.77, with overlapping CIs), and M2M100 (MultiUN) substantially outperforms OPUS-MT-en-ar on TER
+(51.55 vs 58.59, non-overlapping intervals). Combined with the COMET advantage of M2M100 (MultiUN)
+(0.8730 vs 0.7911), this suggests that the bilingual model’s BLEU lead is driven primarily by surface n-gram
+alignment with the MultiUN reference style, while the pruned multilingual model produces semantically
+superior and more fluent translations as captured by the meaning-based metrics.
+4.4
+Segment-Level Error Analysis (M2M100 Models)
+To complement the corpus-level metrics reported above, we conduct a fine-grained segment-level analysis
+on the two M2M100 fine-tuned variants: M2M100 (MultiUN) and M2M100 (MultiUN + OPUS-100). Both
+models were re-run on 500 held-out test segments and evaluated at the sentence level using chrF++, which
+we bucket into three quality tiers: good (≥50), medium (25–50), and poor (< 25). We additionally flag empty
+outputs and token-level repetition, both of which are known failure modes for Arabic NMT.
+8
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+Score distribution.
+Table 4 summarises the quality distribution for both models. M2M100 (MultiUN)
+achieves a higher proportion of good segments (69.2% vs 66.4%) and an identical poor rate (3.6%) compared
+to the hybrid variant. The average segment chrF++ is 59.27 vs 57.56, consistent with the corpus-level gap in
+Table 1. Critically, neither model produces any empty or repetitive outputs across 500 segments, confirming
+that the vocabulary pruning procedure does not introduce pathological decoding failures.
+Table 4: Segment-level quality distribution for M2M100 fine-tuned variants (500 test segments, chrF++
+buckets: good ≥50, medium 25–50, poor < 25).
+Model
+Avg chrF++
+Good (%)
+Medium (%)
+Poor (%)
+Empty
+Repetitive
+M2M100 (MultiUN)
+59.27
+69.2
+27.2
+3.6
+0
+0
+M2M100 (MultiUN + OPUS-100)
+57.56
+66.4
+30.0
+3.6
+0
+0
+Length bucket analysis.
+Table 5 breaks down performance by source sentence length. Across both models
+a consistent and somewhat counter-intuitive pattern emerges: long sentences (≥35 tokens) attain a lower poor
+rate than short sentences (≤15 tokens). This is explained by the nature of the test corpus (MultiUN): long
+diplomatic sentences follow predictable syntactic structures and contain many high-frequency institutional
+phrases well-covered by the formal training data, whereas short segments often consist of bibliographic
+citations, proper nouns, or domain-specific abbreviations that are underrepresented in the vocabulary.
+Table 5: Segment performance by source length bucket. Short: ≤15 tokens; medium: 16–34; long: ≥35.
+Model
+Length bucket
+Count
+Avg chrF++
+Poor (%)
+M2M100 (MultiUN)
+Short (≤15)
+125
+60.97
+5.6
+Medium (16–34)
+234
+58.57
+3.8
+Long (≥35)
+141
+58.94
+1.4
+M2M100 (MultiUN + OPUS-100)
+Short (≤15)
+125
+58.77
+7.2
+Medium (16–34)
+234
+56.77
+3.0
+Long (≥35)
+141
+57.80
+1.4
+The hybrid (MultiUN + OPUS-100) model shows an elevated poor rate for short segments (7.2% vs 5.6%) but
+a lower poor rate for medium segments (3.0% vs 3.8%), suggesting that exposure to the stylistically diverse
+OPUS-100 data slightly destabilises performance on the short formal fragments characteristic of the MultiUN
+domain while marginally improving fluency on moderately-length sentences.
+Output length ratio.
+Neither model exhibits systematic over- or under-generation. M2M100 (MultiUN)
+achieves an average hypothesis-to-reference length ratio of 0.97 (virtually perfect), with only 3 segments
+(0.6%) producing outputs shorter than half the reference length and 1 segment (0.2%) producing outputs
+more than twice the reference length. M2M100 (MultiUN + OPUS-100) shows a ratio of 0.96 with similarly
+negligible over/under-generation rates (3 short, 2 long out of 500).
+Head-to-head comparison.
+Aligning segments by ID across both 500-segment files yields 500 matched
+pairs. M2M100 (MultiUN) produces a higher chrF++ score on 246 segments (49.2%), while M2M100 (Mul-
+tiUN + OPUS-100) leads on 174 segments (34.8%), with 80 ties (16.0%). M2M100 (MultiUN) decisively
+outperforms (∆chrF++ > 10) on 55 segments, compared to only 23 segments where the hybrid variant has a
+large advantage. The segments in which the formal model excels are predominantly long institutional passages
+where MultiUN training data provides direct in-domain coverage. Conversely, the hybrid model’s advantages
+tend to occur on medium-length segments with informal phrasing, where the OPUS-100 component of the
+training data provides relevant exposure.
+Qualitative error taxonomy.
+Inspecting the worst-performing segments across both models reveals
+three recurring error types. First, bibliographic leakage: segments consisting of partial citations (e.g. “(3) of
+the commentary to article 12, p. 126”) are frequently transliterated rather than rendered in Arabic script,
+yielding near-zero chrF++ scores. These segments expose a gap between the multilingual formal register
+of MultiUN prose and the parenthetical citation style it occasionally embeds. Second, reference mismatch:
+certain references point to text that is substantially different in the Arabic side (e.g. the source discusses one
+9
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+topic while the reference Arabic sentence discusses a completely different subject), inflating the apparent error
+count for otherwise fluent translations. Third, domain shift in short proper nouns: place names, personal
+names, and institution acronyms (e.g. “Vanuatu”, “N.P.D.D.”) tend to be transliterated in the hypothesis but
+transcribed differently in the reference, penalising chrF++ despite producing pragmatically correct output.
+These findings reinforce two practical recommendations: (i) formal-register fine-tuning data should be
+complemented with citation- and entity-specific augmentation to close the short-segment gap, and (ii) COMET
+should be given significant weight alongside BLEU when evaluating Arabic NMT systems, as it is less sensitive
+to the reference-mismatch artefacts described above.
+5
+Conclusion
+We have presented in this paper a minimalist, yet powerful, two-stage framework for efficient multilingual
+NMT that combines corpus-driven vocabulary pruning with targeted fine-tuning. Applied to M2M100,
+mBART-50, and NLLB-200 on the English–Arabic translation task, our approach achieves approximately
+60% reduction in embedding-layer size while matching or exceeding the performance of the uncompressed
+baselines. The best system, a pruned and fine-tuned M2M100 trained on the MultiUN corpus, achieves a
+BLEU of 42.04 and a COMET score of 0.8730, outperforming the zero-shot baseline by more than 15 BLEU
+points and approaching the performance of dedicated bilingual models at a substantially lower memory cost.
+Segment-level analysis reveals that neither M2M100 variant exhibits empty or repetitive outputs, and that
+long-sentence performance is robust across both training data compositions. The main remaining challenge
+lies in short segments containing bibliographic references, proper nouns, and domain-specific abbreviations,
+which are failure modes independent of the pruning procedure and call for targeted data augmentation.
+Future work will explore extending the pruning framework to larger model variants (M2M100-1.2B, NLLB-
+200-1.3B), applying the approach to additional language pairs with non-Latin scripts, and integrating
+structured knowledge distillation to further reduce the parameter count of the attention layers beyond
+what vocabulary pruning alone achieves. We also plan to investigate entity-preserving strategies, such as
+NER-guided vocabulary retention, to mitigate failure modes on proper nouns, citations and domain-specific
+abbreviations identified in our error analysis.
+Limitations
+While our approach is applicable to any language pair, it has been validated on the single English-Arabic pair.
+We selected this pair due to Arabic’s morphological complexity and non-Latin script, providing a rigorous
+testbed. Although the methodology is transferable, further evaluation on diverse language families is required
+to determine whether the reported 60% memory savings generalize across model architectures and tokenization
+schemes. Furthermore, the corpus-driven pruning strategy can lead to performance degradation on rare
+entities (e.g. proper nouns, citations) absent from the training data. Our error analysis confirmed that strict
+vocabulary reduction has difficulty handling these out-of-vocabulary (OOV) items; targeted entity-preserving
+strategies could mitigate this issue. Finally, we observe a trade-off between in-domain specialization and
+generalization: models fine-tuned exclusively on formal data (MultiUN) showed slight degradation on general
+domain text (FLORES-200) compared to the hybrid (MultiUN and OPUS-100) variant while the latter
+exhibited reduced in-domain performance. This suggests that balancing training data composition is essential
+to maintain cross-domain adaptability alongside memory optimization.
+References
+Orhan Firat, Kyunghyun Cho, and Yoshua Bengio. Multi-way, multilingual neural machine translation with
+a shared attention mechanism. In arxiv preprint arxiv:1601.01073, 2016.
+Melvin Johnson, Mike Schuster, Quoc V. Le, Maxim Krikun, Younghui Wu, Zhifeng Chen, Nikhil Thorat,
+Fernanda Viégas, Martin Wattenberg, Greg Corrado, Macduff Hughes, and Jeffrey Dean.
+Google’s
+multilingual neural machine translation system: Enabling zero-shot translation. Transactions of the
+Association for Computational Linguistics, 5:339–351, 2017.
+Taku Kudo. Subword regularization: Improving neural network translation models with multiple subword
+candidates. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 66–75, 2018.
+10
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+Minh-Thang Luong, Ilya Sutskever, Quoc V. Le, Oriol Vinyals, and Wojciech Zaremba. Addressing the rare
+word problem in neural machine translation. In Proceedings of the 53rd Annual Meeting of the Association
+for Computational Linguistics and the 7th International Joint Conference on Natural Language Processing,
+pages 11–19, 2015.
+Yinhan Liu, Jiatao Gu, Naman Goyal, Xian Li, Sergey Edunov, Marjan Ghazvininejad, Mike Lewis, and
+Luke Zettlemoyer. Multilingual denoising pre-training for neural machine translation. Transactions of the
+Association for Computational Linguistics, 8:726–742, 2020.
+Yuqing Tang, Chau Tran, Xian Li, Peng-Jen Chen, Naman Goyal, Vishrav Chaudary, Jiatao Gu, and Angela
+Fan. Multilingual translation with extensible multilingual pretraining and finetuning. arxiv preprint
+arxiv:2008.00401, 2020.
+Angela Fan, Shruti Bhosale, Holger Schwenk, Zhiyi Ma, Ahmed El-Kishky, Siddharth Goyal, Mandeep Baines,
+Onur Celebi, Guillaume Wenzek, Vishrav Chaudhary, Naman Goyal, Tom Birch, Vitaliy Liptchinsky,
+Sergey Edunov, Edouard Grave, Michael Auli, and Armand Joulin. Beyond english-centric multilingual
+machine translation. Journal of Machine Learning Research, 22(107):1–48, 2021.
+Martha R. Costa-Jussa, James Cross, Onur çrlrbi, Maha Elbayad, Kenneth Heafield, Kevin Heffernan, and
+Elah an others Kalbassi. No language left behind: Scaling human-centered machine translation. arxiv
+preprint arxiv:2207.04672, 2022.
+Ofir Zafrir, Guy Boudoukh, Peter Izsak, and Moshe Wasserblat. Q8bert: Quantized 8-bit bert. arxiv preprint
+arxiv:1910.06188, 2019.
+Sheng Shen, Zhen Dong, Jiayu Ye, Linjian Ma, Zhewei Yao, Amir Gholami, Michael W. Mahoney, and
+Kurt Keutzer. Q-bert: Hessian based ultra low precision quantization of bert. Proceedings of the AAAI
+Conference on Artificial Intelligence, 34(05):8815–8821, 2020.
+Alireza Mohammadshahi, Vassilina Nikoulina, Alexandre Berard, Caroline Brun, James Henderson, and
+Laurent Besacier. What do compressed multilingual machine translation models forget? In Findings of the
+Association for Computational Linguistics: EMNLP 2022, pages 4308–4329, 2022.
+Gabriele Prato, Ella Charlaix, and Mehdi Rezagholizadeh. Fully quantized transformer for machine translation.
+In Findings of the Association for Computational Linguistics: EMNLP 2020, pages 1–14, 2020.
+Abigail See, Minh-Thang Luong, and Christopher D. Manning. Compression of neural machine translation
+models via pruning. In Proceedings of the 20th SIGNLL Conference on Computational Natural Language
+Learning, pages 291–301, 2016.
+Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov. Analyzing multi-head self-attention:
+Specialized heads do the heavy lifting, the rest can be pruned. In In Proceedings of the 57th Annual Meeting
+of the Association for Computational Linguistics, pages 5797–5808, 2019.
+Maximiliana Behnke and Kenneth Heafield. Losing heads in the lottery: Pruning transformer attention
+in neural machine translation. In Proceedings of the 2020 Conference on Empirical Methods in Natural
+Language Processing, pages 2664–2674, 2020.
+Zeeshan Khan, Kartheek Akella, Vinay P. Namboodiri, and C. V. Jawahar. More parameters? no thanks! In
+Findings of the Association for Computational Linguistics: ACL-IJCNLP 2021, pages 96–102, 2021.
+Angela Fan, Edouard Grave, and Armand Joulain. Reducing transformer depth on demand with structured
+dropout. arxiv preprint arxiv: 1909.11556, 2019.
+David Peer, Sebastian Stabiger, Stefan Engl, and Antonio Rodrigues-Sanchez. Greedy layer pruning: speeding
+up transformer models for natural language processing. arxiv preprint arxiv:2105.14339, 2022.
+Yasmin Moslem, Muhammad Hazim Al Farouq, and John D. Kelleher. Iterative layer pruning for efficient
+translation inference. pages 1022–1027, 2025.
+Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. arxiv preprint
+arxiv:1503.02531, 2015.
+Yoon Kim and Alexander M. Rush. Sequence-level knowledge distillation. In Proceedings of the 2016
+Conference on Empirical Methods in Natural Language Processing, pages 1317–1327, 2016.
+Xu Tan, Yi Ren, Di He, Tao Qin, Zhou Zhao, and Tie-Yan Liu. Multilingual neural machine translation with
+knowledge distillation. In arxiv preprint arxiv: 1902.10461, 2019.
+Marco Gaido, Thamme Gowda, Roman Grundkiewicz, and Matteo Negri. Findings of the wmt2025 shared
+task on model compression:early insights on compressing llms for machien translation. In Proceedings of the
+Tenth Conference on Machine Translation (WMT), Volume 2: Shared Task Papers, pages 484–494, 2025.
+11
+
+Efficient Multilingual NMT via Vocabulary Pruning
+A Preprint
+Alonso Palomino.
+Selected-layer codec compression for compact speech translation models: an iswslt
+english-chinese submission. pages 40–46.
+Gurvan L’Hostis, David Grangier, and Michael Auli. Vocabulary selection strategies for neural machine
+translation. arxiv preprint arxiv:1610.00072, 2016.
+Asahi Ushio, Yi Zhou, and Jose Camacho-Collados. An efficient multilingual language model compression
+through vocabulary trimming. In Findings of the Association for Computational Linguistics: EMNLP
+2023, pages 14725–14739, 2023.
+Alexis Dorkin, Taido Purason, and Kairit Sirts. Prune or retrain:optimizing the vocabulary of multilingual
+models for estonian. In Proceedings of the 9th International Workshop on Computational Linguistics for
+Uralic Languages, pages 104–108, 2024.
+Marco Cognetta, Tatsuya Hiraoka, Rico Sennrich, Yuval Pinter, and Naoaki Okasaki. An analysis of bpe
+vocabulary trimming in neural machine translation. In Proceedings of the Fifth Workshop on Insights from
+Negative Results in NLP, pages 48–50, 2024.
+Fan Jiang, Honglin Yu, Grace Chung, and Trevor Cohn.
+Tokenizer-aware cross-lingual adaptation of
+decoder-only llms through embedding relearning and swapping. pages 7606–7636, 2026.
+Naveen Arivazhagan, Ankur Bapna, Orhan Firat, Dmitry Lepikhin, Melvin Johnson, Maxim Krikun, Mia Xu
+Chen, Yuan Cao, George Foster, Colin Cherry, Wolfgang Macherey, Zhifeng Chen, and Yonghui Wu.
+Massively multilingual neural machine translation in the wild: Findings and challenges. arxiv preprint
+arxiv:1907.05019, 2019.
+Andreas Eisele and Yu Chen. Multiun: A multilingual corpus from united nations documents. In Proceedings
+of the Seventh International Conference on Language Resources and Evaluation, pages 2868–2872, 2010.
+Jörg. Tiedemann. Parallel data, tools and interfaces in OPUS. In Proceedings of the Eighth International
+Conference on Language Resources and Evaluation, pages 2214–2218, 2012.
+Tim Dettmers, Mike Lewis, Sam Shleifer, and Luke Zettlemoyer. 8-bit optimizers via block-wise quantization.
+In arxiv preprint arxiv:2110.02861, 2022.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-Jing Zhu. Bleu: a method for automatic evaluation
+of machine translation. In Proceedings of the 40th Annual Meeting of the Association for Computational
+Linguistics, pages 311–318, 2002.
+Maja Popović. chrf: character n-gram f-score for machine translation evaluation. In Proceedings of the Tenth
+Workshop on Statistical Machine Translation, pages 392–395, 2015.
+Matthew Snover, Bonnie Dorr, Rich Schwartz, Linnea Micciulla, and John Makhoul. A study of translation
+edit rate with targeted human annotation. In Proceedings of the 7th Conference of the Association for
+Machine Translation in the Americas: Technical Papers, pages 223–231, 2006.
+Ricardo Rei, Craig Stewart, Ana C. Farinha, and Alon Lavie. COMET: A neural framework for mt evaluation.
+In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing, pages
+2685–2702, 2020.
+Naman Goyal, Cynthia Gao, Vishrav Chaudary, Peng-Jen Chen, Guillaume Wenzek, Da Ju, Sanjana Krishnan,
+Marc’Aurelio Ranzato, Francis Guzman, and Angela Fan. The flores-101 evaluation benchmark for low-
+resource and multilingual machine translation. Transactions of the association for computational linguistics
+vol. 10, pages 522–538, 2022.
+Philipp Koehn. Statistical significance tests for machine translation evaluation. In Proceedings of the 2004
+Conference on Empirical Methods in Natural Language Processing, pages 388–395, 2004.
+12

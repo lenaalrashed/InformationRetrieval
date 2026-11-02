@@ -1,0 +1,2130 @@
+Attributable by Construction: Claim-Anchored Provenance for
+Multi-Document Summarization
+Shuo Guan
+UBS AG
+NY, 10010
+shuo.guan@ubs.com
+Abstract
+Large language models produce fluent multi-
+document summaries, but their attributions
+are typically coarse—whole documents or
+passages—and generated post hoc, leaving
+each statement hard to verify. We argue that
+attribution should be a structural property of
+generation rather than a downstream prediction.
+We present CAMS, a Claim-Anchored Multi-
+document Summarization framework that de-
+composes every source document into atomic
+claims whose provenance is resolved determin-
+istically from verbatim quotes to token spans,
+clusters equivalent claims across documents
+while flagging inter-source conflicts, selects a
+support-aware and salient subset, and rewrites
+it so that every summary sentence terminates
+in claim identifiers resolving back to source
+spans. This yields a separation we make ex-
+plicit: provenance is an invariant holding for
+every emitted sentence independently of model
+accuracy, whereas faithfulness is an objective
+that selection, constrained rewriting, and veri-
+fication only encourage—a distinction end-to-
+end and post-hoc systems conflate. The invari-
+ant is cheap to obtain, which is exactly why
+it can be relied on; our empirical claims con-
+cern what the claim representation buys above
+it. We evaluate under a two-regime protocol
+separating reference-free citation quality from
+gold-aligned localization, audited by a support
+model never used for selection or verification.
+On MultiNews, CAMS matches strong end-to-
+end and span-attribution baselines on summary
+quality while improving faithfulness and cita-
+tion precision, raises multi-source attribution
+recall from 38% to 64% without inflating the
+number of cited sources, and cuts human ver-
+ification time per claim by 3.4×. On Divers-
+eSumm it surfaces inter-source conflicts that
+baselines resolve silently, and its faithfulness
+advantage carries to WCEP under zero-shot
+transfer of the selector. We release code and
+∼320K claim–span annotations over the Multi-
+News test split.
+1
+Introduction
+Multi-document summarization (MDS) condenses
+topically related documents into a short, coherent
+summary (Fabbri et al., 2019). Modern LLMs
+are strong abstractive summarizers, yet two prob-
+lems persist and are especially acute across mul-
+tiple sources.
+First, faithfulness:
+abstractive
+systems hallucinate content unsupported by—or
+contradicting—their inputs (Maynez et al., 2020;
+Goyal and Durrett, 2022).
+Second, verifiabil-
+ity: even when systems cite sources, citations are
+coarse, pointing to whole documents or paragraphs,
+and are produced after generation, so a reader must
+still sift through irrelevant text to confirm any state-
+ment (Gao et al., 2023; Slobodkin et al., 2024).
+MDS compounds both. The same fact recurs
+across sources (redundancy), sources disagree (con-
+flict), and one summary statement is often sup-
+ported by evidence drawn from several documents
+at once (multi-source support). End-to-end models
+flatten all three: they silently deduplicate, paper
+over disagreement, and attribute to a single best
+document even when support is distributed (Huang
+et al., 2024).
+These are failures of a prediction: post-hoc attri-
+bution asks a model to guess, after the fact, where
+a sentence came from. We instead make attribution
+a property of the pipeline’s data flow. CAMS lo-
+calizes content before it is realized: each atomic
+claim is bound at extraction time to a token span in
+a specific document, equivalent claims are merged
+across documents into clusters whose provenance
+is the union of their spans, and the rewriter may
+only emit sentences tagged with cluster identifiers.
+Because the identifier-to-span map is a stored table
+rather than a learned function, every emitted sen-
+tence resolves to source spans regardless of how
+well any component performs.
+This lets us state precisely what is and is not guar-
+anteed. Provenance is a structural invariant (§3.2);
+1
+arXiv:2606.23989v5 [cs.CL] 11 Sep 2026
+
+faithfulness remains an objective, encouraged by
+self-support scoring, bidirectional entailment dur-
+ing clustering, and post-rewrite verification, be-
+cause every learned step can still fail. We enumer-
+ate the residual failure modes rather than hiding
+them, and audit citations with support models sepa-
+rated from selection and verification. The invariant
+is deliberately cheap—any pipeline that forces iden-
+tifiers and stores the map obtains it—and that is the
+point: a guarantee costing little is one a system
+keeps under weaker backbones, domain shift, and
+its own failures. Our empirical claims sit down-
+stream of it. What the claim representation buys,
+and a raw-span or passage representation cannot,
+is attribution to evidence distributed over several
+documents (§5.3) and disagreement made explicit
+rather than decoded away (§5.5); attributing before
+generating buys the guarantee and not accuracy,
+a negative result we report as such (§5.4). Prior
+modular work makes the opposite trade: PROCLUS-
+TER (Ernst et al., 2022) clusters propositions across
+documents but emits no citations, while span-first
+generation (Slobodkin et al., 2024) anchors to raw
+spans that cannot merge across sources.
+Our contributions are: (i) a claim-anchored mod-
+ular MDS framework whose intermediate repre-
+sentation is at once attribution anchor and veri-
+fication unit, with the invariant and its residual
+failure modes stated explicitly (§3.2) and cross-
+document clustering shown to be the mechanism—
+not a bonus—behind multi-source, span-level cita-
+tion (§5.3); (ii) a two-regime protocol separating
+citation quality from localization accuracy, with
+an evaluator-decoupled audit, an ordering ablation,
+and multi-source attribution reported as precision
+and recall against a trivial over-citation control
+(§4.3, §5.4); and (iii) a public release of code and
+claim–span annotations over MultiNews.
+2
+Related Work
+Faithful summarization and its evaluation.
+Faithfulness evaluation (Maynez et al., 2020;
+Kryscinski et al., 2020) has moved from n-gram
+overlap (Lin, 2004) to entailment- and QA-based
+metrics (Laban et al., 2022; Fabbri et al., 2022;
+Zha et al., 2023; Honovich et al., 2022; Tang et al.,
+2024) and decomposition into atomic units (Min
+et al., 2023; Liu et al., 2023b). WiCE (Kamoi et al.,
+2023) annotates entailment over sub-sentence units
+with the minimal supporting evidence subset—the
+granularity of our no-overflow check (§3.7). De-
+composition is not a solved primitive: granularity
+is under-specified (Wanner et al., 2024) and over-
+decontextualization can make a claim unverifiable
+(Gunjal and Durrett, 2024), which is why claim
+text and verbatim quote stay separate, separately
+checked fields (§3.3).
+Attributed text generation.
+A growing line of
+work asks models to emit text with supporting ev-
+idence (Rashkin et al., 2023; Bohnet et al., 2022).
+GopherCite (Menick et al., 2022) pairs each an-
+swer with a verbatim quote, so evidence is checked
+by string matching rather than trusted as a pre-
+diction; we adopt that insight—a copied string is
+verifiable where a predicted offset is not—inside an
+MDS pipeline, resolving quotes to token spans our-
+selves (§3.3). ALCE (Gao et al., 2023) introduced
+NLI-based citation precision and recall, but most
+systems cite at passage granularity, after generat-
+ing. Controlled Text Reduction (Slobodkin et al.,
+2022) and “Attribute First, then Generate” (Slobod-
+kin et al., 2024) instead condition generation on
+pre-selected source spans and reuse them as attri-
+butions; later systems push citation below the pas-
+sage by varied means (Xia et al., 2025; Wan et al.,
+2025; Chuang et al., 2025; Hirsch et al., 2025),
+surveyed by Schreieder et al. (2025). Their units
+are document-local: a citation may list several of
+them, but nothing in the representation records that
+two units state the same fact, so evidence recur-
+ring across sources stays several unrelated citations
+rather than one multi-source unit. We differ in the
+type of intermediate: normalized atomic claims,
+which merge across documents, rather than raw
+spans, which cannot—this is what makes one ci-
+tation multi-source (§5.3). Fine granularity is not
+free: Wang et al. (2026) report that requiring a gen-
+erator to cite at sentence granularity degrades cita-
+tion quality. Their diagnosis is that fine positional
+units sever the dependencies a statement needs, and
+their prescription is to match citation units to the
+model’s semantic scope—which is what a decon-
+textualized claim is, so our units are fine-grained
+without being fragments.
+Proposition-level
+modular
+summarization.
+Closest to us in representation is PROCLUSTER
+(Ernst et al., 2022), which detects salient proposi-
+tions, groups them into paraphrastic clusters with a
+supervised aligner (Ernst et al., 2021), and fuses
+each cluster into a sentence. We share the view
+that propositions are a cleaner unit than sentences,
+and differ in four ways: PROCLUSTER emits no
+2
+
+citations and stores no token-level provenance,
+whereas our claims carry a resolved span from
+the first stage, which is what makes the invariant
+of §3.2 available at all; we confirm every merge
+with bidirectional entailment rather than a learned
+similarity score (§3.4); we model CONFLICT as
+a first-class relation, so disagreement is surfaced
+rather than fused away; and we verify generated
+sentences against the spans they cite. Because
+PROCLUSTER targets DUC/TAC-style inputs
+and emits citation-free bullet-style output, it is
+comparable under neither regime (§4.3), so we
+discuss rather than run it. Extract–Select–Rewrite
+(Guan and Padmakumar, 2023) shares the pipeline
+shape but extracts OpenIE relation triples (Angeli
+et al., 2015) from one document; structure has also
+been injected for salience (Guan, 2021).
+Multi-document
+summarization.
+MDS
+requires
+modeling
+cross-document
+relations,
+redundancy, and coverage (Fabbri et al., 2019;
+Xiao et al., 2022); classical systems trade relevance
+against redundancy via MMR (Carbonell and
+Goldstein, 1998), and recent benchmarks stress
+diverse and conflicting information across sources
+(Huang et al., 2024), which our clustering and
+conflict modules expose in the attribution layer.
+3
+Method
+3.1
+Overview and Notation
+Given source documents D
+=
+{d1, . . . , dK},
+CAMS produces a summary Y and, for each sum-
+mary sentence, a set of supporting source spans,
+written c = (doc, start, end). The pipeline has
+five stages (Figure 1): claim extraction, cross-
+document clustering and conflict detection, content
+selection, attributable rewriting, and verification.
+3.2
+Provenance as an Invariant
+Two properties are usually bundled under “attribu-
+tion.” We separate them.
+The provenance invariant.
+Every sentence y ∈
+Y carries a non-empty set of cluster identifiers
+{gj}, and each gj resolves through the stored
+map gj 7→SPANS(gj) to at least one token span
+(k, start, end) with 0 ≤start < end ≤|dk|—
+regardless of the accuracy of the extractor, clus-
+terer, selector, or verifier. This is a property of
+the construction, not a theorem: clusters are built
+only from claims whose quote was located (§3.3),
+SPANS(g) is a stored union of such spans, and the
+verifier drops any sentence whose markers fail to
+parse (§3.7), so no learned component lies between
+identifier and span.
+What the invariant does not buy.
+The invariant
+sends a reader to a specific, short piece of source
+text; it does not guarantee that text supports the
+sentence. The residual failure modes are:
+E1 extraction, the claim misreads its passage;
+E2 decontextualization, a restored entity, time, or
+place is wrong (Gunjal and Durrett, 2024); E3 lo-
+calization, the quote matches a different occurrence
+of the same string; E4 clustering, non-equivalent
+claims are merged, so a citation points at a source
+saying something slightly different; E5 verification,
+the NLI support judgment is itself wrong.
+We estimate E1–E5 empirically in Appendix H
+rather than assuming them away, and design the
+evaluation so that E5 cannot inflate our headline
+numbers: the model scoring reported citation pre-
+cision, Meval, is a distinct checkpoint from those
+used for selection (Msel) and verification (Mver),
+and is never invoked during extraction, selection,
+rewriting, verification, threshold tuning, or repair.
+That separation buys less than statistical indepen-
+dence (Limitations); the strongest decoupling evi-
+dence is the human study (§5.8).
+3.3
+Claim Extraction with Provenance
+For each document dk we prompt an LLM to
+decompose it into atomic claims—minimal, self-
+contained propositions (Min et al., 2023). Demand-
+ing offsets directly is unreliable, since instruction-
+tuned models miscount positions and hallucinate
+spans, so we decouple what is claimed from where
+it is stated. The extractor returns records ⟨ti, qi, k⟩—
+decontextualized claim text, a verbatim quotation
+copied from dk that licenses it, and the document
+id—and never reports offsets. Provenance is then
+resolved deterministically by locating qi in dk,
+yielding ci = (k, start, end) and the candidate set
+Ck = {(ti, ci)}. This locates the quote but does
+not guarantee that ti is entailed by qi (E1); that
+support is scored during selection and rechecked
+after rewriting.
+Claims must stand alone outside their paragraph,
+so the prompt requires decontextualized proposi-
+tions (Choi et al., 2021): pronouns and bridging
+references resolved, elided subjects, times, and lo-
+cations restored. Because this can introduce wrong
+fillers (E2) and over-decontextualization degrades
+verifiability (Gunjal and Durrett, 2024), claim and
+3
+
+quote stay separate, separately checked fields—
+rewriting ti never corrupts the string qi used for
+localization. A three-tier matcher locates qi in
+dk (Algorithm 1): exact substring match; on fail-
+ure, windowed indel similarity over a normalized
+form, accepting the best window above ρ; then con-
+version of the character interval to a token span.
+Claims whose quote cannot be matched above ρ
+are dropped, keeping provenance precise at a small
+cost to recall—this is what makes the invariant true
+by construction. Long documents are chunked with
+paragraph-aligned overlap, global offsets restored
+before merging (Appendix C).
+3.4
+Cross-Document Clustering and Conflict
+Detection
+The union C
+=
+S
+k Ck contains many near-
+duplicate claims. We embed claim texts with a
+sentence bi-encoder (Li et al., 2023) and group
+them by agglomerative average-linkage clustering
+under a cosine-distance threshold, so equivalent
+claims merge into a cluster g whose provenance
+is the union of its members’ spans, SPANS(g) =
+S
+i∈g{ci}, possibly across documents. Embedding
+proximity conflates equivalence with relatedness
+and even contradiction—“30 killed” and “47 killed”
+sit close—so we confirm each merge with bidirec-
+tional entailment from a three-class NLI model.
+This guards against E4 rather than proving equiva-
+lence, so multi-source attribution is evaluated sep-
+arately. Removing the check drops pairwise pre-
+cision from 90 to 71 (Appendix H): it earns its
+cost, though that is not evidence it beats SuperPAL
+(Ernst et al., 2021) (Limitations).
+Conflict detection.
+Scoring all
+ |C|
+2
+
+pairs is
+quadratic, so we run NLI only over a candidate
+pool: cross-cluster pairs that are embedding-similar
+yet were not merged, plus pairs sharing a named
+entity or numeric quantity. A pair labeled CON-
+TRADICTION in either direction above a confidence
+threshold induces a conflict link. Clustering yields
+the deduplicated, multi-source evidence units that
+make distributed attribution possible; conflict links
+let later stages surface disagreement rather than
+silently resolve it. Distinguishing CONTRADIC-
+TION from mere non-entailment is why a three-
+class NLI model is needed here, not a binary sup-
+port scorer.
+3.5
+Content Selection
+The selector trades off salience, self-support, and
+coverage. The first two are pointwise, scored by
+a gradient-boosted decision tree (Ke et al., 2017;
+Friedman, 2001) over cheap, interpretable features:
+salience includes cluster size and the number of
+distinct documents spanned, so cross-source redun-
+dancy signals importance; self-support is Msel’s
+entailment score of the claim against its own spans,
+penalizing clusters their own evidence does not
+back. A GBDT is chosen for sample efficiency
+on a few thousand examples, which underlies the
+low-resource behaviour of Appendix G.
+Coverage is sequential.
+Coverage—marginal
+new information in the MMR sense (Carbonell and
+Goldstein, 1998)—depends on what has already
+been selected, so it cannot be pointwise. Selection
+is therefore a greedy loop (Algorithm 2) scoring
+score(g | S) = sGBDT(g) −λ maxg′∈S sim(g, g′)
+against the set S chosen so far, admitting the best
+cluster above θ and repeating. We sweep θ alone
+and hold λ at the conventional 0.5: the two inter-
+act, since raising λ lowers scores and so tightens
+admission, and θ traces the faithfulness–coverage
+frontier directly (§5.7). A policy decides whether
+conflicting clusters surface both sides or defer; we
+fix surface-both throughout.
+Silver labels come from distant supervision
+(Mintz et al., 2009), aligning gold reference sen-
+tences to clusters by Msel entailment; neither Mver
+nor Meval touches them, so the selector trains inde-
+pendently of the other modules (Appendix D).
+3.6
+Attributable Rewriting
+The rewriter realizes the selected clusters into flu-
+ent sentences while preserving provenance. Each
+cluster gets a short identifier gj; the rewriter sees
+the labeled claim list and must end every sentence
+with an inline marker such as [g3,
+g7].
+We
+parse these markers and resolve each gj through the
+stored map, so each sentence inherits span-level—
+and, when it cites clusters from different docu-
+ments, multi-source—citations with no separate
+attribution step. Clusters are pre-ordered for coher-
+ence (chronologically for event-centric inputs, by
+salience otherwise) and may be reordered locally;
+conditioning only on selected claim texts limits
+reintroduction of unselected content, and residual
+drift is caught by verification.
+4
+
+3.7
+Verification
+Each generated sentence is checked in two direc-
+tions against the spans it cites. The support di-
+rection tests whether those spans entail it under
+Mver above τv; the no-overflow direction decom-
+poses the sentence into atomic facts and checks that
+each is entailed, in the spirit of FActScore (Min
+et al., 2023), catching the unsupported extra clause
+a sentence-level check misses. A sentence passes
+only if both succeed; otherwise we apply at most
+R repairs—re-retrieving the best supporting cluster
+by NLI when the citation is wrong, re-decoding
+otherwise—and drop what still fails. A verifier
+pass is an automatic support judgment, not proof
+of truth (E5).
+4
+Experimental Setup
+4.1
+Datasets
+MultiNews (Fabbri et al., 2019) is our primary
+benchmark, with its human sub-sentential source–
+summary alignments (Ernst et al., 2021) as gold for
+fine-grained localization. DiverseSumm (Huang
+et al., 2024) targets diverse and conflicting in-
+formation across sources and supplies human-
+validated references for our conflict study. WCEP
+(Gholipour Ghalandari et al., 2020) supplies short,
+event-centric summaries as a transfer setting.
+Throughout, “zero-shot” scopes narrowly to the
+selector—trained on MultiNews, applied to WCEP
+untrained—and not to the frozen backbone, whose
+pretraining data we cannot inspect (Limitations).
+Statistics are in Appendix B.
+4.2
+Baselines and Controls
+We compare against (1) a strong end-to-end LLM
+prompted to summarize with passage-level cita-
+tions, ALCE-style (Gao et al., 2023); (2) Attribute
+First, then Generate (Slobodkin et al., 2024), the
+closest span-attribution method, in the same setting;
+(3) PRIMERA (Xiao et al., 2022) / LED (Beltagy
+et al., 2020) with a post-hoc fact-checker; and (4)
+the original ESR (Guan and Padmakumar, 2023)
+on concatenated documents.
+Controls.
+Two controls target this paper’s spe-
+cific claims. CAMS-posthoc separates the claim
+representation from attributing before generating:
+identical claim pool, clustering, selection, and
+rewriter, but the rewriter emits no markers and cita-
+tions are assigned afterwards by NLI retrieval over
+the same cluster pool, so any gap is attributable
+to ordering alone (§5.4). Cite-top-2 bounds triv-
+ial inflation: it appends the second-highest-scoring
+document’s span to every citation regardless of
+support, giving the multi-source recall reachable
+without cross-document reasoning (§5.3).
+4.3
+Evaluation Protocol
+Quality is reported with ROUGE (Lin, 2004),
+BERTScore (Zhang et al., 2020), and an LLM-as-
+judge coverage score (Liu et al., 2023a; Zheng et al.,
+2023) for the frontier of §5.7; faithfulness with
+AlignScore (Zha et al., 2023), SummaC (Laban
+et al., 2022), and FActScore (Min et al., 2023). Un-
+less stated, MultiNews uses its full 5,622-example
+test split (diagnostics use marked subsets), Divers-
+eSumm all 245, WCEP its ∼1,000-example public
+split.
+Regime 1 (citation quality, reference-free).
+Fol-
+lowing ALCE (Gao et al., 2023), we compute NLI-
+based citation recall and precision over the gen-
+erated summaries, adapted to multi-source spans,
+plus conciseness (mean cited tokens and spans per
+claim). Primary numbers use Meval; the internal
+TRUE-style score is a compatibility diagnostic only.
+All citations are projected to a common token-span
+representation, so comparisons are like-for-like.
+Regime 2 (localization accuracy, gold-aligned).
+To isolate localization from generation, we feed
+gold reference propositions as oracle content and
+measure whether each system points to the correct
+spans, scored against the human alignments via soft
+(token-IoU ≥τ) precision/recall/F1. All systems
+receive identical input: each proposition reaches
+Attribute First as one target sentence—the unit
+its span-selection stage consumes—with no claim-
+style normalization, so the input is not shaped in
+favour of claim-based systems. For multi-source
+attribution we restrict to propositions with gold sup-
+port in ≥2 documents (n=450) and report both
+recall and precision, so a system cannot win by
+over-citing. The main threshold is τ=0.5, with
+{0.3, 0.5, 0.7} for sensitivity. These alignments
+also supply the gold for the clustering diagnostic
+of Appendix H, so the two are not independent;
+nothing was tuned on either.
+Statistics.
+All comparisons use paired bootstrap
+resampling over document clusters (1,000 resam-
+ples, 95% percentile intervals).
+† marks a dif-
+ference from the strongest baseline at p < 0.05
+that survives Holm–Bonferroni correction over all
+5
+
+Source docs
+d1, . . . , dK
+Extract
+claims + spans
+Cluster
++ conflict
+Select
+(θ)
+Rewrite
+Verify
+Attributable
+summary
+regenerate on fail
+Verbatim CAMS output, MultiNews test cluster #2874 (K=5); S3 additionally shows its pre-repair draft:
+S1. The Food and Drug Administration classified the recall as Class I, its most serious category. [g4] ←one cluster, three documents (d1, d2,
+d5)
+S2. The two accounts of the impurity’s source diverge: the company traces it to a third-party solvent supplier, while the FDA locates it at the
+firm’s own Ohio plant.
+[g9, g12] ←surfaced conflict (p=0.91)
+S3. draft The recall covers more than 200,000 bottles distributed nationwide, and patients are advised not to stop taking the drug before
+consulting a physician. [g17]
+flag no-overflow ×: “the recall covers more than 200,000 bottles” is not entailed by SPANS(g17), and no cluster supports it
+final Patients are advised not to stop taking the drug before consulting a physician. [g17]
+support ✓no-overflow ✓(repair 1/2)
+The resolved spans, and the end-to-end model’s output on the same cluster—a single passage-level citation to d2, 94 tokens, missing both the
+advice clause and d4’s competing attribution—are in Appendix A.
+Figure 1: Overview of CAMS with real output. The inset gives verbatim output on one test cluster, with a
+verification repair traced on S3: the pre-repair draft, the failing no-overflow check, and the sentence actually emitted.
+m=24 tests and is at least 5 points (.05 for bounded
+scores); intervals are in Appendix G.
+4.4
+Implementation Details
+Claim extraction, atomic-fact decomposition, and
+rewriting use one frozen LLM, shared with the
+LLM baselines for a controlled comparison. Claim
+texts use gte-large embeddings (Li et al., 2023);
+conflict detection uses three-class DeBERTa-v3
+(He et al., 2023) fine-tuned on MNLI (Williams
+et al., 2018); and Msel, Mver, Meval are distinct
+TRUE-/SummaC-style models (Honovich et al.,
+2022; Laban et al., 2022). The selector is a Light-
+GBM GBDT at θ⋆=0.6; experiments run on 4×
+A100 GPUs. Every checkpoint, threshold, and
+budget is in Table 4. Code, prompts, and annota-
+tions:
+https://anonymous.4open.science/r/
+CAMS-9F2C (anonymized for review; archived un-
+der a Zenodo DOI on acceptance).
+5
+Results and Analysis
+5.1
+Quality and Faithfulness
+Table 1 reports MultiNews quality and faithfulness.
+CAMS matches the strongest fine-tuned summa-
+rizer on surface quality—level with PRIMERA on
+ROUGE-L, best on BERTScore—while improv-
+ing faithfulness over every baseline on all three
+metrics. ROUGE is reported for reference only,
+correlating weakly with faithfulness (Maynez et al.,
+2020; Goyal and Durrett, 2022).
+All three faithfulness metrics are entailment-
+based, so the margin over Attribute First (.91 vs .85)
+could in principle reflect CAMS filtering its own
+output with a related model family. Three results
+say otherwise. With verification ablated CAMS
+still scores .86, so self-selection accounts for the
+System
+R-L
+BERT
+Sc.
+Align
+Sc.
+Sum
+maC
+FAct
+Sc.
+E2E LLM (ALCE)
+22.8
+86.5
+.79
+.71
+.75
+Attribute First
+23.9
+87.0
+.85
+.79
+.82
+PRIMERA + chk.
+25.4
+87.4
+.81
+.74
+.78
+ESR (concat)
+22.0
+85.8
+.83
+.78
+.80
+CAMS (ours)
+25.4
+87.6
+.91†
+.87†
+.90†
+−clustering
+24.5
+87.1
+.89
+.85
+.88
+−verification
+24.9
+87.4
+.86
+.82
+.85
+Table 1: Quality and faithfulness on MultiNews. †:
+p < 0.05 vs. the strongest baseline (paired bootstrap).
+PROCLUSTER does not appear: it emits citation-free,
+bullet-style fused output, comparable under neither
+regime, so it is discussed but not run (Limitations). All
+three faithfulness metrics are entailment-based; the non-
+NLI counterpart is the human support rate of Table 11.
+ROUGE-1/2 and intervals in Appendix G.
+final .05, not the gap; the same post-processor ap-
+plied uniformly lifts baseline FActScore only to
+.79 and .83, at sharp coverage cost (Appendix F);
+and annotators sharing no training data with any
+component reproduce the ordering (§5.8).
+Constrained rewriting does not force one sen-
+tence per cluster: markers sit at sentence bound-
+aries and one sentence may realize several clusters
+(Figure 1, S2). We make no readability claim from
+Table 1, whose surface metrics are insensitive to
+sentence-level connectivity; the point is structural.
+5.2
+Citation Quality (Regime 1)
+CAMS attains the highest citation precision under
+the independent evaluator (84, vs 76 for Attribute
+First and 59 end-to-end), and the margin is smaller
+than under the internal diagnostic (88)—the desired
+sanity check, since CAMS filters its own outputs
+with a TRUE-style model. It is also the most con-
+cise system (22 tokens per claim) at higher recall
+6
+
+(81), and cites slightly more spans per claim than
+Attribute First (1.8 vs 1.6) from aggregating evi-
+dence across documents, yet far fewer tokens, each
+span being sub-sentential (Table 8). PRIMERA
+and ESR emit no citations. We claim only that the
+combination of quote-then-resolve provenance and
+the modular claim pipeline beats passage-level and
+span-first attribution, not that either component is
+the active ingredient (Limitations).
+Circularity and post-processing controls.
+Be-
+cause CAMS filters and repairs its own sentences
+with Mver, a high internal score alone is insuffi-
+cient evidence. Under Meval the ranking is stable
+but the advantage over Attribute First shrinks from
+10 to 8 points, and removing the self-support fea-
+ture or the verification loop lowers precision under
+both evaluators—inconsistent with pure circular-
+ity. The shared post-processor tells the same story
+here as on faithfulness: applied uniformly it raises
+end-to-end precision only 59 →64 and Attribute
+First 76→77, each at a sharp coverage cost, while
+recovering the full pipeline’s precision from the
+verifier-ablated variant (77 →84) at essentially
+unchanged recall (82 →81). The post-processor
+being shared, the difference lies in what it operates
+on: span-anchored claims whose citation failures
+are usually repairable, not droppable.
+5.3
+Localization and Multi-Source
+Attribution (Regime 2)
+Table 2 isolates localization using oracle content.
+On span-F1 CAMS is on par with the span-first
+method (77 vs 72), so claim anchoring does not cost
+single-source localization. The decisive difference
+is multi-source attribution: for propositions with
+gold support in two or more documents, CAMS re-
+calls the distributed sources 64% of the time versus
+38% for Attribute First, with non-overlapping 95%
+intervals (Appendix G).
+This is not over-citation. The Cite-top-2 con-
+trol reaches 57 multi-source recall by construc-
+tion but collapses to 55 precision, whereas CAMS
+holds 75 precision at 64 recall—14 points above
+Attribute First’s 61, widening the multi-source F1
+gap to 69 versus 47. The control cites strictly more
+sources than either system and still lands 13 F1
+below CAMS.
+Ablating cross-document clustering drops multi-
+source recall to 31%, below the span-first base-
+line: without clustering each claim stays tied to
+one document’s span, so distributed facts go to
+Span
+Multi-source
+System
+P
+R
+F1
+P
+R
+F1
+Retrieval (LB)
+41 55 47 36
+22
+27
+Cite-top-2 (ctrl)
+58 77 66 55
+57
+56
+Attribute First
+74 70 72 61
+38
+47
+CAMS (ours)
+76 78 77 75 64†
+69
+−clustering
+75 71 73 62
+31
+41
+Gold-claim (UB) 89 92 90 89
+81
+85
+Table 2: Regime 2 localization at τ=0.5; multi-source
+columns are restricted to propositions with gold support
+in ≥2 documents. Cite-top-2 is the trivial over-citation
+control; LB/UB are the retrieval lower bound and gold-
+claim ceiling. Sensitivity and intervals in Appendix G.
+a single source, whereas a span-first system can
+incidentally select spans from several documents.
+Cross-document merging is thus not a bonus but
+the mechanism that makes the claim representation
+competitive here.
+5.4
+Does Attributing First Matter?
+CAMS-posthoc holds the claim representation,
+clustering, selection, and rewriter fixed and moves
+citation assignment after generation. On citation
+precision the two are close (79 vs 84 under Meval),
+so ordering is not where the accuracy comes from.
+The difference is elsewhere:
+11% of CAMS-
+posthoc sentences receive no citation above thresh-
+old, and survivors collapse to 1.3 spans per claim
+(Table 8), because NLI retrieval concentrates on
+one best-matching cluster rather than recovering
+the distributed evidence the sentence was written
+from. This is what the invariant rules out: attribut-
+ing first gains not accuracy but the guarantee that
+no sentence is uncitable. Ordering therefore buys
+coverage of the guarantee; accuracy belongs to the
+claim representation and its cross-document merg-
+ing (§5.3).
+5.5
+Conflict and Diversity (DiverseSumm)
+On DiverseSumm (all 245 stories), CAMS cov-
+ers 58% of annotated divergent facts and surfaces
+61% of inter-source conflicts, attributing each side
+to its source with 73% accuracy; Attribute First
+reaches 47 / 22 / 55 and the end-to-end model sur-
+faces only 18%, typically reporting one consensus
+value. Normalized claim clusters make disagree-
+ment an attributable object rather than something
+the decoder resolves silently. A conflict is two doc-
+uments asserting mutually exclusive values for one
+attribute of one event, and counts as surfaced when
+the summary states both sides and attributes each
+7
+
+to a document asserting it; the denominator is the
+gold conflict count, so writing more cannot raise
+the rate (two annotators, all 245 stories, κ=0.65).
+5.6
+Zero-Shot Transfer and Backbone
+Robustness
+Applying the MultiNews-trained selector to WCEP
+untrained (Table 5), CAMS keeps its faithfulness
+advantage at competitive quality, though Attribute
+First obtains slightly higher ROUGE-L; that col-
+umn is comparable only within the table, not to pub-
+lished WCEP-fine-tuned numbers (Limitations).
+An oracle selector lifts ROUGE-L from 30.9 to
+33.1—past Attribute First’s 31.2—and adds .02 to
+each faithfulness metric, locating the gap in se-
+lector domain shift rather than in degradation of
+extraction or verification: on this transfer pair, the
+selector is the component that degrades.
+Do the gains come from the pipeline or a strong
+backbone? Re-running both systems with Llama-
+3.1-70B-Instruct on a 1,000-example MultiNews
+subset (Table 6) preserves the ordering: CAMS
+stays ahead on AlignScore (.88 vs .74) and citation
+precision (79 vs 52), both gaps at least as large as
+under the frozen API backbone. One substitution
+cannot show that the advantage is architectural, but
+it does rule out backbone strength as the explana-
+tion. Absolute levels fall, and extraction degrades
+most: verbatim quote-match drops from 97% to
+roughly 90%, open-weights models copying source
+strings less reliably.
+5.7
+Cost and the Faithfulness–Coverage
+Frontier
+Modularity is not free: CAMS costs roughly 8×
+an end-to-end call (Appendix E), dominated by
+per-document extraction, which scales with source
+count rather than summary length. It adds 65 s of
+machine time per summary while cutting human
+verification from 31 s to 9 s per claim (Table 11),
+breaking even at under three checked claims, or one
+with extraction parallelized. That trade holds only
+where a summary is read for verification rather than
+skimmed: CAMS targets regulated, legal, medi-
+cal, and journalistic review, not high-throughput
+summarization.
+Coverage is the other axis, and θ controls
+it: sweeping it traces a monotonic faithfulness–
+coverage frontier (Figure 2). To avoid compar-
+ing a curve against fixed points, each baseline is
+swept along its own knob—output length for the
+end-to-end model, span budget for Attribute First—
+so every system contributes a frontier; PRIMERA
+and ESR expose no comparable knob and enter
+as single points. The CAMS frontier lies above
+both swept baselines wherever all three curves are
+defined, but not uniformly: the margin over At-
+tribute First narrows from roughly .10 AlignScore
+at coverage 0.68 to .07 below 0.5, where emitting
+few, highly redundant sentences is available to any
+system. Neither baseline sweep extends past cov-
+erage 0.68, so we claim no dominance at the high-
+coverage end.
+5.8
+Human Evaluation
+Annotators judge 89% of CAMS claims fully sup-
+ported and verify each in 9 s—about 3.4× faster
+than for the document-citing baseline (Table 11).
+Each system is judged on 255 claims by three anno-
+tators (κ=0.68), system identity hidden and item
+order counterbalanced by a Latin square, so a prac-
+tice effect would shift all three timings together
+rather than produce the gap. The three systems
+decompose that gap: passage →span citation ac-
+counts for most of it (31 s →14 s), span →claim-
+anchored span for the rest (14 s →9 s, at 22 rather
+than 34 cited tokens per claim). Attribute First is
+the granularity control here, citing sub-sentential
+spans in the same token representation. The second
+step therefore does not separate claim anchoring
+from the shorter citations it yields, and the headline
+3.4× is the sum of both steps rather than a prop-
+erty of the claim representation alone. The human
+ranking (89 / 82 / 68%) reproduces that under the
+independent evaluator (84 / 76 / 59): the ordering
+depends on no automatic support model.
+6
+Conclusion
+In CAMS, atomic claims with resolved provenance
+serve as both verification unit and attribution an-
+chor. Separating what is guaranteed from what
+is merely encouraged—provenance as a structural
+invariant, faithfulness as a testable objective with
+enumerated failure modes—says precisely what a
+reader can rely on, and locates the empirical ques-
+tion in what the claim representation adds above a
+guarantee that is itself cheap. On MultiNews, at-
+tribution to distributed evidence rises from 38% to
+64% recall without inflating citation breadth, faith-
+fulness improves at matched quality, and verifica-
+tion time per claim falls 3.4×; on DiverseSumm,
+disagreement becomes an explicit, attributable ob-
+ject. The claim–span annotations are released.
+8
+
+Limitations
+Quote resolution and modularity are con-
+founded.
+Our extraction stage bundles two ideas:
+quote-then-resolve provenance, and the modular
+claim pipeline built on top of it. Every quote-then-
+resolve system we run is also modular, so these
+experiments cannot say how the credit divides be-
+tween them, and we claim only that the combina-
+tion outperforms passage-level and span-first attri-
+bution (§5.2). Separating the two requires a control
+we do not run: an end-to-end model that emits ver-
+batim quotations, resolved to spans by our own
+matcher and left otherwise unmodularized.
+No empirical comparison to PROCLUSTER.
+PROCLUSTER (Ernst et al., 2022) is the clos-
+est proposition-clustering pipeline, but it targets
+DUC/TAC-style inputs and emits citation-free
+bullet-style fused sentences, so its output cannot
+be scored under either of our regimes; we discuss
+it rather than run it. Our merge-check ablation
+(§3.4, Appendix H) shows that bidirectional entail-
+ment earns its cost against embedding similarity
+alone. It is not evidence that our clusterer beats the
+supervised SuperPAL aligner (Ernst et al., 2021)
+that PROCLUSTER relies on, and we make no such
+claim. We report our clustering diagnostics on that
+aligner’s own evaluation data (Appendix H), so the
+comparison remains available to future work.
+Evaluator decoupling is partial.
+Meval and the
+internal TRUE-style models are trained on overlap-
+ping entailment corpora (MNLI, VitaminC, ANLI).
+Separate checkpoints therefore give judgments that
+do not share parameters or calibration, not statisti-
+cally independent ones, and an audit under Meval is
+a robustness check rather than proof that circularity
+is impossible (E5). The only fully decoupled evi-
+dence is the human study, and it covers 255 claims
+per system on a single dataset (§5.8).
+Transfer
+evidence
+is
+narrow.
+“Zero-shot”
+scopes to the selector alone. Extraction and rewrit-
+ing use a frozen general-purpose LLM whose
+pretraining data we cannot inspect and which has
+very likely seen WCEP or its Wikipedia Current
+Events source, so nothing here is evidence about
+unseen-corpus generalization of the backbone. The
+same argument applies to MultiNews, our primary
+benchmark, which has been public since 2019:
+its source documents and reference summaries
+are plausibly in the backbone’s pretraining data,
+which could inflate ROUGE directly and, through
+familiarity with the source text, the gold-aligned
+Regime 2 numbers as well.
+We flag the two
+datasets symmetrically; no result in this paper
+is evidence about genuinely unseen corpora.
+Relatedly, the ROUGE column of Table 5 is not
+comparable to published WCEP results: those
+come from WCEP-fine-tuned models, whereas no
+system here receives any WCEP training signal,
+and with references averaging ∼32 words the
+length budget and the stemming and stopword
+settings of the ROUGE implementation move R-L
+by several points on their own.
+Residual failure modes and scope.
+CAMS de-
+pends on LLM-based claim decomposition; ex-
+traction errors propagate downstream (E1), de-
+contextualization can supply an incorrect entity,
+time, or place (E2), quote-to-span matching es-
+tablishes where a string occurs but not that the
+normalized claim preserves its meaning (E3), and
+claim equivalence is inherently fuzzy, so cluster-
+ing can mis-merge or split evidence (E4). Attribu-
+tion is many-to-many, and evaluating distributed
+attribution against gold is an open problem our
+soft-matching protocol only approximates. The
+pipeline’s extraction cost grows with the number
+and length of sources, raising latency relative to
+end-to-end models (§5.7).
+Our conflict policy
+makes a design choice that may not suit all ap-
+plications. Finally, our experiments are limited to
+English news; generalization to other domains and
+languages remains untested.
+Ethics Statement
+Summarization systems can mislead if they distort
+or omit source content; by making every statement
+traceable to source spans, CAMS is intended to
+support, not replace, human verification. Attribu-
+tion is not a guarantee of real-world truth, only
+of support by the provided sources, which may
+themselves be unreliable. We use publicly avail-
+able datasets consistent with their intended research
+use. Our released annotations contain claim text we
+generate and character and token offsets into Multi-
+News documents, but no verbatim source strings:
+quotes are reconstructed locally from the offsets
+against the user’s own copy of the corpus (Ap-
+pendix B). We therefore place a licence only on
+data we produced and do not redistribute news arti-
+cle text, whose terms are set by its publishers rather
+than by MultiNews or by us. Human annotation
+details, including compensation, are in §5.8 and
+9
+
+Appendix B; compute is reported in §5.7.
+References
+Gabor Angeli, Melvin Jose Johnson Premkumar, and
+Christopher D. Manning. 2015. Leveraging linguistic
+structure for open domain information extraction. In
+Proceedings of ACL-IJCNLP.
+Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2020.
+Longformer: The long-document transformer. In
+arXiv preprint arXiv:2004.05150.
+Bernd Bohnet, Vinh Q. Tran, Pat Verga, Roee Aharoni,
+Daniel Andor, Livio Baldini Soares, Jacob Eisenstein,
+Jonathan Herzig, Kelvin Gaitonde, Prateek Jain, and
+1 others. 2022. Attributed question answering: Eval-
+uation and modeling for attributed large language
+models. In Proceedings of EMNLP.
+Jaime Carbonell and Jade Goldstein. 1998. The use of
+mmr, diversity-based reranking for reordering docu-
+ments and producing summaries. In Proceedings of
+SIGIR.
+Eunsol Choi, Jennimaria Palomaki, Matthew Lamm,
+Tom Kwiatkowski, Dipanjan Das, and Michael
+Collins. 2021. Decontextualization: Making sen-
+tences stand-alone. Transactions of the Association
+for Computational Linguistics, 9:447–461.
+Yung-Sung Chuang, Benjamin Cohen-Wang, Zejiang
+Shen, Zhaofeng Wu, Hu Xu, Xi Victoria Lin,
+James R. Glass, Shang-Wen Li, and Wen-tau Yih.
+2025. SelfCite: Self-supervised alignment for con-
+text attribution in large language models. In Pro-
+ceedings of the 42nd International Conference on
+Machine Learning (ICML).
+Ori Ernst, Avi Caciularu, Ori Shapira, Ramakanth Pa-
+sunuru, Mohit Bansal, Jacob Goldberger, and Ido
+Dagan. 2022. Proposition-level clustering for multi-
+document summarization. In Proceedings of NAACL-
+HLT, pages 1765–1779.
+Ori Ernst, Ori Shapira, Ramakanth Pasunuru, Michael
+Lepioshkin, Jacob Goldberger, Mohit Bansal, and
+Ido Dagan. 2021. Summary-source proposition-level
+alignment: Task, datasets and supervised baseline.
+In Proceedings of the 25th Conference on Computa-
+tional Natural Language Learning (CoNLL), pages
+310–322.
+Ori Ernst, Ori Shapira, Aviv Slobodkin, Sharon Adar,
+Mohit Bansal, Jacob Goldberger, Ran Levy, and Ido
+Dagan. 2024. The power of summary-source align-
+ments. In Findings of the Association for Compu-
+tational Linguistics: ACL 2024, pages 6527–6548,
+Bangkok, Thailand. Association for Computational
+Linguistics.
+Alexander R. Fabbri, Wojciech Kryscinski, Bryan
+McCann, Caiming Xiong, Richard Socher, and
+Dragomir R. Radev. 2022. Qafacteval: Improved
+qa-based factual consistency evaluation for summa-
+rization. In Proceedings of NAACL.
+Alexander R. Fabbri, Irene Li, Tianwei She, Suyi Li, and
+Dragomir R. Radev. 2019. Multi-news: A large-scale
+multi-document summarization dataset and abstrac-
+tive hierarchical model. In Proceedings of ACL.
+Jerome H. Friedman. 2001. Greedy function approx-
+imation: A gradient boosting machine. Annals of
+Statistics, 29(5):1189–1232.
+Tianyu Gao, Howard Yen, Jiatong Yu, and Danqi Chen.
+2023. Enabling large language models to generate
+text with citations. In Proceedings of EMNLP.
+Demian
+Gholipour
+Ghalandari,
+Chris
+Hokamp,
+Nghia The Pham, John Glover, and Georgiana Ifrim.
+2020. A large-scale multi-document summarization
+dataset from the wikipedia current events portal.
+In Proceedings of the 58th Annual Meeting of the
+Association for Computational Linguistics, pages
+1302–1308, Online. Association for Computational
+Linguistics.
+Tanya Goyal and Greg Durrett. 2022. News summariza-
+tion and evaluation in the era of gpt-3. arXiv preprint
+arXiv:2209.12356.
+Shuo Guan. 2021. Knowledge and keywords augmented
+abstractive sentence summarization. In Proceedings
+of the Third Workshop on New Frontiers in Summa-
+rization, pages 25–32, Online and in Dominican Re-
+public. Association for Computational Linguistics.
+Shuo Guan and Vishakh Padmakumar. 2023. Extract,
+select and rewrite: A modular sentence summariza-
+tion method. In Proceedings of the 4th New Frontiers
+in Summarization Workshop, pages 41–48, Singapore.
+Association for Computational Linguistics.
+Anisha Gunjal and Greg Durrett. 2024. Molecular facts:
+Desiderata for decontextualization in LLM fact veri-
+fication. In Findings of EMNLP.
+Pengcheng He, Jianfeng Gao, and Weizhu Chen. 2023.
+Debertav3: Improving deberta using electra-style pre-
+training with gradient-disentangled embedding shar-
+ing. In Proceedings of ICLR.
+Eran Hirsch, Aviv Slobodkin, David Wan, Elias Stengel-
+Eskin, Mohit Bansal, and Ido Dagan. 2025. LAQuer:
+Localized attribution queries in content-grounded
+generation. In Proceedings of the 63rd Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 15355–15370, Vi-
+enna, Austria. Association for Computational Lin-
+guistics.
+Or Honovich, Roee Aharoni, Jonathan Herzig, Ha-
+gai Taitelbaum, Doron Kukliansky, Vered Cohen,
+Thomas Scialom, Idan Szpektor, Avinatan Hassidim,
+and Yossi Matias. 2022. True: Re-evaluating factual
+consistency evaluation. In Proceedings of NAACL.
+Kung-Hsiang Huang, Philippe Laban, Alexander R. Fab-
+bri, Prafulla Kumar Choubey, Shafiq Joty, Caiming
+Xiong, and Chien-Sheng Wu. 2024. Embrace diver-
+gence for richer insights: A multi-document summa-
+rization benchmark and a case study on summarizing
+10
+
+diverse information from news articles. In Proceed-
+ings of the 2024 Conference of the North American
+Chapter of the Association for Computational Lin-
+guistics: Human Language Technologies (Volume 1:
+Long Papers), pages 570–593, Mexico City, Mexico.
+Association for Computational Linguistics.
+Ryo Kamoi, Tanya Goyal, Juan Diego Rodriguez, and
+Greg Durrett. 2023. WiCE: Real-world entailment
+for claims in Wikipedia. In Proceedings of EMNLP,
+pages 7561–7583.
+Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang,
+Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu.
+2017. Lightgbm: A highly efficient gradient boosting
+decision tree. In Advances in Neural Information
+Processing Systems (NeurIPS).
+Wojciech Kryscinski, Bryan McCann, Caiming Xiong,
+and Richard Socher. 2020. Evaluating the factual
+consistency of abstractive text summarization. In
+Proceedings of EMNLP.
+Philippe Laban, Tobias Schnabel, Paul N. Bennett, and
+Marti A. Hearst. 2022. Summac: Re-visiting nli-
+based models for inconsistency detection in summa-
+rization. In Transactions of the Association for Com-
+putational Linguistics.
+Zehan Li, Xin Zhang, Yanzhao Zhang, Dingkun Long,
+Pengjun Xie, and Meishan Zhang. 2023. Towards
+general text embeddings with multi-stage contrastive
+learning. arXiv preprint arXiv:2308.03281.
+Chin-Yew Lin. 2004. Rouge: A package for automatic
+evaluation of summaries.
+In Text Summarization
+Branches Out.
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang,
+Ruochen Xu, and Chenguang Zhu. 2023a. G-eval:
+Nlg evaluation using gpt-4 with better human align-
+ment. In Proceedings of EMNLP.
+Yixin Liu, Alexander R. Fabbri, Pengfei Liu, Yilun
+Zhao, Linyong Nan, Ruilin Han, Simeng Han,
+Shafiq Joty, Chien-Sheng Wu, Caiming Xiong, and
+Dragomir Radev. 2023b. Revisiting the gold stan-
+dard: Grounding summarization evaluation with ro-
+bust human evaluation. In Proceedings of ACL.
+Joshua Maynez, Shashi Narayan, Bernd Bohnet, and
+Ryan McDonald. 2020. On faithfulness and factual-
+ity in abstractive summarization. In Proceedings of
+ACL.
+Jacob Menick, Maja Trebacz, Vladimir Mikulik,
+John Aslanides, Francis Song, Martin Chadwick,
+Mia Glaese, Susannah Young, Lucy Campbell-
+Gillingham, Geoffrey Irving, and Nat McAleese.
+2022.
+Teaching language models to support
+answers with verified quotes.
+arXiv preprint
+arXiv:2203.11147.
+Sewon Min, Kalpesh Krishna, Xinxi Lyu, Mike
+Lewis, Wen-tau Yih, Pang Wei Koh, Mohit Iyyer,
+Luke Zettlemoyer, and Hannaneh Hajishirzi. 2023.
+Factscore: Fine-grained atomic evaluation of factual
+precision in long form text generation. In Proceed-
+ings of EMNLP.
+Mike Mintz, Steven Bills, Rion Snow, and Daniel Ju-
+rafsky. 2009. Distant supervision for relation extrac-
+tion without labeled data. In Proceedings of ACL-
+IJCNLP.
+Hannah Rashkin, Vitaly Nikolaev, Matthew Lamm,
+Lora Aroyo, Michael Collins, Dipanjan Das, Slav
+Petrov, Gaurav Singh Tomar, Iulia Turc, and Ehud
+Reiter. 2023. Measuring attribution in natural lan-
+guage generation models.
+Tobias Schreieder, Tim Schopf, and Michael Färber.
+2025. Attribution, citation, and quotation: A survey
+of evidence-based text generation with large language
+models. arXiv preprint arXiv:2508.15396.
+Aviv Slobodkin, Eran Hirsch, Arie Cattan, Tal Schuster,
+and Ido Dagan. 2024. Attribute first, then generate:
+Locally-attributable grounded text generation. In
+Proceedings of the 62nd Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 3309–3344, Bangkok, Thailand.
+Association for Computational Linguistics.
+Aviv Slobodkin, Paul Roit, Eran Hirsch, Ori Ernst, and
+Ido Dagan. 2022. Controlled text reduction. In Pro-
+ceedings of EMNLP.
+Liyan Tang, Philippe Laban, and Greg Durrett. 2024.
+Minicheck: Efficient fact-checking of LLMs on
+grounding documents. In Proceedings of EMNLP,
+pages 8818–8847.
+David Wan, Eran Hirsch, Elias Stengel-Eskin, Ido Da-
+gan, and Mohit Bansal. 2025. GenerationPrograms:
+Fine-grained attribution with executable programs.
+In Conference on Language Modeling (COLM).
+Hexuan Wang, Jingyu Zhang, Benjamin Van Durme,
+and Daniel Khashabi. 2026. Are finer citations al-
+ways better? rethinking granularity for attributed
+generation. arXiv preprint arXiv:2604.01432.
+Miriam Wanner, Seth Ebner, Zhengping Jiang, Mark
+Dredze, and Benjamin Van Durme. 2024. A closer
+look at claim decomposition.
+In Proceedings of
+*SEM.
+Adina Williams, Nikita Nangia, and Samuel R. Bow-
+man. 2018. A broad-coverage challenge corpus for
+sentence understanding through inference. In Pro-
+ceedings of NAACL.
+Sirui Xia, Xintao Wang, Jiaqing Liang, Yifei Zhang,
+Weikang Zhou, Jiaji Deng, Fei Yu, and Yanghua Xiao.
+2025. Ground every sentence: Improving retrieval-
+augmented LLMs with interleaved reference-claim
+generation. In Findings of the Association for Com-
+putational Linguistics: NAACL 2025, pages 969–988,
+Albuquerque, New Mexico. Association for Compu-
+tational Linguistics.
+11
+
+Wen Xiao, Iz Beltagy, Giuseppe Carenini, and Arman
+Cohan. 2022. Primera: Pyramid-based masked sen-
+tence pre-training for multi-document summarization.
+In Proceedings of ACL.
+Yuheng Zha, Yichi Yang, Ruichen Li, and Zhiting Hu.
+2023. Alignscore: Evaluating factual consistency
+with a unified alignment function. In Proceedings of
+ACL.
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q.
+Weinberger, and Yoav Artzi. 2020. Bertscore: Eval-
+uating text generation with bert. In Proceedings of
+ICLR.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin,
+Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang,
+Joseph E. Gonzalez, and Ion Stoica. 2023. Judg-
+ing llm-as-a-judge with mt-bench and chatbot arena.
+ArXiv preprint arXiv:2306.05685.
+A
+Worked Example (Figure 1)
+The markers in Figure 1 resolve as follows. g4→
+d1[76:84] “the FDA classified the recall as Class
+I” · d2[203:211] “regulators designated the ac-
+tion a Class I recall” · d5[41:52] “the recall was
+labelled Class I, the FDA’s most severe tier”.
+g9→d2[318:329] “the company said the impu-
+rity came from a third-party solvent supplier”.
+g12→d4[95:105] “FDA investigators traced the
+contamination to the firm’s Ohio plant” (g9↔g12
+contradiction, p=0.91). g17→d1[412:423] “pa-
+tients should not stop the medication without talk-
+ing to a doctor”. S1 is the multi-source case: one
+cluster, three documents, one citation.
+For contrast, the end-to-end LLM summarizes
+the same cluster as “Federal regulators have issued
+a Class I recall . . . an impurity linked to a third-
+party solvent supplier . . . patients are urged to con-
+sult their doctors. . . ”, citing [1]→d2, paragraphs
+2–4 (94 tokens). That passage lacks the advice
+clause, which comes from d1, and d4’s competing
+attribution never appears at all—the two failure
+modes, imprecise localization and silently resolved
+conflict, that motivate the claim representation.
+B
+Dataset Statistics and Compute
+Table 3 summarizes the datasets and their role. All
+systems are evaluated on the same preprocessed
+inputs and matched output-length constraints.
+Released
+artifact.
+We
+release
+claim–span
+records over the MultiNews test split: 15,742
+documents and ∼320K claims, with ∼36 clusters
+per topic after cross-document merging.
+Each
+Dataset
+Train
+Dev
+Test Primary use
+MultiNews
+44,972
+5,622
+5,622 Main benchmark
+DiverseSumm
+–
+–
+245 Conflict analysis
+WCEP
+∼8.2k ∼1.0k ∼1.0k Zero-shot transfer
+Table 3: Datasets. WCEP train/dev are listed for com-
+pleteness only—they are not used. MultiNews clus-
+ters average 2.8 documents of ∼430 words (∼1,200
+words per cluster); DiverseSumm stories average 10
+documents; WCEP clusters average ∼9.1 documents
+under the WCEP-10 setting, with ∼32-word summaries.
+record contains the decontextualized claim, the
+resolved character and token spans, and the
+cluster assignment, as the fields claim, doc_id,
+char_start, char_end, tok_start, tok_end,
+and cluster_id.
+We do not redistribute the
+quoted source strings themselves:
+the quote
+field ships empty, and a script included with the
+release repopulates it locally by reading the stored
+offsets against the user’s own copy of MultiNews.
+This keeps the resource usable—the quote is
+recoverable exactly, and the offsets are the part
+that took work to produce—while leaving the news
+text under its original terms rather than relicensing
+verbatim article fragments. The annotations, being
+derived data we produced, are released under CC
+BY 4.0.
+Human annotation.
+Three annotators judged
+255 claims for each of the three systems in Ta-
+ble 11, giving 765 items, each judged indepen-
+dently by all three annotators for 2,295 support
+judgments in total. Each item presented one claim
+together with the source material cited for it—token
+spans for CAMS and Attribute First, a passage for
+the end-to-end baseline—and the annotator marked
+whether the claim was fully supported by that mate-
+rial. A further two annotators labelled inter-source
+conflicts on DiverseSumm (§5.5). The source doc-
+uments in both studies are the public news text of
+MultiNews and DiverseSumm.
+Recruitment and expertise. The three anno-
+tators are graduate students in computational lin-
+guistics at universities in New York City, recruited
+through a departmental research-participation mail-
+ing list and engaged as paid contractors. All are
+fluent English speakers with prior text-annotation
+experience, and each completed a 20-item calibra-
+tion round with feedback—drawn from the Multi-
+News development split and excluded from every
+number reported here—before beginning. None
+of the three is an author of this paper, and none
+12
+
+had seen the systems, the prompts, or any interme-
+diate output beforehand; the authors prepared the
+items and analysed the returned labels but supplied
+no judgments and did not observe annotators at
+work. The two DiverseSumm conflict annotators
+were recruited the same way and are likewise not
+authors.
+Compensation. Annotators were paid $30.00
+per hour for all time spent on the task, including
+instruction reading and the calibration round. The
+work was performed in New York City, where the
+statutory minimum wage was $17.00 per hour for
+the whole period of the study, so the rate is roughly
+1.8× the applicable minimum. Each annotator
+worked about six hours across three sessions, for
+approximately $180 each. Payment was hourly
+rather than per item by design: a piece rate would
+have paid annotators to be fast at exactly the quan-
+tity this study measures (verification time), so no
+one’s compensation depended on how many items
+they completed, how long they took, or which sys-
+tem an item came from. Annotators were paid in
+full for time worked regardless of whether they
+finished the item set.
+Instructions and interface. Items were shown
+one at a time in a small browser tool: the claim
+on top and, below it, only the material cited for
+that claim—the cited token spans for CAMS and
+Attribute First, the cited passage for the end-to-end
+baseline—rendered in an identical visual format
+for all systems, with no system name, no surround-
+ing document text, and no way to open the rest
+of the source. Annotators chose one of three la-
+bels, fully supported, partially supported, or not
+supported; Table 11 reports the first against the
+other two collapsed. The instruction that governs
+the whole study was stated first and repeated on
+every screen: judge whether the displayed material
+by itself establishes the claim, disregarding what
+you personally know to be true and anything else
+the article might say elsewhere. Because uncited
+text is never displayed, this instruction is enforced
+by the interface rather than left to compliance. No
+“cannot tell” option was offered; annotators were
+told to answer not supported when the displayed
+material was insufficient, which is the reading a
+verifier would take.
+Blinding and ordering. System identity was
+hidden. Items carried no system name, and claim
+text, citation markers, and cited material were ren-
+dered with identical fonts, colours, and layout
+across systems, so the only thing that varied visibly
+was the cited material itself—which is the variable
+under test. Annotators were told that outputs came
+from several unnamed systems but not how many
+or in what proportion. The three systems’ items
+were interleaved in one continuous stream rather
+than presented in blocks. Each of the 255 eval-
+uation positions contributes one item from each
+system; the order in which those three appear was
+counterbalanced across the three annotators by a
+3 × 3 Latin square, so each system occupies each
+of the three positions equally often. Within that
+constraint the global order was shuffled indepen-
+dently per annotator (seeds 1–3), with items from
+the same position kept at least 20 apart so that no
+annotator judged three views of related content in
+immediate succession. Because every system is
+uniformly distributed over the session, a practice
+effect makes all three systems faster together and
+cannot generate the 3.4× difference of Table 11;
+this is what licenses reading that difference as a
+property of the citations rather than of the sched-
+ule.
+Timing. The interface logged wall-clock time
+from an item first rendering to its label being sub-
+mitted; annotators could not revisit a submitted
+item, so each item contributes exactly one time
+per annotator. Items taking longer than 120 s were
+treated as interruptions and excluded from the tim-
+ing statistics only—their labels were kept—which
+removed 14 of the 765 items, split 6/4/4 across the
+end-to-end baseline, Attribute First, and CAMS.
+Table 11 reports means over the remaining items,
+pooled across annotators. Since a mean is sensitive
+to a few long pauses even after capping, we also re-
+port medians: 27 s, 13 s, and 8 s respectively, giving
+a ratio of 3.4× as well, so the headline comparison
+does not depend on the choice of statistic.
+Agreement. The support label gives κ=0.68;
+the DiverseSumm conflict label gives κ=0.65. The
+two coefficients are of different kinds because the
+two studies had different numbers of raters. The
+support figure is Fleiss’ κ over three raters on the
+three-way label, computed on all 765 items: the
+design is fully crossed, every annotator judged ev-
+ery item, and no subsetting is involved. (Mean
+pairwise Cohen’s κ on the same data is 0.69, and
+Fleiss’ κ on the binary collapsed label is 0.71; we
+report the three-way figure as the conservative one.)
+The DiverseSumm figure is Cohen’s κ between the
+two conflict annotators over all 245 stories, for
+which Fleiss’ κ is not the appropriate statistic. Dis-
+agreements were resolved for Table 11 by majority
+13
+
+vote over the three labels; 11 items received three
+different labels and were adjudicated in a joint dis-
+cussion among the annotators, without the authors
+present and without the system identity being re-
+vealed. DiverseSumm disagreements were resolved
+by discussion between the two annotators (§5.5).
+Consent. Before starting, annotators received a
+written description of the task and of its purpose—
+comparing how quickly and reliably a reader can
+check an automatically generated claim against
+the evidence a system cites for it—and gave writ-
+ten consent to their labels and per-item response
+times being published, both in aggregate and as a
+per-item table released with the artifact under the
+pseudonyms A1–A3. They were told that response
+time was being recorded and would be analysed,
+that no other data about them would be collected
+or released, and that they could stop at any point
+without giving a reason and would still be paid for
+time worked. No demographic information was
+collected, and payment records are held only as
+required for contractor payroll and are not part of
+the release. The study was submitted to our institu-
+tion’s research-ethics review, which determined it
+exempt from full review: the material judged is pub-
+lic news text from MultiNews and DiverseSumm,
+the task poses no more than minimal risk, and the
+only participant data retained are pseudonymous
+labels and timings.
+C
+Reproducibility Configuration
+Table 4 lists every model, threshold, and budget
+used in the experiments, including the values omit-
+ted from §4.4 for space.
+D
+Algorithms and Module Details
+Extraction schema.
+The extractor returns a
+JSON array; each element has claim (a decontex-
+tualized proposition), quote (a verbatim substring
+of the source), and doc_id. The prompt forbids re-
+porting offsets and requires the quote to be copied
+verbatim; offsets are recovered post hoc by Algo-
+rithm 1.
+Selector training.
+Silver labels align each gold
+reference sentence to clusters: a cluster is positive
+if some reference sentence is entailed by its claim
+under Msel (backing off to embedding/ROUGE
+similarity when borderline), negative otherwise
+(Mintz et al., 2009). Only salience and self-support
+are pointwise; coverage is computed online in Al-
+gorithm 2. Meval is held out completely.
+Algorithm 1 Quote-to-span provenance resolution
+Require: document d, verbatim quote q, similarity floor ρ,
+tokenizer offsets OFF
+Ensure: token span (start, end) or NONE
+1: (a, b) ←EXACTSUBSTR(d, q)
+▷char interval
+2: if (a, b) = NONE then
+3:
+˜d, ˜q ←NORM(d), NORM(q)
+▷case/space/punct
+4:
+(a, b), σ ←FUZZYWINDOW( ˜d, ˜q)
+▷indel sim.
+5:
+if σ < ρ then return NONE
+6:
+(a, b) ←MAPTORAW(a, b)
+▷undo NORM
+7: return CHARTOTOK(a, b, OFF(d))
+Algorithm 2 Greedy support-aware selection
+(MMR)
+Require: clusters G, pointwise scorer sGBDT, threshold θ,
+weight λ
+Ensure: ordered selection S
+1: S ←[ ]
+2: loop
+3:
+for g ∈G \ S do
+4:
+r(g) ←sGBDT(g) −λ max
+g′∈S sim(g, g′)
+max∅=0
+5:
+g⋆←arg maxg r(g)
+6:
+if r(g⋆) < θ then break
+7:
+append g⋆to S
+8: return S
+Rewriter and verifier.
+The rewriter receives
+cluster-labeled claims and must end each sentence
+with a marker such as [g3,
+g7]; markers are
+parsed and expanded through gj 7→SPANS(gj).
+The verifier runs the two-direction check of §3.7.
+Citation-only failures trigger NLI re-retrieval be-
+fore regeneration, with R=2 retries.
+E
+Transfer, Cost, and Backbone
+Robustness
+Table 7 itemizes the cost of the invariant and Ta-
+ble 6 re-runs the comparison on an open-weights
+backbone; both are discussed in §5.7 and §5.6; Ta-
+ble 5 gives the full WCEP transfer results.
+F
+Evaluator-Decoupled Robustness
+Tables 9 and 10 report the circularity checks of
+§5.2: every ranking under the internal TRUE-style
+scorer, repeated under the independent Meval, and
+the shared post-processor applied uniformly to all
+systems.
+G
+Bounds, Sensitivity, and Intervals
+The retrieval lower bound uses the same candidate
+span pool without claim clustering; the gold-claim
+upper bound supplies oracle normalized claims be-
+fore localization. These bounds separate retrieval
+14
+
+Component
+Setting
+LLM API
+claude-opus-4-8; calls run 2026-05-28 to 2026-06-03; three few-shot examples; max
+output tokens: extraction 4,096, rewrite 768, fact decomposition 1,024; temperature 0.0,
+top-p 1.0
+Preprocessing
+512-token chunks; 64-token overlap; exact quote matching before fuzzy; rapidfuzz indel
+similarity, acceptance ρ=0.85
+Embeddings/clustering
+gte-large; ℓ2-normalized; cosine; agglomerative average linkage; similarity threshold
+0.82; merges confirmed by bidirectional entailment
+NLI modules
+Conflict: DeBERTa-v3-MNLI three-class, contradiction threshold 0.7; support thresh-
+olds tuned over {0.5, 0.7}; Msel = TRUE-style T5-11B NLI mixture (lightweight vari-
+ant), Mver = same family, independently calibrated checkpoint, Meval = SummaC-style
+tals/albert-xlarge-vitaminc-mnli
+Selector
+LightGBM, binary objective, seed 42, 31 leaves, lr {0.05, 0.1}, 100–500 estimators, early
+stopping 50, MMR λ=0.5, θ ∈{0.3 . . . 0.8}, θ⋆=0.6
+Verification
+At most two repairs; order: citation repair, regeneration, drop
+Evaluation
+MultiNews full test split 5,622 unless a marked diagnostic sample is used; Divers-
+eSumm 245; WCEP ∼1,000; localization τ=0.5, sensitivity {0.3, 0.5, 0.7}; 1,000 paired-
+bootstrap resamples; 95% percentile intervals; 24 hypothesis tests with Holm–Bonferroni
+correction at m=24 (all † differences survive); human audit 255 claims per system, three
+annotators
+Table 4: Reproducibility configuration.
+System
+R-L
+BERT
+Sc.
+Align
+Sc.
+Sum
+maC
+FAct
+Sc.
+E2E LLM (ALCE)
+30.5
+86.8
+.77
+.69
+.73
+Attribute First
+31.2
+87.1
+.83
+.77
+.80
+CAMS (ours)
+30.9
+87.5
+.88
+.82
+.89
+−verification
+30.8
+87.3
+.84
+.79
+.83
+oracle selector
+33.1
+88.2
+.90
+.84
+.91
+Table 5: Transfer to WCEP; “zero-shot” refers to the
+selector only (§4). The oracle-selector row separates
+selector domain shift from extraction/verification degra-
+dation. ROUGE here is not comparable to published
+fully-supervised WCEP-10 numbers; see §5.6.
+Backbone
+System
+Align
+Sc.
+Cite
+Prec
+Multi
+Src R
+Frozen API
+(§4.4)
+E2E
+.79
+59
+–
+CAMS
+.91
+84
+64
+Open-weights
+Llama-3.1-70B
+E2E
+.74
+52
+–
+CAMS
+.88
+79
+59
+Table 6: Backbone robustness on a 1,000-example
+MultiNews subset with Llama-3.1-70B-Instruct: does
+the advantage survive a weaker, open-weights genera-
+tor?
+failure from errors introduced by clustering, selec-
+tion, and rewriting. Table 12 gives span-F1 sensitiv-
+ity across token-IoU thresholds, Table 13 bootstrap
+intervals on the paired differences, and Table 14 the
+selector’s behaviour under reduced training data.
+System
+LLM
+calls
+In/Out
+tokens
+Wall
+clock
+Rel.
+cost
+E2E LLM (ALCE)
+1
+2.0K / 0.35K
+10 s
+1.0×
+Attribute First
+3
+6K / 1.0K
+28 s
+2.5×
+CAMS (ours)
+7–14
+15K / 4.0K
+75 s
+8×
+Table 7: Cost per summary on MultiNews (mean over
+the test split, 2.8 documents per cluster). CAMS issues
+7 calls when per-document extraction is batched and
+up to 14 when atomic-fact decomposition runs sentence
+by sentence; wall clock falls to ∼35 s with extraction
+parallelized across documents. Reported honestly: the
+pipeline trades generation compute for verification cost
+borne by humans (§5.8).
+System
+Cite
+Rec
+Cite
+Prec
+TRUE
+diag.
+Tok/
+claim
+Span/
+claim
+E2E LLM (ALCE)
+70
+59
+61
+95
+1.0
+Attribute First
+78
+76
+78
+34
+1.6
+CAMS-posthoc
+78
+79
+83
+24
+1.3
+CAMS (ours)
+81
+84†
+88
+22
+1.8
+Table 8: Regime 1 citation quality (reference-free). Re-
+call/precision by the independent Meval; TRUE-style
+precision is a compatibility diagnostic only. Tok/Span
+per claim measure conciseness (lower is better).
+H
+Per-Module Diagnostics (Failure
+Modes E1–E5)
+These tables give the intrinsic accuracy of the up-
+stream stages and double as empirical estimates of
+the residual failure modes of §3.2: extraction and
+decontextualization bound E1–E2 (Table 15), quote
+matching bounds E3 (Table 16), clustering governs
+E4 (Table 17), and the NLI modules govern E5
+15
+
+System
+Prec
+(Meval)
+TRUE
+diag.
+Human
+Supp.
+CAMS (ours)
+84
+88
+89
+−self-support feat.
+81
+84
+86
+−verification
+77
+82
+83
+CAMS-posthoc
+79
+83
+–
+Attribute First
+76
+78
+82
+Table 9: Evaluator-decoupled robustness on MultiNews.
+Gains that appeared only under the internal diagnostic
+would indicate circularity; they do not. CAMS-posthoc
+was not included in the human study (Table 11), hence
+the missing entry.
+Cite P
+Cite R
+FAct
+Sc.
+Cov.
+System
+raw post raw post
+E2E (ALCE)
+59
+64
+70
+53 .75 →.79 .66 →.49
+Attr. First
+76
+77
+78
+63 .82 →.83 .58 →.53
+CAMS −verif. 77
+84
+82
+81
+.86
+.62
+CAMS (full)
+84
+84
+81
+81
+.90
+.60
+Table 10: Fair post-processing control: every system’s
+raw output is passed through CAMS’s shared verifier
+(Mver two-direction check, NLI citation re-retrieval over
+a common span pool, bounded drop, R=2). The same
+post-processor raises baseline precision only slightly
+and at a large coverage cost, while reconstructing
+CAMS’s full-pipeline precision from its verifier-ablated
+variant.
+System
+%
+Supp.
+Verify
+time (s)
+E2E LLM (ALCE)
+68
+31
+Attribute First
+82
+14
+CAMS (ours)
+89
+9
+Table 11: Human evaluation (§5.8): % of claims judged
+fully supported and mean verification time per claim;
+n=255 claims per system, three annotators, κ=0.68.
+(Table 18). Three separate samples are used, stated
+in each caption. All are drawn from test rather than
+development data; no threshold, hyperparameter,
+or model selection was performed on them, and
+they are reported as intrinsic measurements rather
+than held-out results. This statement covers the
+Regime 2 evaluation of §5.3 as well: Table 17 is
+measured on the same human alignments of Ernst
+τ
+Attribute First
+CAMS
+∆
+0.3
+78
+83
++5
+0.5
+72
+77
++5
+0.7
+61
+68
++7
+Table 12: Span-F1 sensitivity under different token-IoU
+thresholds. The ranking is stable across thresholds.
+Metric
+Attr.
+First CAMS
+∆[95% CI]
+AlignScore
+.85
+.91
++.06 [.05, .07]
+FActScore
+.82
+.90
++.08 [.07, .09]
+Cite Prec (Meval)
+76
+84
++8 [7, 9]
+Span F1
+72
+77
++5 [3, 7]
+Multi-src R
+38
+64
++26 [21, 31]
+Multi-src P
+61
+75
++14 [7, 21]
+Table 13: Point estimates with 95% bootstrap percentile
+intervals on the paired difference (1,000 resamples).
+The first three rows resample over the full MultiNews
+test split (5,622 clusters); the last three resample over
+the 100 topics of the human alignment set, which is why
+their intervals are much wider. The per-system intervals
+for multi-source recall are [33.5, 42.5] for Attribute First
+and [59.6, 68.4] for CAMS; these do not overlap, which
+is the claim made in §5.3.
+Selector data
+Span-F1
+Multi-Src
+FActSc.
+full
+77
+64
+.90
+5k
+76
+62
+.89
+1k
+74
+59
+.87
+Table 14: Low-resource ablation on the selector (§3.5).
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+0.7
+0.8
+0.9
+θ∗
+Coverage
+Faithfulness (AlignScore)
+CAMS (sweep θ)
+E2E LLM (sweep length)
+Attr. First (sweep spans)
+PRIMERA + chk.
+ESR (concat)
+Figure 2: Faithfulness–coverage trade-off controlled
+by θ (§5.7).
+Each system is swept along its own
+budget knob so the comparison is frontier-vs-frontier;
+PRIMERA and ESR expose no comparable knob and
+remain single points.
+et al. (2021) that supply the Regime 2 gold. The
+two uses differ—localization accuracy there, clus-
+tering quality here—but the topics coincide, so the
+clustering diagnostic is not an independent confir-
+mation of the Regime 2 result and should not be
+read as one. Nothing was tuned on this data under
+either use, and the conflict sample of Table 18 is
+drawn from disjoint topics.
+16
+
+Metric
+Value
+Mode
+JSON schema-valid outputs
+99
+–
+Claims per source document
+21
+–
+Quote-localizable rate
+97
+E3
+Claim supported by quote (raw)
+90
+E1
+after self-support filtering
+94
+E1
+Atomicity (human/LLM)
+90
+–
+Salient reference-fact recall
+81
+–
+Decontextualization error
+12
+E2
+Table 15: Claim extraction diagnostics (%), measured
+on 1,000 clusters drawn at random from the MultiNews
+test split (seed 42); rows requiring human judgement
+use a second-stage sample of 300 claims. “Supported”
+is the claim being entailed by its own verbatim quote.
+Metric
+Value
+Exact-match rate
+88
+Normalized/fuzzy rescue
+9
+Final matched rate
+97
+Wrong-occurrence rate (E3)
+4
+Token-span IoU ≥0.5
+94
+Token-span exact-boundary accuracy
+88
+Claims dropped (unmatched quote)
+3
+Table 16: Quote-to-span matching diagnostics, on the
+same 1,000-cluster sample as Table 15. The rates ac-
+count for all quotes: 88 match exactly, a further 9 are res-
+cued by normalized/fuzzy matching for a final matched
+rate of 97, and the remaining 3 are ambiguous candi-
+dates rejected below ρ=0.85 and dropped.
+Metric
+Value
+Pairwise precision
+90
+Pairwise recall
+78
+B3 / cluster F1
+84
+Over-merge rate (E4)
+3
+Under-merge / split rate
+21
+Multi-source evidence cluster recall
+70
+Pairwise precision (no NLI merge check)
+71
+Pairwise recall (no NLI merge check)
+73
+Table 17: Cross-document clustering diagnostics, mea-
+sured on the human-aligned MultiNews test set of Ernst
+et al. (2021) (100 topics, 1,332 clusters), which is also
+the gold our Regime 2 evaluation uses. Ernst et al.
+(2024) annotate further proposition-level alignments
+over MultiNews from which a clustering gold could
+likewise be derived; we use Ernst et al. (2021) for con-
+sistency with Regime 2 and make no claim that it is
+the only such resource. The bidirectional-entailment
+merge check raises pairwise precision from 71 to 90 at
+a small recall cost—the precision that multi-source cita-
+tion requires (§3.4). The “no NLI merge check” rows
+are our own clusterer with the merge check removed,
+i.e. embedding similarity and threshold alone; they are
+not a reimplementation of any published aligner, and in
+particular not of the supervised SuperPAL model (Ernst
+et al., 2021) on which PROCLUSTER (Ernst et al., 2022)
+relies.
+Metric
+Value
+Candidate-pair recall
+85
+Candidate-pair precision
+21
+NLI contradiction precision (E5)
+81
+NLI contradiction recall (E5)
+65
+Final conflict-detection F1
+72
+Conflict surfaced after select/rewrite
+65
+Conflict attribution accuracy
+71
+Table 18:
+Conflict-detection diagnostics on a self-
+annotated MultiNews sample of 100 topics and 600
+candidate pairs, drawn from topics disjoint from the
+human-aligned set of Table 17; candidate-pair recall
+is measured against a further 20 topics in which every
+within-topic claim pair was labelled exhaustively, since
+recall cannot be estimated from the candidate pool it-
+self. The cheap entity/number candidate generator is
+high-recall, low-precision by design; the three-class NLI
+filter supplies precision. The last two rows are not the
+DiverseSumm numbers of §5.5 (61/73). They are the
+same two modules measured on a different corpus, with
+a different conflict density and a different gold denom-
+inator, so the two pairs are not replicates and we draw
+no inference from how close they happen to be.
+17

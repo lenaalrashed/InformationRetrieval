@@ -1,0 +1,1457 @@
+<Society logo(s) and publica-
+tion title will appear here.>
+Received XX Month, XXXX; revised XX Month, XXXX; accepted XX Month, XXXX; Date of publication XX Month, XXXX; date of
+current version XX Month, XXXX.
+Digital Object Identifier 10.1109/XXXX.2022.1234567
+Chain-of-Thought Reasoning in
+Streaming Full-Duplex End-to-End
+Spoken Dialogue Systems
+Siddhant Arora1, Jinchuan Tian1, Hayato Futami2, Jiatong Shi1,
+Yosuke Kashiwagi2, Emiru Tsunoo2, Shinji Watanabe1
+1Language Technologies Institute, Carnegie Mellon University, USA
+2Sony Group Corporation, Japan
+Corresponding author: Siddhant Arora (email: siddhana@andrew.cmu.edu).
+ABSTRACT Most end-to-end (E2E) spoken dialogue systems (SDS) rely on voice activity detection
+(VAD) for turn-taking, but VAD fails to distinguish between pauses and turn completions. Duplex SDS
+models address this by predicting output continuously, including silence tokens, thus removing the need for
+explicit VAD. However, they often have complex dual-channel architecture and lag behind cascaded models
+in semantic reasoning. To overcome these challenges, we propose SCoT: a Streaming Chain-of-Thought
+(CoT) framework for Duplex SDS, alternating between processing fixed-duration user input and generating
+responses in a blockwise manner. Using frame-level alignments, we create intermediate targets—aligned
+user transcripts and system responses—for each block. Experiments show that our approach produces
+more coherent and interpretable responses than existing duplex methods while supporting lower-latency
+and overlapping interactions compared to turn-by-turn systems.
+INDEX TERMS spoken dialogue systems, duplex, chain-of-thought, streaming
+I. INTRODUCTION
+Spoken Dialogue Systems (SDS) [1], [2] aim to build natural
+and interactive conversation with the end user. SDS take a
+continuous audio stream as input from the user and generate
+a corresponding spoken response. They power everyday
+technologies — intelligent assistants like Alexa and Siri,
+and interactive voice response systems in customer service.
+More recently, there’s been growing interest in bringing these
+capabilities1 to mobile phones and wearable devices. As
+these systems become more common, the need for robust,
+scalable, and generalizable SDS becomes critical.
+SDS have traditionally operated in a turn-by-turn man-
+ner [3]–[5], where the system alternates between two distinct
+modes: listening and speaking. The segmentation of turns
+can be handled explicitly by user or determined automat-
+ically by a Voice Activity Detection (VAD) [6] module,
+which detects when the user has finished speaking and
+signals the system to begin its response—or vice versa.
+Traditionally, spoken dialogue systems [3], [7] comprised
+a cascaded pipeline of multiple modules. Motivated by the
+1https://openai.com/index/hello-gpt-4o/,
+https://deepmind.google/
+technologies/gemini/
+success of large language models (LLMs) [8], [9], recent
+works have introduced speech+text LMs (SLMs) [10]–[12]
+that model the joint distribution of speech and corresponding
+text, typically trained using paired (speech, text transcription)
+data. These SLMs can be used to construct end-to-end (E2E)
+SDS by directly generating spoken responses from speech
+input in a single architecture, thus avoiding error propagation
+and better capturing non-phonemic information.
+However, most turn-by-turn SDS architectures [13], [14]
+still rely on an external VAD module to detect silence regions
+and trigger turn-taking. This is problematic because silence
+alone is not the main cue for humans to switch turns. [15]
+shows that silences within a speaker’s own utterances are
+often longer than those between speakers, making it difficult
+for VAD to distinguish between a pause and an actual turn
+completion [16]. Moreover, spoken dialogue is inherently
+bidirectional: users expect the system to listen and speak si-
+multaneously, as in natural human-human conversations [17],
+[18]. In contrast, VAD-driven turn-by-turn systems operate in
+a single mode—either listening or speaking—making them
+incapable of generating overlapping speech.
+Inspired by this, prior works [19]–[21] have proposed
+duplex architectures that eliminate the need for explicit
+This work is licensed under a Creative Commons Attribution 4.0 License. For more information, see https://creativecommons.org/licenses/by/4.0/
+VOLUME ,
+1
+arXiv:2510.02066v1 [cs.CL] 2 Oct 2025
+
+Arora et al.: Chain-of-Thought Reasoning in Streaming Full-Duplex End-to-End Spoken Dialogue Systems:
+Spoken Dialogue System
+(
+User Speech
+(
+(
+JpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/
+/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ng
+elf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZo
+Tec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KM
+I52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6W
+tF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit>(
+Turn k-1
+Reading 
+State
+Writing 
+State
+VAD determines when user has 
+finished speaking
+System generates end of 
+speaking token
+Turn k
+System Speech
+(
+System Speech
+PlY2zk+gJpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nS
+zSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fik
+r5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJ
+vBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFP
+l54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n8
+0ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJD
+AM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit>(
+Turn k+1
+(
+User Speech
+❗
+System cannot speak 
+when user is speaking
+(a) Turn-by-turn SDS
+Spoken Dialogue System
+Listening Channel 
+(User Speech)
+Speaking Channel 
+(System Speech)
+Prediction at 
+every time 
+step t 
+(Instead of only 
+after turn)
+(
+Speaking
+(
+Silence
+Both user and system can be 
+speaking simultaneously!
+(b) Duplex Dual Channel SDS
+Spoken Dialogue System
+Time Axis
+❗
+How to model user 
+and system input in 
+single stream?
+Interleaved User and System Speech 
+Both user and system can be 
+speaking simultaneously!
+Listening Channel 
+(User Speech)
+Speaking Channel 
+(System Speech)
+(
+(
+( (
+(c) Duplex Time Multiplexing SDS
+FIGURE 1: Comparison of spoken dialogue system (SDS) paradigms. (a) Turn-by-turn SDS: user and system alternate with
+strict turn boundaries. (b) Duplex Dual Channel SDS: separate listening and speaking channels allow simultaneous speech
+generation. (c) Duplex Time Multiplexing SDS: user and system speech are interleaved in a shared stream.
+turn-taking mechanisms, such as VAD modules and instead
+predicts the output at every timestep, including the silence
+tokens. However, these duplex E2E models often require a
+large amount of training data (Moshi [22] is trained using
+7 million hours of unlabelled audio data for multi-stream
+post-training and 20K hours of speech conversation data.).
+Recent studies [23]–[25] have explored the application of
+the chain-of-thought (CoT) training paradigm [26], [27] to
+develop turn-by-turn E2E SDS. These works demonstrate
+that CoT-based formulations can improve training efficiency
+and generate more semantically coherent and interpretable
+responses compared to standard E2E systems. Additionally,
+they offer greater parameter efficiency and enhanced ability
+to capture non-phonemic information relative to traditional
+cascaded architectures. Motivated by these findings, we
+extend this paradigm to the duplex setting, proposing SCoT,
+a Streaming CoT framework for duplex E2E SDS. The
+key contributions of this work are as follows:
+• We propose SCoT, a CoT training framework for
+streaming duplex E2E spoken dialogue systems, en-
+abling simultaneous listening and speaking without
+VAD-based turn segmentation. To our knowledge, we
+are the first to adapt CoT-style structured reasoning,
+with intermediate ASR and text response targets, into
+a blockwise streaming duplex SDS framework.
+• We introduce a novel use of CTC-based forced align-
+ments to generate block-level intermediate targets for
+both ASR and text response generation. This alignment-
+driven formulation enables tight coupling of speech
+and text reasoning in a way not explored by OMNI-
+Flatten [25] or other prior duplex models.
+• Our results show that SCoT produces more intelligent,
+coherent, and contextually appropriate responses, while
+also delivering greater training efficiency and more
+faithfully preserving speaking styles compared to tradi-
+tional duplex SDS approaches.
+• Further, SCoT achieves lower-latency interactions and
+can generate overlapping speech, outperforming prior
+turn-by-turn CoT-based SDS in terms of conversational
+fluidity and responsiveness.
+• Finally, we will open-source our code and trained
+models to facilitate future development on training full
+duplex E2E dialogue systems.
+II. Problem Formulation
+SDS take a d-dimensional continuous feature stream X =
+(xt ∈Rd | t = 1, . . . , T) as input audio from the user and
+generate a synchronized spoken response Y sds = (ysds
+t
+∈
+Rd | t = 1, . . . , T), where T is the total duration of the
+conversation, including multiple turns. These systems aim
+to estimate the posterior P(Y sds|X, Xspk) using maximum a
+posteriori (MAP) decision theory, where Xspk is the speaker
+prompt controlling the output voice characteristics.
+Further, SDS can be broadly categorized into two classes:
+simplex (half-duplex) or duplex (full-duplex) systems. In
+simplex systems, the system can either listen or speak, but
+not both simultaneously. Thus at any time step t, simplex
+SDS satisfies:
+
+
+
+xt̸ = ∅, ysds
+t
+= ∅
+(listening mode)
+xt = ∅, ysds
+t̸
+= ∅
+(speaking mode)
+(1)
+where ∅indicates silence. In contrast, duplex systems can
+listen and speak at the same time, enabling overlapping
+speech as shown below:
+xt̸ = ∅,
+ysds
+t̸
+= ∅
+(2)
+III. Turn-by-turn (Simplex) SDS
+SDS [3] have traditionally operated in a turn-by-turn manner
+as shown in Fig. 1a. This strict turn-based setting corre-
+sponds to a simplex interaction pattern (Eq. 1), where at any
+given time the system is restricted to either listening mode
+or speaking mode, but never both simultaneously. Turns are
+2
+VOLUME ,
+
+<Society logo(s) and publication title will appear here.>
+(
+ Lk
+(
+ Lout
+k−1
+(
+(
+Block k-1
+(
+Block k
+Block k+1
+(
+SPEECH + TEXT Spoken LM
+ Uk
+Dtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojC
+U/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZ
+Gcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVf
+o6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7Icaz
+ULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeGY
+CKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBv
+uoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit
+>(
+ Lout
+k−1
+(
+(
+Intermediate Target 1: 
+ASR Transcript
+ Uk
+ Uout
+k
+(
+(
+Intermediate Target 
+2: Text Response
+AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1
+vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKU
+kDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJt
+JMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vq
+xy5hT+wPr8AeEwkFc=</latexit>(
+ Uout
+k
+(
+ Lout
+k
+(
+Final Target: 
+Speech Output
+(
+ Lout
+k
+User Input
+Aligned ASR 
+Transcript
+Aligned Text 
+Response
+System Output 
+for Next Block
+(a) Time Multiplexing based SDS framework
+(b) (Proposed) SCoT: Streaming Chain-of-Thought (CoT) Duplex SDS
+SPEECH + TEXT Spoken LM
+M=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeL
+w3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9x
+JFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+
+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz
++vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit>(
+X1
+(
+X2
+Ysds
+2
+YDhPmLt/912TPlY2zk+gJpBwM=">AB8nicbVBNS8NAEJ3
+Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+j
+O8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1vbO
+9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcB
+p4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvW
+G3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec
+3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazUL
+A5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpIS
+zWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKp
+wBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wP
+r8AeEwkFc=</latexit>(
+M=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeL
+w3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9x
+JFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+
+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz
++vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit>(
+Ysds
+1
+Ysds
+1
+p4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvW
+G3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec
+3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazUL
+A5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpIS
+zWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKp
+wBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wP
+r8AeEwkFc=</latexit>(
+(
+Ysds
+2
+(
+X3
+Ysds
+3
+(
+DzYDhPmLt/912TPlY2zk+gJpBwM=">AB8nicbVBN
+S8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+
+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8
+IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojCU
+/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l
+1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnR
+H9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIu
+oYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z
+1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISz
+WeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHf
+KOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2V
+qxy5hT+wPr8AeEwkFc=</latexit>(
+Block 1
+(
+Block 2
+Block 3
+(
+AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1
+vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEK
+UkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJ
+tJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2V
+qxy5hT+wPr8AeEwkFc=</latexit>(
+Xb
+AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1
+vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEK
+UkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJ
+tJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2V
+qxy5hT+wPr8AeEwkFc=</latexit>(
+Ysds
+b−1
+(
+(
+Block b-1
+(
+Block b
+Block b+1
+(
+SPEECH + TEXT Spoken LM
+Aasr
+b
+PmLt/912TPlY2zk+gJpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69L
+BbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZu
+Dtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojC
+U/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZ
+Gcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvV
+fo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7Ica
+zULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeG
+YCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQB
+vuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexi
+t>(
+Ysds
+b−1
+PmLt/912TPlY2zk+gJpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69L
+BbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZu
+Dtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojC
+U/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZ
+Gcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvV
+fo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7Ica
+zULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeG
+YCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQB
+vuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexi
+t>(
+(
+Intermediate Target 1: 
+ASR Transcript
+Ares
+b
+(
+(
+Intermediate Target 
+2: Text Response 
+AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1
+vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEK
+UkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJ
+tJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2V
+qxy5hT+wPr8AeEwkFc=</latexit>(
+Ares
+b
+12TPlY2zk+gJpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2
+A9IQtlsN+nSzSbsboQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1
+vbO9Xd2t7+weFR/fikr5JMEtojCU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUv
+Eo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpV
+yHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5M
+Z4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNS
+EYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2V
+qxy5hT+wPr8AeEwkFc=</latexit>(
+Ysds
+b
+Dtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtojC
+U/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZ
+Gcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvV
+fo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7Ica
+zULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeG
+YCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQB
+vuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexi
+t>(
+Final Target: 
+Speech Output
+(
+Ysds
+b
+User Input
+Aligned ASR 
+Transcript
+Aligned Text 
+Response
+System Output 
+for Next Block
+Aasr
+b
+FIGURE 2: Overview of SCoT: the proposed Streaming Chain-of-Thought (CoT) Duplex SDS architecture (Sec. V). Building
+on the time-multiplexing framework (Sec. IV), SCoT alternates between processing fixed-duration segments of user input
+and generating speech output, enabling single-channel, real-time duplex interaction. At each block, the model additionally
+predicts aligned intermediate textual representations—namely, the ASR transcript and text response—prior to generating
+the final speech output, improving semantic coherence of output and training efficiency.
+obtained by segmenting a T-length conversation with a VAD
+module, which identifies speech boundaries to determine
+whether the system should listen or respond. Building on the
+global problem formulation in Sec. II, the continuous input
+stream X and corresponding output Y sds are segmented into
+variable-length turns i.e. Y sds = {Y sds
+k
+| k = 1, . . . , K}
+and X = {Xk | k = 1, . . . , K} where K denotes the
+total number of turns. Note that the duration of each turn
+is highly variable, depending on the speaker’s behavior and
+the conversation context.
+Thus, the user’s k-th turn is defined as any speech activity
+beginning after Tk−1 and ending at Tk, where Tk is the
+first point at which at least δ consecutive silence frames are
+detected by VAD. Here, δ is a hyperparameter. The output
+of the VAD module is then used to create a buffered speech
+utterance Xk containing user input for the current turn:
+Xk = xTk−1:Tk−δ
+(3)
+The SDS system then outputs the speech response Y sds
+k
+=
+(ysds
+t
+∈Rd | t = Tk, . . . , Tk + T ′) where T ′ is length of
+speech response at the current turn. After completing the
+response, the system re-enters listening mode at time Tk+T ′.
+Given this turn-based interaction, the system models the
+overall speech output distribution as:
+P(Y sds|X, Xspk) =
+Y
+k
+P(Y sds
+k |Y sds
+1:k−1, X, Xspk)
+(4)
+Introducing conditional independence (C.I.) assumption,
+where each response depends only on the current and past
+inputs causally, we obtain:
+P(Y sds|X, Xspk) =
+Y
+k
+P(Y sds
+k |Y sds
+1:k−1, X1:k, Xspk)
+(5)
+Thus, the dialogue distribution is expressed as a product of
+turn-level conditional probabilities, and the objective of a
+turn-by-turn SDS is to predict, at each turn, the response
+that maximizes this probability. These turn-level conditional
+probabilities can be optimized in multiple ways, as discussed
+in the following subsections.
+A. Turn-by-turn Cascaded SDS
+Traditionally, spoken dialogue systems [3], [28] realized the
+turn-level conditional probability in Eq. 5 using a cascaded
+pipeline. This pipeline typically comprised multiple mod-
+ules, including automatic speech recognition (ASR), natural
+language understanding (NLU), natural language generation
+(NLG), and text-to-speech (TTS) synthesis. However, since
+each module in this cascaded pipeline is separately opti-
+mized, the system suffers from error propagation and often
+converges to suboptimal overall performance.
+B. Turn-by-turn E2E SDS
+Recent efforts have focused on reducing the number
+of modules required to build conversational AI systems
+in an end-to-end manner. Prior works [10], [24], [29]
+adopt SLMs to directly estimate the output speech ˆY sds
+within a single autoregressive architecture by modeling
+P(Y sds
+k |Y sds
+1:k−1, X1:k, Xspk), as outlined in Eq. (5). A com-
+mon strategy for fine-tuning such models involves synthesiz-
+ing conversational speech data using a TTS system applied
+to text-based dialogue corpora [24]. While these systems
+avoid the error propagation typical of cascaded systems,
+they often lack structured reasoning [23], which can lead
+to less coherent responses and significantly higher training
+data requirements [22].
+VOLUME ,
+3
+
+Arora et al.: Chain-of-Thought Reasoning in Streaming Full-Duplex End-to-End Spoken Dialogue Systems:
+C. Turn-by-turn CoT E2E SDS
+Recent efforts have looked into addressing these limita-
+tions through Chain-of-Thought formulation by incorporat-
+ing ASR transcript Sasr
+k
+and text response Sres
+k
+at each turn
+within the E2E spoken dialogue formulation via the sum
+rule. Using the Viterbi approximation and C.I. assumption,
+we can modify Eq. (5) to get:
+P(Y sds|X, Xspk) ≈
+Y
+k
+P(Y sds
+k |Y sds
+1:k−1, X1:k, ˆSres
+1:k, ˆSasr
+1:k, Xspk)
+(6)
+where
+ˆSasr
+k = arg max
+Sasr
+k
+p(Sasr
+k |Y sds
+1:k−1, X1:k, ˆSres
+1:k−1, ˆSasr
+1:k−1,
+
+Xspk)
+(7)
+and
+ˆSres
+k = arg max
+Sres
+k
+p(Sres
+k |Y sds
+1:k−1, X1:k, ˆSres
+1:k−1, ˆSasr
+1:k,
+
+Xspk)
+(8)
+At each turn, the CoT model follows a structured decoding
+process: 1 first generating the ASR transcript ˆSasr
+k
+using
+Eq. (7), 2 then predicts the text response ˆSres
+k
+using Eq. (8)
+and 3 generates the final speech output ˆY sds
+k
+using these
+intermediate outputs (Eq. (6)). This CoT E2E model can
+be implemented similarly using a speech+text language
+model that performs each stage of autoregressive decoding
+sequentially according to Eqs. (6)–(8).
+Despite this progress, these systems still depend on an
+external VAD2 (Eq. (3)) to perform turn-taking, i.e., knowing
+when to speak up. However, this is insufficient for having
+natural conversations because silence is often not the main
+cue for humans to switch turns [15], as we discussed
+in Sec. I, and further cannot generate overlapping speech
+common in human-human interactions.
+IV. Duplex system
+There have been efforts to build duplex or speaking while lis-
+tening spoken dialogue systems [32]–[36]. A duplex spoken
+dialogue system (SDS) is a system that can speak and listen
+simultaneously (Eq. 2), enabling real-time, natural conver-
+sations with users—much like how humans interact in daily
+life. Similar to other E2E SDS, these duplex SDS leverage
+pre-trained SLMs as their backbone, enabling autoregressive
+generation across both speech and text modalities.
+A. Dual Channel
+One way to achieve duplex dialogue is by using dual
+channels [18]–[20], [22] as shown in Fig. 1b. The SLM has
+two input channels: the listening channel which continuously
+receives input, and the speaking channel where the spoken
+output from the SLM is directed, allowing the model to track
+what it has said. Unlike simplex systems that operate only
+at discrete turn boundaries (Eq. (5)), this approach generates
+2Other approaches [30], [31] have also been proposed, though they may
+introduce added complexity or latency.
+responses continuously at every timestep t (Sec. II), eliminat-
+ing the need for explicit turn-taking mechanisms (Eq. (3)):
+P(Y sds|X, Xspk) =
+Y
+t
+P(ysds
+t |ysds
+1:(t−1), x1:t,
+xt+1:T , Xspk).
+(9)
+This formulation corresponds to a continuous, frame-level
+duplex system, since at every time step t, both xt and ysds
+t
+may not be silent (i.e., xt̸ = ∅, ysds
+t̸
+= ∅similar to Eq. 2).
+However, the dual channel formulation significantly diverges
+from SpeechLM’s pre-training setup and therefore demands
+extensive training compute.
+B. Time Multiplexing
+An alternative line of work [37]–[39] explores a single-
+channel approach, where the SLM operates with a single
+channel and must explicitly alternate between listening and
+speaking modes as shown in Fig. 1c. A key advantage of
+this setup is that it is better aligned with the SLM’s pre-
+training setup [11]. The primary challenge, however, lies in
+determining when to switch between listening and speaking.
+One common strategy is the time-multiplexing approach,
+which alternates between processing fixed-duration segments
+of user input—unlike the variable-length speaker turns used
+in Section III—and generating spoken output for the sub-
+sequent segment [40], as illustrated in Fig. 2(a). In this
+setup, the input speech X is divided into a sequence of
+B blocks, X = {Xb | b = 1, . . . , B}. Assuming a block
+size of Nblock, the bth block is Xb = x(Ib−1+1):Ib where
+Ib−1 = (b −1) ∗Nblock. Similarly, the output speech Y sds
+is represented as a sequence of B blocks, Y sds = {Y sds
+b
+|
+b = 1, . . . , B}. Rather than producing output at every frame
+t as in Eq. (9), the model generates output block-by-block
+in a streaming fashion, estimating the posterior using the
+causality-based C.I. as:
+P(Y sds|X, Xspk) =
+Y
+b
+P(Y sds
+b
+|Y sds
+1:b−1, X1:b,
+Xb+1:B, Xspk).
+(10)
+This formulation corresponds to a blockwise duplex system,
+where both Xb and Y sds
+b
+may be non-silent within the same
+block. Thus, although speech generation is chunked into
+blocks rather than frame-by-frame (Sec. IV-A), the system
+still supports simultaneous listening and speaking, consistent
+with the definition of duplex (Eq. 2), while retaining the
+architectural simplicity of a single-channel, autoregressive
+design. Hence, it enables incremental speech generation,
+providing a balance between responsiveness and coherence
+by remaining consistent with SpeechLM’s pre-training setup.
+V. Our Chain-of-Thought Duplex SDS
+Building on the insights from the turn-by-turn CoT SDS
+framework (Eq. (6)-(8)), we propose SCoT: a fully duplex
+SDS architecture that incorporates the CoT formulation
+within the time-multiplexing formulation (Eq. (10)) as shown
+in Fig. 2(b). In this blockwise streaming CoT setting, we
+can no longer rely on the full ASR transcript and full-
+4
+VOLUME ,
+
+<Society logo(s) and publication title will appear here.>
+text response as intermediate representations, as in Eq. (6).
+Instead, we require fine-grained alignment between these
+textual elements and their associated speech segments to
+infer the transcript and system response within each block.
+Let Aasr = {aasr
+t
+| t = 1, . . . , T} be the frame-level
+alignment3 of the ASR transcript Sasr, where each aasr
+t
+denotes the aligned transcript token for speech frame xt.
+Similarly, let Ares = {ares
+t
+| t = 1, . . . , T} represent the
+frame-level alignment of the generated text response Sres. Let
+the corresponding aligned transcript and system response for
+the bth block (See Sec. IV) be Aasr
+b = aasr
+Ib−1+1:Ib and Ares
+b =
+ares
+Ib−1+1:Ib respectively. Incorporating these alignments, we
+extend the CoT formulation (Eqs. (6)-(8) in Sec. III) into the
+duplex setting as follows:
+P(Y sds|X, Xspk) ≈
+Y
+b
+P(Y sds
+b
+|Y sds
+1:b−1, X1:b, ˆAasr
+1:b, ˆAres
+1:b, Xspk).
+(11)
+The intermediate text response is predicted as:
+ˆAres
+b = arg max P(Ares
+b |Y sds
+1:b−1, X1:b, ˆAasr
+1:b, ˆAres
+1:b−1)
+(12)
+and the aligned ASR transcript for each block is given by:
+ˆAasr
+b = arg max P(Aasr
+b |Y sds
+1:b−1, X1:b, ˆAasr
+1:b−1, ˆAres
+1:b−1). (13)
+At each block, SCoT performs a structured three-stage de-
+coding process, similar to Sec. III. During training, we utilize
+CTC-based forced alignment to generate the intermediate
+targets Ares
+b
+and Aasr
+b .
+Since the optimal CoT reasoning path is unknown, we
+introduce three SCoT variants: (i) SCoT-ASR, where only the
+ASR transcript (i.e., ˆAasr
+b
+in Eq. 13) is used as the intermedi-
+ate target; (ii) SCoT-Response, where only the text response
+(i.e., ˆAres
+b
+in Eq. 12) serves as the intermediate target; and
+(iii) SCoT-Full, where both the transcript and text response
+are jointly incorporated as intermediate targets, as in Eq. 11.
+This design enables the first systematic investigation into the
+relative utility of different CoT reasoning paths in a duplex
+SDS setting, highlighting their trade-offs between semantic
+coherence and interaction latency.
+Compared to the standard turn-by-turn CoT formulation
+(Eq. (6)), our blockwise streaming duplex approach enables
+significantly lower latency, thus supporting real-time inter-
+action, and is capable of handling overlapping speech. In
+contrast to conventional time-multiplexed duplex systems
+(Eq. (10)), our method incorporates structured reasoning,
+which improves semantic coherence, as demonstrated in
+Sec. VII. Unlike OMNI-Flatten [25], SCoT uses CTC forced
+alignments to explicitly map intermediate text targets with
+speech response. This strategy aligns each reasoning stage
+with the SpeechLM’s pre-training tasks—namely ASR, text
+LM, and TTS — leading to faster convergence and improved
+training data efficiency [23].
+3These frame-level alignments may include repeated and blank tokens.
+VI. Experiments
+A. Datasets
+For our experiments, we focus on real human-human con-
+versation datasets, selecting 2 widely used corpora: Switch-
+board [41] (≈300 hours) and Fisher [42] (≈2000 hours).
+For Switchboard, we use the Eval2000 dataset for evaluation.
+We train our baseline and duplex models in a combined
+setting (SWBD+Fisher train) using the entire Fisher dataset
+and the Switchboard training set and evaluate it on the
+Eval2000 dataset similar to prior work [23].
+We evaluate spoken dialogue systems across semantic
+quality and audio quality. For semantic quality, we report
+ROUGE [43] and METEOR [44] scores, using human refer-
+ences as ground truth, alongside perplexity [45], computed
+using GPT-2 [46]. We additionally evaluated our system
+using Qwen2.5-7B-Omni as an LLM-based judge, following
+the protocol in recent work [25]. For E2E models, semantic
+quality is evaluated by transcribing synthesized speech ˆY
+using Whisper large [47].
+We utilize the VERSA toolkit [48], measuring audio qual-
+ity using UTMOS [49]. To demonstrate our system’s ability
+to handle overlapping speech, we report the percentage of
+blocks where overlapping output is generated. By com-
+paring with overlapping speech in reference human-human
+dialogues, we also compute precision and recall, indicating
+how accurately the system reproduces natural overlaps. We
+compute latency by performing inference using single H100
+GPU. We follow the setup in [50] and measure the time
+taken to generate the first token of speech (i.e., the waiting
+time after the user finishes speaking) and compute the overall
+Real-Time Factor (RTF) by dividing it with the total duration
+of the input speech segment. RTF values are computed over
+a representative subset of 300 turn-level utterances from
+the test set across all models. We evaluate speaking-style
+consistencies within the entire conversation by extracting
+emotion vectors from both synthesized outputs and ground-
+truth responses using Emo2Vec [51], then measure their
+cosine similarity. We rank all spoken dialogue systems based
+on their emotional alignment and compute the average rank
+(“Emotion Rank” [23]) across all utterances.
+B. Baseline
+Similar to
+[23], we report performance of strong task-
+specific baselines4: SmolLM v2 1.7B-Instruct [52] for text
+generation and the single-speaker TTS model (LJSpeech
+VITS) [53] from ESPnet-TTS. For audio quality, we evaluate
+pre-trained SLM in two settings: zero-shot and fine-tuned.
+We additionally report the performance of single turn
+cascaded and E2E systems that were developed in [23].
+The cascaded systems combine: SpeechLM (ASR), SmolLM
+v2 (text response), and SpeechLM (TTS), evaluated in both
+zero-shot (Cascaded (Pre-train)) and fine-tuned (Cascaded
+(Fine-tune)) modes. We also compare with a traditional
+4Baselines are not fine-tuned on spoken dialogue datasets.
+VOLUME ,
+5
+
+Arora et al.: Chain-of-Thought Reasoning in Streaming Full-Duplex End-to-End Spoken Dialogue Systems:
+TABLE 1: Semantic quality evaluation. The performance of SmolLM is generated using ground-truth transcripts. SCoT
+significantly improves semantic quality over standard time-multiplexing Duplex E2E model. SCoT significantly reduces
+latency comparable to turn-by-turn CoT E2E models.✗: Prior work [23] does not report results with Qwen-OMNI as a
+judge as well as RTF. We compute latency for turn-by-turn E2E model for comparison.
+Model
+SWBD
+ROUGE-1/2/L (↑)
+METEOR (↑)
+Perplexity (↓)
+Qwen-OMNI judge (↑)
+RTF (↓)
+SmolLM v2-1.7B (GT) [23]
+14.0 / 2.3 / 11.5
+12.9
+25.4
+✗
+✗
+E2E [23]
+10.5 / 0.8 /
+8.4
+9.7
+302.2
+✗
+0.75
+CoT E2E [23]
+14.2 / 1.3 / 10.3
+12.9
+28.5
+✗
+✗
+SWBD+Fisher train [23]
+14.6 / 1.5 / 10.4
+14.9
+22.2
+✗
+✗
+Multi turn
+15.4 / 1.7 / 12.1
+14.2
+20.7
+4.02
+2.95
+Duplex E2E
+14.4 / 1.4 / 10.3
+11.8
+313.8
+2.20
+0.29
+SCoT-ASR (proposed)
+11.1 / 1.1 /
+8.1
+8.5
+432.7
+2.19
+0.56
+SCoT-Response (proposed)
+27.9 / 6.8 / 19.8
+26.4
+42.3
+3.24
+0.56
+SCoT-Full (proposed)
+22.3 / 4.2 / 15.8
+20.3
+55.2
+2.76
+0.85
+E2E system (SpeechLM E2E in [23]), where SpeechLM
+is trained end-to-end to directly predict speech outputs as
+well as Chain-of-Thought single turn E2E SDS [23].
+We first extend the CoT SDS setup to a multi-turn setting
+using Eq. (6)-(8) in Sec. IV to establish a strong baseline
+for our work. Each training instance includes up to four
+dialogue turns or a maximum duration of 120 seconds,
+whichever is shorter. We simulate either speaker in the
+human-human conversation as the assistant, thus creating
+2 separate instances; however, if the assistant is simulated
+as the first speaker, we do not predict its initial utterance.
+During inference, we provide the ground-truth context from
+the previous k −1 turns and generate the model’s response
+for the kth turn.
+To build the duplex end-to-end SDS system, we adopt
+a time-multiplexing approach (Sec. IV, [40]) with a block
+size Nblock = 2 seconds. Human-human conversation audio
+is segmented into 60-second dialogue contexts to construct
+training instances. During inference, we follow the same
+setup as in the multi-turn setting: the model is provided with
+the ground-truth context from the previous k −1 blocks
+(corresponding to 29 previous blocks) and is tasked with
+predicting the system response for the next block. Finally,
+we train the 3 variants of SCoT, our CoT E2E Duplex SDS
+by computing word-level timestamp using forced alignments
+from OWSM CTC v4 1B [54]. For words that lie across
+block boundaries, we include them as intermediate targets
+in both corresponding blocks to ensure continuity and align-
+ment consistency. Both multi-turn CoT and duplex SDS
+models are trained on a combined dataset comprising the
+Fisher and Switchboard training sets.
+C. Experimental Setups
+Our models are implemented in PyTorch, with all experi-
+ments conducted using the ESPnet [55]–[57] toolkit. We use
+the pre-trained SLM from [11] that leverages the SmolLM2
+1.7B text LLM for initialization. We adopt the delay inter-
+leave architecture [58] for multi-stream language modeling.
+For audio tokenization, we utilize ESPnet-Codec [59]5 for
+codec tokenization and XEUS6 [60] for SSL tokenization.
+Specifically, we concatenate codec and SSL tokens frame-
+by-frame. For decoding, ASR uses greedy search followed
+by post-processing (similar to [23]) to remove hallucina-
+tions, while text response generation employs top-k sampling
+(k=30, temperature = 0.8), followed by post-processing [23]
+to remove hallucinations and constrain response length. For
+speech response generation in CoT models, we apply top-k
+sampling (same as text response), and further post-process
+the outputs, computing top-10 samples and selecting the
+speech with the highest intelligibility to generated text re-
+sponse ˆSres (Eq. (8)) in turn-by-turn system and ˆAres
+b (Eq. 12)
+in duplex systems. During inference in duplex systems, we
+additionally constrain the ASR transcript and text response
+to a maximum of 25 words, and limit the speech output to
+the block duration (i.e., 2 seconds). All models are trained
+using 4 NVIDIA H200 GPUs. We will publicly release data
+processing, training and inference details.
+VII. Results and Discussion
+A. Semantic Quality
+Table 1 presents the evaluation of various spoken dialogue
+systems using ROUGE, METEOR, and perplexity metrics.
+The baseline SpeechLM E2E model performs poorly as
+reported in [23], with a high perplexity of 302.2, indicating
+difficulty in generating coherent responses. The SpeechLM
+CoT E2E models show substantial improvements across all
+metrics. Extending the CoT formulation to the multi-turn
+setting yields the best results, achieving a perplexity of 20.7
+and improved ROUGE and METEOR scores, underscoring
+5https://huggingface.co/ftshijt/espnet codec dac large v1.4 360epoch
+6https://huggingface.co/espnet/xeus, K-means tokenizer trained on the
+last-layer representation with 5k clusters
+6
+VOLUME ,
+
+<Society logo(s) and publication title will appear here.>
+TABLE 2: Turn-taking behavior analysis. We report the per-
+centage of overlapping blocks and overlap precision/recall.
+Model
+%Overlap
+%Overlap Acc.
+Prec
+Rec
+Cascaded (Pre-train)
+0.0
+✗
+✗
+Cascaded (Fine-tune)
+0.0
+✗
+✗
+E2E
+0.0
+✗
+✗
+Multi turn CoT E2E
+0.0
+✗
+✗
+Duplex E2E
+46.8
+77.7
+64.9
+SCoT-ASR (proposed)
+41.1
+74.1
+54.3
+SCoT-Response (proposed)
+63.0
+59.5
+66.8
+SCoT-Full (proposed)
+64.5
+62.2
+71.5
+the benefits of context-aware reasoning. To ensure a fair
+comparison between turn-by-turn and duplex systems, we
+aggregate the speech output from each block within a turn
+and compute semantic quality metrics based on the combined
+output. The SpeechLM Duplex E2E model, while enabling
+real-time duplex interaction, struggles with semantic consis-
+tency, as reflected in its high perplexity of 313.8, highlighting
+the challenge of modeling streaming interactions effectively.
+Among the SCoT variants, we find that removing the text
+response path (SCoT-ASR) results in a sharp performance
+drop, indicating that ASR-only reasoning is insufficient for
+streaming duplex dialogue. In contrast, both SCoT-Response
+and SCoT-Full deliver substantial improvements over the Du-
+plex E2E baseline across all metrics. These results highlight
+the effectiveness of CoT reasoning in enhancing the semantic
+quality of duplex SDS models. Remarkably, SCoT achieves
+higher alignment with human references—measured by
+ROUGE and METEOR—than all turn-by-turn systems and
+even a state-of-the-art LLM (SmolLM v2), underscoring
+its ability to generate more natural, human-like responses.
+Moreover, the superior performance of SCoT-Response over
+SCoT-Full demonstrates that text-based reasoning is the key
+driver of semantic coherence in duplex CoT systems. This
+result shows that the ASR transcript need not be explicitly
+predicted as an intermediate target in the CoT path, reinforc-
+ing the efficiency and strength of end-to-end CoT modeling
+over traditional cascaded pipelines.
+We also show that the judge LLM prefers the responses
+generated by our SCoT-Response model (Score = 3.24) over
+the baseline Duplex E2E model (Score = 2.20), suggesting
+that our CoT formulation improves semantic coherence.
+However, the LLM judge assigns a higher score to the turn-
+by-turn CoT E2E model (Score = 4.02), as its responses
+tend to be more semantically fluent—consistent with its
+lower perplexity7 (20.3 in Table 1). However this comes
+7The relatively high perplexity of SCoT reflects the presence of fillers and
+backchanneling typical of spoken conversations, which differ significantly
+from the written text used to train GPT-2. Notably, turn-by-turn systems [23]
+filtered out short utterances such as backchannels from their training data.
+TABLE 3: Conversation Level Statistics on Switchboard.
+Model
+Emotion Rank (↓)
+Model Size (↓)
+Cascaded (Pre-train)
+5.75
+3.4B
+Cascaded (Fine-tune)
+4.76
+5.1B
+E2E
+4.80
+1.7B
+Multi turn CoT E2E
+3.35
+1.7B
+Duplex E2E
+5.60
+1.7B
+SCoT-ASR (proposed)
+6.54
+1.7B
+SCoT-Response (proposed)
+2.32
+1.7B
+SCoT-Full (proposed)
+2.90
+1.7B
+at the cost of impractically high latency (RTF = 2.95),
+which hinders real-time interaction. In contrast, our proposed
+SCoT-Response model achieves a more favorable balance,
+delivering significantly enhanced semantic coherence while
+maintaining very low latency (RTF = 0.56), even below that
+of standard turn-by-turn E2E systems (0.75 RTF).
+B. Turn Taking Metrics
+We begin by comparing systems based on the percentage of
+blocks with overlapping speech in Table 2. While 57.5% of
+blocks in the Eval2000 dataset contain overlapping speech,
+all turn-based systems—including both cascaded and E2E
+variants—fail to generate overlaps by design.
+For duplex systems, we apply a simple validation-based
+heuristic to determine when the system chooses to remain
+silent. For the Duplex model, if more than half of the
+top-k generated responses contain silence, the system is
+considered silent where k is decided based on validation set.
+The standard Duplex E2E model generates overlaps in 46.8%
+of blocks, with strong precision but moderate recall. Among
+our proposed variants, SCoT-ASR produces fewer overlaps
+(41.1%) and exhibits a bias toward silence, reflected in lower
+recall. This again confirms that ASR-only reasoning limits
+duplex responsiveness.
+In contrast, SCoT-Response produces substantially more
+overlaps (63.0%), closer to natural dialogue rates, but with
+lower precision, suggesting that purely text-based reason-
+ing favors responsiveness over cautious turn-taking. Finally,
+SCoT-Full achieves the best balance, with the highest recall
+among all duplex systems, while maintaining more stable
+precision. Overall, these results demonstrate that CoT rea-
+soning, particularly when combining both ASR transcripts
+and text responses as intermediate targets, enables richer
+duplex behavior and yields interaction patterns more closely
+aligned with human-human dialogue.
+C. Conversation Level Analysis
+Table 3 presents a conversation-level analysis focusing on
+how well spoken dialogue systems preserve speaking styles
+such as emotion. To enable fair comparison between turn-
+by-turn and duplex systems, we aggregate the speech output
+VOLUME ,
+7
+
+Arora et al.: Chain-of-Thought Reasoning in Streaming Full-Duplex End-to-End Spoken Dialogue Systems:
+TABLE 4: Audio quality comparison.
+Model
+UTMOS (↑)
+LJSpeech VITS (GT)
+4.19
+SpeechLM Pre-train (GT)
+2.08
+SpeechLM Finetune (GT)
+2.21
+E2E
+2.03
+Multi turn CoT E2E
+2.16
+Duplex E2E
+1.95
+SCoT-ASR (proposed)
+1.89
+SCoT-Response (proposed)
+2.46
+SCoT-Full (proposed)
+2.19
+TABLE 5: Block size ablation for SCoT-Full models.
+Smaller blocks reduce latency (RTF) but hurt semantic
+quality, while a 2-second block offers a better balance.
+Block
+SWBD
+ROUGE-L (↑)
+RTF(↓)
+1 sec
+7.1
+0.30
+2 sec
+15.8
+0.85
+from each block within a turn and compute emotion sim-
+ilarity between the combined audio and the corresponding
+reference utterance. Our results show that SCoT-Response
+achieves the strongest emotional alignment with human ref-
+erences (Emotion Rank = 2.32), substantially outperforming
+both other SCoT variants and all baseline systems, including
+turn-by-turn CoT E2E and cascaded models. SCoT also
+performs competitively, while SCoT-ASR again lags behind.
+Importantly, all SCoT models maintain high parameter effi-
+ciency, in contrast to larger cascaded systems, highlighting
+its potential in resource-constrained, on-device scenarios.
+D. Audio Quality
+Next, we evaluate audio quality performance in Table 4.
+We observe that our proposed CoT formulation leads to
+a noticeable improvement in audio quality compared to
+the baseline Duplex E2E systems.8 Further, SCoT-response
+achieves highest audio quality among its variant, indicating
+that incorporating text response-based reasoning pathways
+not only improves semantic quality (Table 1) but also con-
+tributes to better speech naturalness.
+E. On block size ablations
+We trained an additional SCot-Full model with a smaller
+block size of 1 second to analyze the trade-off between
+latency and response quality. While reducing the block size
+does lower latency as shown in Tab. 5, we observed a
+substantial degradation in semantic coherence: the model
+with 1-second blocks achieved a Perplexity of 161.2 and
+8We can potentially improve audio quality by experimenting with higher
+quality speaker prompt as in [23].
+ROUGE-L of 7.06, compared to 55.2 and 20.3, respectively,
+for the 2-second block size (See Table 1). This degradation
+likely occurs because shorter blocks contain fewer words,
+limiting the contextual information available for intermediate
+reasoning steps such as ASR transcription and text response
+generation. This suggest that a 2-second block size offers a
+better balance between latency and response coherence.
+VIII. Conclusion
+We present SCoT, a novel Streaming Chain-of-Thought
+(CoT) Duplex architecture for spoken dialogue systems
+that integrates structured intermediate reasoning into a low-
+latency, blockwise streaming framework. By generating ASR
+transcripts and text responses at each step, SCoT enhances
+semantic coherence while preserving the real-time, full-
+duplex nature of time-multiplexing approaches. The SCoT
+variants reveal important insights into the trade-offs of
+different reasoning paths. SCoT-ASR, which relies solely
+on transcript prediction, suffers from degraded semantic
+quality, confirming that ASR-only reasoning is insufficient
+in streaming interaction. SCoT-Response emerges as the
+most effective variant overall—achieving the best semantic
+quality, strongest emotional alignment, and highest audio
+naturalness, while also maintaining very low latency. SCoT-
+Full, which incorporates both transcripts and text responses,
+achieves the strongest recall in overlap generation and stable
+duplex behavior, showing the benefit of explicitly modeling
+both reasoning stages, however with some additional latency.
+Taken together, these results highlight SCoT as the first sys-
+tematic framework to analyze and optimize CoT reasoning
+paths in duplex dialogue systems. By balancing semantic
+quality, emotional expressivity, turn-taking behavior, and
+latency, SCoT sets a new standard for real-time, human-like
+conversational agents.
+A natural next step is to investigate adaptive block sizing
+strategies that dynamically balance latency against semantic
+coherence. Finally, A deeper investigation into how different
+CoT paths influence system performance—and how their
+effectiveness varies across utterance types—could provide
+valuable insights into designing more robust and adaptive
+reasoning strategies.
+ACKNOWLEDGMENT
+Experiments of this work used the Bridges2 system at
+PSC and Delta system at NCSA through allocations
+CIS210014 and IRI120008P from the Advanced Cyberin-
+frastructure Coordination Ecosystem: Services & Support
+(ACCESS) program, supported by National Science Foun-
+dation grants #2138259,#:2138286, #:2138307, #:2137603,
+and #:2138296.
+REFERENCES
+[1] K. Jokinen et al., Spoken dialogue systems.
+Morgan & Claypool
+Publishers, 2009.
+[2] C. Breazeal et al., “Social robots that interact with people,” Springer
+handbook of robotics, pp. 1349–1369, 2008.
+8
+VOLUME ,
+
+<Society logo(s) and publication title will appear here.>
+[3] J. Glass, “Challenges for spoken dialogue systems,” in Proceedings
+of the 1999 IEEE ASRU Workshop, vol. 696.
+MIT Laboratory for
+Computer Science Cambridge, 1999.
+[4] A. Raux et al., “Let’s go public! taking a spoken dialog system to the
+real world,” in Proc. Interspeech 2005, 2005, pp. 885–888.
+[5] J. Xu et al., “Qwen2.5-omni technical report,” arXiv preprint
+arXiv:2503.20215, 2025.
+[6] J. Wiseman, “py-webrtcvad,” 2024, accessed: 2024-12-10. [Online].
+Available: https://github.com/wiseman/py-webrtcvad
+[7] S. Young et al., “Pomdp-based statistical spoken dialog systems: A
+review,” Proceedings of the IEEE, vol. 101, pp. 1160–1179, 2013.
+[8] T. Brown et al., “Language models are few-shot learners,” in Proc.
+NeurIPS, 2020.
+[9] OpenAI
+et
+al.,
+“GPT-4
+technical
+report,”
+arXiv
+preprint
+arXiv:2303.08774, 2024.
+[10] T. A. Nguyen et al., “SpiRit-LM: Interleaved spoken and written
+language model,” Trans. ACL, vol. 13, pp. 30–52, 2025.
+[11] J. Tian et al., “ESPnet-SpeechLM: An open speech language model
+toolkit,” arXiv, 2024.
+[12] S. Arora et al., “On the landscape of spoken language models: A
+comprehensive survey,” 2025.
+[13] H. Face, “Speech-to-speech translation toolkit,” 2024, accessed:
+2024-12-10.
+[Online].
+Available:
+https://github.com/huggingface/
+speech-to-speech
+[14] Z.
+Xie
+et
+al.,
+“Mini-omni:
+Language
+models
+can
+hear,
+talk
+while thinking in streaming,” 2024. [Online]. Available: https:
+//arxiv.org/abs/2408.16725
+[15] L. Ten Bosch et al., “On temporal aspects of turn taking in conversa-
+tional dialogues,” Speech Communication, vol. 47, pp. 80–86, 2005.
+[16] S. Arora et al., “Talking turns: Benchmarking audio foundation models
+on turn-taking dynamics,” 2025.
+[17] A. Gravano et al., “A corpus-based study of interruptions in spoken
+dialogue,” in 13th Annual Conference of the International Speech
+Communication Association, INTERSPEECH 2012, Portland, Oregon,
+USA, September 9-13, 2012.
+ISCA, 2012, pp. 855–858. [Online].
+Available: https://doi.org/10.21437/Interspeech.2012-193
+[18] Z. Ma et al., “Language model can listen while speaking,” 2024.
+[Online]. Available: https://arxiv.org/abs/2408.02622
+[19] T.
+A.
+Nguyen
+et
+al.,
+“Generative
+spoken
+dialogue
+language
+modeling,” Trans. Assoc. Comput. Linguistics, vol. 11, pp. 250–266,
+2023. [Online]. Available: https://doi.org/10.1162/tacl a 00545
+[20] Z. Meng et al., “Parrot: Autoregressive spoken dialogue language
+modeling with decoder-only transformers,” in NeurIPS Workshop AI-
+Driven Speech, Music, and Sound Generation, 2024.
+[21] X. Zhang et al., “Beyond the turn-based game: Enabling real-time
+conversations with duplex models,” in Proc. EMNLP, 2024.
+[22] A. D´efossez et al., “Moshi: a speech-text foundation model for
+real-time dialogue,” Kyutai, Tech. Rep., 2024. [Online]. Available:
+http://kyutai.org/Moshi.pdf
+[23] S. Arora et al., “Chain-of-thought training for open e2e spoken
+dialogue systems,” arXiv, 2024.
+[24] D. Zhang et al., “SpeechGPT: Empowering large language models
+with intrinsic cross-modal conversational abilities,” arXiv preprint
+arXiv:2305.11000, 2023.
+[25] Q. Zhang et al., “Omniflatten: An end-to-end GPT model for seamless
+voice conversation,” arXiv preprint arXiv:2410.17799, 2024.
+[26] J. Wei et al., “Chain-of-thought prompting elicits reasoning in large
+language models,” NeurIPS, vol. 35, 2022.
+[27] Z. Zhang et al., “Automatic chain of thought prompting in large
+language models,” arXiv preprint arXiv:2210.03493, 2022.
+[28] R. Huang et al., “AudioGPT: Understanding and generating speech,
+music, sound, and talking head,” in Proceedings of the AAAI, 2024.
+[29] D. Zhang et al., “Speechgpt-gen: Scaling chain-of-information speech
+generation,” arXiv preprint arXiv:2401.13527, 2024.
+[30] G. Castillo-L´opez et al., “A survey of recent advances on turn-
+taking modeling in spoken dialogue systems,” in Proceedings of
+the 15th International Workshop on Spoken Dialogue Systems
+Technology, M. I. Torres et al., Eds.
+Bilbao, Spain: Association
+for Computational Linguistics, May 2025, pp. 254–271. [Online].
+Available: https://aclanthology.org/2025.iwsds-1.27/
+[31] E.
+Ekstedt
+et
+al.,
+“Voice
+activity
+projection:
+Self-supervised
+learning of turn-taking events,” 2022. [Online]. Available: https:
+//arxiv.org/abs/2205.09812
+[32] R. Masumura et al., “Neural dialogue context online end-of-turn
+detection,” in SIGdial.
+Association for Computational Linguistics,
+2018, pp. 224–228.
+[33] M. Roddy et al., “Investigating speech features for continuous turn-
+taking prediction using LSTMs,” in Interspeech, 2018.
+[34] G. Skantze, “Towards a general, continuous model of turn-taking in
+spoken dialogue using LSTM recurrent neural networks,” in Proc.
+SIGdial Meeting Disc. and Dial., 2017.
+[35] R. Meena et al., “Data-driven models for timing feedback responses in
+a map task dialogue system,” Computer speech & language, vol. 28,
+pp. 903–922, 2014.
+[36] E. Ekstedt et al., “TurnGPT: a transformer-based language model
+for predicting turn-taking in spoken dialog,” in EMNLP 2020, ser.
+Findings of ACL.
+Association for Computational Linguistics, 2020.
+[37] X. Wang et al., “Freeze-Omni: A smart and low latency speech-
+to-speech
+dialogue
+model
+with
+frozen
+LLM,”
+arXiv
+preprint
+arXiv:2411.00774, 2024.
+[38] W. Xu et al., “Enabling real-time conversations with minimal training
+costs,” arXiv preprint arXiv:2409.11727, 2024.
+[39] P. Wang et al., “A full-duplex speech dialogue scheme based on large
+language models,” in Proc. NeurIPS, 2024.
+[40] B. Veluri et al., “Beyond turn-based interfaces: Synchronous LLMs as
+full-duplex dialogue agents,” arXiv preprint arXiv:2409.15594, 2024.
+[41] J. Godfrey et al., “Switchboard: telephone speech corpus for research
+and development,” in [Proceedings] ICASSP-92: 1992 IEEE Interna-
+tional Conference on Acoustics, Speech, and Signal Processing, vol. 1,
+1992, pp. 517–520 vol.1.
+[42] C. Cieri et al., “The fisher corpus: A resource for the next generations
+of speech-to-text.” in LREC, vol. 4, 2004, pp. 69–71.
+[43] C.-Y. Lin, “Rouge: A package for automatic evaluation of summaries,”
+in Text summarization branches out, 2004, pp. 74–81.
+[44] S. Banerjee et al., “Meteor: An automatic metric for mt evaluation
+with improved correlation with human judgments,” in ACL workshop
+on intrinsic and extrinsic evaluation measures for machine translation
+and/or summarization, 2005, pp. 65–72.
+[45] F. Jelinek et al., “Perplexity—a measure of the difficulty of speech
+recognition tasks,” The Journal of the Acoustical Society of America,
+vol. 62, pp. S63–S63, 1977.
+[46] A. Radford et al., “Language models are unsupervised multitask
+learners,” OpenAI, 2019.
+[47] A. Radford et al., “Robust speech recognition via large-scale weak
+supervision,” in Proc. ICML, 2023.
+[48] J. Shi et al., “VERSA: A versatile evaluation toolkit for speech, audio,
+and music,” in ”NAACL 2025”, N. Dziri et al., Eds.
+Albuquerque,
+New Mexico: Association for Computational Linguistics, Apr. 2025.
+[49] T. Saeki et al., “UTMOS: UTokyo-SaruLab system for voiceMOS
+challenge 2022,” in Interspeech, 2022, pp. 4521–4525.
+[50] S. Ji et al., “Wavchat: A survey of spoken dialogue models,” 2024.
+[Online]. Available: https://arxiv.org/abs/2411.13577
+[51] Z. Ma et al., “emotion2vec: Self-supervised pre-training for speech
+emotion representation,” Proc. ACL 2024 Findings, 2024.
+[52] L. B. Allal et al., “Smollm2: When smol goes big – data-centric
+training of a small language model,” 2025. [Online]. Available:
+https://arxiv.org/abs/2502.02737
+[53] T. Hayashi et al., “ESPnet-TTS: Unified, reproducible, and integratable
+open source end-to-end text-to-speech toolkit,” in ICASSP.
+IEEE,
+2020, pp. 7654–7658.
+[54] Y. Peng et al., “OWSM v4: Improving open whisper-style speech
+models via data scaling and cleaning,” in Proceedings of the Annual
+Conference of the International Speech Communication Association
+(INTERSPEECH), 2025.
+[55] S. Watanabe et al., “ESPnet: End-to-end speech processing toolkit,”
+in Proceedings of Interspeech, 2018, pp. 2207–2211.
+[56] S. Arora et al., “ESPnet-SLU: Advancing spoken language understand-
+ing through espnet,” in ICASSP.
+IEEE, 2022, pp. 7167–7171.
+[57] S. Arora et al., “Espnet-sds: Unified toolkit and demo for spoken
+dialogue systems,” in NAACL 2025, 2025, pp. 248–259.
+[58] J. Copet et al., “Simple and controllable music generation,” Advances
+in Neural Information Processing Systems, vol. 36, 2024.
+[59] J. Shi et al., “ESPnet-Codec: Comprehensive training and evalua-
+tion of neural codecs for audio, music, and speech,” arXiv preprint
+arXiv:2409.15897, 2024.
+[60] W. Chen et al., “Towards robust speech representation learning for
+thousands of languages,” arXiv preprint arXiv:2407.00837, 2024.
+VOLUME ,
+9

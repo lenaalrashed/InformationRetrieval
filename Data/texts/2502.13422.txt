@@ -1,0 +1,2112 @@
+Towards Question Answering over Large Semi-structured Tables
+Yuxiang Wang, Junhao Gan, Jianzhong Qi
+School of Computing and Information Systems, The University of Melbourne
+yuxiang.wang8@student.unimelb.edu.au, { junhao.gan, jianzhong.qi}@unimelb.edu.au
+Abstract
+Table Question Answering (TableQA) attracts strong inter-
+ests due to the prevalence of web information presented in
+the form of semi-structured tables. Despite many efforts,
+TableQA over large tables remains an open challenge. This
+is because large tables may overwhelm models that try to
+comprehend them in full to locate question answers. Recent
+studies reduce input table size by decomposing tables into
+smaller, question-relevant sub-tables via generating programs
+to parse the tables. However, such solutions are subject to pro-
+gram generation and execution errors and are difficult to en-
+sure decomposition quality. To address this issue, we propose
+TADRE, a TableQA model that incorporates both pre- and
+post-table decomposition refinements to ensure table decom-
+position quality, hence achieving highly accurate TableQA re-
+sults. To evaluate TADRE, we construct two new large-table
+TableQA benchmarks via LLM-driven table expansion and
+QA pair generation. Extensive experiments on both the new
+and public benchmarks show that TADRE achieves state-of-
+the-art performance on large-table TableQA tasks.
+Introduction
+Table Question Answering (TableQA) aims to answer nat-
+ural language questions grounded in semi-structured tabu-
+lar data. It is an important problem because not only is in-
+formation on the web often presented in the form of semi-
+structured tables (just “tables” hereafter), but also solv-
+ing the problem helps to understand the capability of lan-
+guage models—which are usually trained with unstructured
+texts—to comprehend semi-structured data.
+Recent studies (Cheng et al. 2023; Liu, Wang, and Chen
+2024; Wang, Qi, and Gan 2025) exploit Large Language
+Models (LLMs) to comprehend both natural language ques-
+tions and tables and generate answers. Such solutions are
+challenged by large tables (Liu et al. 2024), e.g., tables with
+just over 500 tokens (cf. Figure 1a), which could contain too
+much irrelevant information that overwhelms LLMs.
+Studies on TableQA over large tables generally take a
+decompose-then-reason approach that first decomposes a
+large table into smaller, question-relevant sub-tables, upon
+which a model (e.g., an LLM) reasons to generate the ques-
+tion answer. Some existing works (Ye et al. 2023; Lee et al.
+2024; Wang et al. 2024) feed an entire table to an LLM for
+decomposition, where the LLM is again challenged by the
+large table size. Others (Pourreza and Rafiei 2023; Chen
+[0-100]
+[100-200]
+[200-300]
+[300-400]
+[400-500]
+[500-600]
+[600-700]
+[700-800]
+[800-900]
+[900-1000]
+Number of tokens in a table
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Accuracy
+Accuracy vs Number of tokens in a table
+End-to-End GPT-4o mini
+End-to-End Gemini 2.0
+(a)
+Early LLM involvement
+Late LLM involvement
+TaDRe (ours)
+Answer
+Question
+Table Header
+Program
+Sub-table
+Reasoning
+Execution
+Answer
+Reasoning
+Table
+Question
+Program
+Guiding
+Refinement
+Sub-table
+Refinement
+Reasoning
+Answer
+Table Header
+Generation
+Generation
+Question
+(b)
+Figure 1: (a) TableQA accuracy of running GPT4-o
+mini and Gemini 2.0 on tables of different lengths
+(i.e., numbers of tokens) in the WikiTableQuestions
+dataset (Pasupat and Liang 2015). (b) Illustration of differ-
+ent LLM involvement strategies in TableQA.
+et al. 2024; Nahid and Rafiei 2024) use LLMs to analyze the
+input question and table headers, and generate table parser
+programs which are executed for table decomposition. Due
+to the semi-structured nature of the tables and the generative
+nature of the table parser programs, the programs may fail
+to fetch question-relevant sub-tables or may not run at all.
+We observe that these existing solutions run LLMs on ta-
+bles either too eagerly (i.e., read full tables for decomposi-
+tion) or too late (i.e., wait until tables are decomposed by
+a parser program), which leaves a gap to fill – see differ-
+ent pipelines in Figure 1b, and an opportunity to enhance
+TableQA accuracy over large tables.
+We propose a TableQA model named TADRE where
+LLMs are an active participant in the table decomposition
+arXiv:2502.13422v2 [cs.CL] 4 Aug 2025
+
+step, i.e., table decomposition with LLM resoning.
+TADRE first employs a Decomposition Planner, an LLM-
+based component that leverages few-shot in-context learn-
+ing to generate SQL queries. The queries are structured rea-
+soning paths for question-relevant sub-table retrieval. Rather
+than executing these queries directly, a table semantics- and
+structure-aware Table Decomposer parses them to extract
+semantic signals, such as column names, values, and con-
+ditions, which are then converted into a Python program via
+a SQL-to-Python semantic mapping to extract a question-
+relevant sub-table. This yields a compact and relevant sub-
+table for answering the input question.
+To enhance decomposition robustness, we introduce an
+LLM-based Decomposition Refiner, which operates both be-
+fore and after table decomposition. Before decomposition,
+it verifies and corrects the generated SQL queries to en-
+sure alignment with the input table structure and question
+semantics. After decomposition, we apply a novel, Chain-
+of-Table-Retrieval (CoTR) mechanism, which dynamically
+augments the sub-tables when they lack information to an-
+swer the input question. This design provides finer-grained
+control, avoids unnecessary token overhead, and adapts bet-
+ter to large tables. Finally, the refined sub-table is passed to
+an Answer Generator (another LLM) to produce the answer.
+To support evaluation for large-table TableQA, we
+construct two new datasets derived from the Spider
+dataset (Yu et al. 2018): (1) Spider Large TableQA Dataset
+(denoted as SLQA), built by generating natural language
+QA pairs over original large tables, and (2) Spider Ex-
+panded TableQA Dataset (denoted as SEQA), which expands
+small tables from Spider into large ones using LLM-based
+data augmentation, followed by QA pair generation. We
+also extract large tables from the WikiTableQuestions
+dataset (Pasupat and Liang 2015) and the HybridQA
+dataset (Chen et al. 2020) to enrich our evaluation.
+This paper makes the following contributions:
+• We propose TADRE, a novel TableQA model designed
+for large semi-structured tables. TADRE transforms SQL
+queries into a decomposition reasoning step and integrates
+a structure- and semantics-aware Table Decomposer to ex-
+tract sub-tables without executing the SQL queries.
+• We introduce Decomposition Refiner, a refinement mech-
+anism that operates both before and after table decom-
+position. It verifies SQL quality and supports dynamic
+sub-table augmentation via a Chain-of-Table-Retrieval
+(CoTR) mechanism.
+• We present SEQA and SLQA, two large-table TableQA
+benchmarks automatically constructed from the Spider
+dataset via LLM-driven table expansion and QA gener-
+ation. These datasets contain natural language questions
+over large tables and will be released with this paper.
+• Extensive experiments show that TADRE achieves state-
+of-the-art (SOTA) performance on large-table TableQA
+tasks while generalizing well to small-table benchmarks,
+highlighting its efficiency and robustness.
+Related Work
+Existing TableQA studies can be broadly categorized into
+two groups based on whether they explicitly separate ta-
+ble decomposition from semantic reasoning: (1) single-stage
+models and (2) decompose-then-reason models.
+Single-Stage Models
+Single-stage models jointly encode
+the full input table and question to generate answers without
+constructing intermediate sub-tables.
+PLM fine-tuning. Early studies fine-tune Pre-trained Lan-
+guage Models (PLMs) with structure adaptations to handle
+tabular data. For example, TaBERT (Yin et al. 2020) in-
+corporates vertical self-attention to unify textual and tab-
+ular representations based on BERT (Devlin et al. 2019).
+TUTA (Wang et al. 2021) employs a hierarchical tree-based
+attention with column and table segment masking to learn
+table representations. TAPAS (Herzig et al. 2020) extends
+BERT by adding row, column, and rank embeddings, along
+with table cell masking. TAPEX (Liu et al. 2022) pre-trains
+BART (Lewis et al. 2020) using a large synthetic dataset
+derived from WikiTableQuestions. OmniTab (Jiang
+et al. 2022) pre-trains BART on both real and synthetic data,
+i.e., SQL queries from the Spider dataset and synthetic
+sentences generated from SQL queries via an SQL-to-NL
+module. CABINET (Patnaik et al. 2024) proposes a rele-
+vance scorer and a relevant cell predictor to assign weights
+to table cells. These single-stage PLM-based models strug-
+gle with large and noisy inputs due to their limited context
+windows and reasoning capabilities.
+LLM prompting. Recent studies leverage LLMs via
+prompting. Mix-SC (Liu, Wang, and Chen 2024) issues mul-
+tiple prompts using LLMs either as a Python agent or with
+Chain-of-Thought (CoT) prompting (Wei et al. 2022). It
+adopts a self-consistency voting strategy to select the most
+frequent answer of the prompted LLM. Binder (Cheng et al.
+2023) iteratively refines an LLM-generated program and ex-
+ecutes it to obtain answers, while TabLaP (Wang, Qi, and
+Gan 2025) follows a similar approach but focuses on nu-
+merical questions. These models still ingest the full input
+table. Their performance degrades on large tables, as shown
+earlier.
+Decompose-then-Reason
+Models
+Decompose-then-
+reason models reduce the size of the input table first, such
+that the reasoning process (e.g., with an LLM) can focus on
+more targeted sub-tables. Studies taking this approach can
+be categorized by their table decomposition strategies.
+SQL execution-as-decomposer. A natural choice to de-
+compose tables (especially fully structured ones) is to run
+SQL queries. NL-to-SQL-based methods translate natural
+language questions into SQL queries that are directly exe-
+cuted to obtain the final answer. Such methods can also be
+seen as a type of single-stage method, as no reasoning is
+needed afterwards. The SQL queries can be generated with
+either a trained model or LLMs via in-context learning. For
+example, Seq2SQL (Zhong, Xiong, and Socher 2017) trains
+a seq2seq model to generate SQL queries. DIN-SQL (Pour-
+reza and Rafiei 2023) decomposes SQL generation into sub-
+tasks to improve accuracy. LEVER (Ni et al. 2023) generates
+multiple candidate answers via SQL execution and trains a
+verifier to select the most accurate one. SynTQA (Zhang,
+Luu, and Zhao 2024) chooses answers from SQL execution
+and an end-to-end TableQA module.
+
+There are also studies that run SQL queries to extract sub-
+tables for LLM reasoning. OpenTab (Kong et al. 2024) con-
+siders an open-domain setup where tables relevant to the in-
+put question are first retrieved using BM25 (Robertson and
+Zaragoza 2009). Then, it runs SQL queries generated via
+few-shot prompting to obtain sub-tables. TabSQLify (Nahid
+and Rafiei 2024) runs SQL queries generated based on the
+question and table headers to retrieve a sub-table.
+Program-as-decomposer. TableRAG (Chen et al. 2024)
+uses LLM to iteratively generate Python programs based on
+the question, table headers, and reasoning contexts. The pro-
+grams are executed to retrieve key cells and columns from
+the original table. An LLM reasons over the retrieved data
+to generate the final answer.
+The models above rely heavily on the correctness and ex-
+ecutability of SQL queries and programs, which could easily
+fail due to the generative nature of the queries and programs
+and the complex structure of the tables.
+Model-as-decomposer. Another series of studies uses
+PLMs or LLMs as the table decomposer. Naively, one can
+put the full input table and question into an LLM to locate
+the table rows and columns (or their indexes) relevant to
+the question. Learn-to-Reduce (Lee et al. 2024) uses a col-
+umn selector and a row selector, which are fine-tuned lan-
+guage models. These methods perform one-shot sub-table
+selection without iterative refinement or verification, mak-
+ing them vulnerable to failures of the selectors. Other studies
+further introduce multi-stage decomposition-and-reasoning.
+Chain-of-Table (Wang et al. 2024) extends the CoT frame-
+work by progressively extracting a sub-table at each reason-
+ing step. DATER (Ye et al. 2023) follows a similar idea, de-
+composing both the original table and the input question into
+sub-tables and sub-questions, which are then used to answer
+questions. These methods also use models (e.g., LLMs) as
+the decomposer. They still feed the models with the full in-
+put tables. This challenges the models’ semantic understand-
+ing capabilities over a long input context.
+Our
+model
+TADRE
+follows
+the
+decompose-then-
+reasoning paradigm. Instead of applying either SQL queries
+or LLMs directly on the full input tables, we use both
+to generate a decomposition plan, hence bypassing the
+limitations of both approaches and enhancing the quality of
+the decomposition outcomes.
+Problem Formulation
+Given a table T and a question Q about the informtion in T,
+the TableQA task aims to develop a model capable of gen-
+erating an accurate answer A for Q. Specifically, each ques-
+tion Q = (q1, q2, . . . , q|Q|) is expressed in natural language,
+where qi ∈Q (i ∈[1, |Q|]) represents a token (e.g., a word).
+The table T is also represented as a token sequence in natu-
+ral language, where individual cells are separated by special
+characters such as ‘|’, and rows are delineated by newlines.
+For TableQA over large tables which are of more than
+4,096 tokens (the context window size limit of most
+TableQA PLMs), the aim becomes to identify a sub-table
+T ∗⊆T that allows a reasoning model R(·, ·) to answer Q
+Algorithm 1: TableQA with TADRE
+Require: Table T, Question Q; Models: Decomposition Planner
+MP, Decomposition Refiner MV, Table Decomposer MD, An-
+swer Generator MA
+Ensure: Answer A
+1: Stage I: Table Decomposition
+2: SRAW ←MP(Q, header(T))
+3: S ←M (1)
+V (SRAW, Q, header(T))
+// Pre-decomposition
+refinement
+4: (C, P, V ) ←MD.Parse(S)
+5: C∗←LCS-Correct(C, header(T))
+6: T (0)
+SUB ←MD.Filter(T, C∗, P, V )
+7: ˆA ←M (2)
+V (Q, header(T), T (0)
+SUB)
+// Post-decomposition
+refinement
+8: if ˆA̸ = ∅then
+9:
+return ˆA
+10: else
+11:
+ACoTR ←M (2)
+V .Actions(Q, T (0)
+SUB, T)
+12:
+TSUB ←T (0)
+SUB + Execute(ACoTR, T)
+13: end if
+14: Stage II: Answer Generation
+15: ˆA ←MA(Q, TSUB)
+16: return ˆA
+correctly while minimizing the length of T ∗. Formally:
+T ∗= arg min
+T ′⊆T |T ′| subject to R(T ′, Q) = A.
+(1)
+Here | · | denotes the length of a table.
+In practice, it is rather difficult, if not impossible, to obtain
+the minimum T ∗, otherwise Q may have been answered al-
+ready (e.g., when T ∗= A). We reduce the goal to obtaining
+a size-reduced sub-table ˆT ∗that maximizes the probability
+for R(·, ·), which is an imperfect model and could struggle
+with large table input, to answer Q correctly,
+ˆT ∗= arg max
+T ′⊆T P(R(T ′, Q) = A).
+(2)
+Based on ˆT ∗, we run R( ˆT ∗, Q), which could be a PLM
+or LLM, to generate the TableQA answer ˆA.
+Methodology
+TADRE runs in two stages: (i) Table Decomposition extracts
+a compact and relevant sub-table TSUB ⊂T; (ii) Answer
+Generation predicts the final answer ˆA based on TSUB and
+Q, as outlined in Algorithm 1 and Figure 2.
+Stage I: Table Decomposition
+SQL Generation via Few-shot Prompting
+We first use a
+Decomposition Planner to generate a raw SQL query SRAW
+based on question Q and the header of table T. Decompo-
+sition Planner is prompted with top-K in-context examples
+retrieved from an NL-to-SQL dataset SQUALL (Shi et al.
+2020) (see prompt template in Appendix A.1). We compute
+the cosine similarity between the embeddings of Q and all
+N questions in SQUALL, denoted as D = {d1, d2, . . . , dN},
+using the Sentence Transformer (Song et al. 2020):
+eQ = f(Q),
+ED = {f(di)}N
+i=1 ,
+(3)
+
+Terminals
+Terminals
+Potomac 
+Park
+Friendship 
+Heights station
+Southern 
+Avenue 
+station;
+Naylor Road 
+station
+Friendship 
+Heights station
+…
+…
+(1) Table Decomposition
+2√
+add_row
+add_col
+add_cell
+(C, P, V)
+𝑺𝑹𝑨𝑾
+(2) Answer Generation
+S
+SELECT COUNT(*) AS LineCount
+FROM RouteTable WHERE
+Terminals LIKE '%Naylor Road%'
+𝑻𝑺𝑼𝑩
+(𝟎)
+Retrieve
+𝑻𝑺𝑼𝑩
+(0) Input Data
+Question: Tell me the number of lines that stop at the naylor 
+road station ?
+Major Street
+Terminals
+Terminals
+Name
+Route
+Wisconsin Avenue 
+NW
+Potomac 
+Park
+Friendship 
+Heights station
+Wisconsin 
+Avenue Line
+31
+Pennsylvania 
+Avenue SE NW
+Branch Avenue SE 
+(36)
+Southern 
+Avenue 
+station;
+Naylor Road 
+station
+Friendship 
+Heights station
+Pennsylvania 
+Avenue Line
+32, 36
+…
+…
+…
+…
+…
+Independence 
+Avenue SE Naylor 
+Road SE
+Naylor Road 
+station
+10th St & 
+Pennsylvania
+Naylor Rd Line
+34
+AM to Potomac 
+Park, PM to 
+Naylor Road
+Potomac 
+Park 
+Naylor Road 
+station
+Pennsylvania 
+Avenue Metro 
+Extra Line
+39
+…
+…
+…
+…
+…
+Table Title: Route Table
+(C, P, V)
+Table Decomposer
+Decomposition Refiner
+Decomposition Refiner
+Answer Generator
+Figure 2: Overview of TADRE. The model contains two stages: (i) Table Decomposition, where an SQL query is generated
+and refined to guide sub-table extraction based on decomposition triples (Column Names, Conditions, Values), highlighted in
+orange, blue, and purple, respectively; and (ii) Answer Generation, where the question and the refined sub-table are used to
+prompt an LLM for the final answer.
+where f(·) is an embedding model, eQ ∈R1×m, ED ∈
+RN×m, and m denotes embedding dimensionality.
+We select the top K examples based on cosine similarity:
+Z = argsort(
+eQED
+T
+∥eQ∥· ∥ED∥) ,
+(4)
+TopK(D) = {dij | ij ∈Z}, j ∈[N −K + 1: N] ,
+(5)
+where i ∈[1, |D|], and K = 5 by default.
+SQL Verification and Refinement (pre-decomposition)
+The raw SQL query SRAW is verified by the Decomposition
+Refiner, which prompts an LLM with SRAW, the full table
+header, and question Q, to check if SRAW leads to an answer
+of Q. If not, the Decomposition Refiner revises SRAW into a
+refined SQL query S. This process could repeat, although we
+do not repeat by default, for cost efficiency. See the prompt
+template in Appendices A.2 and A.3.
+Sub-table Construction
+The Table Decomposer parses S
+using regex (detailed in Appendix B.1) to extract a triple
+(C, P, V ) representing column names, conditions (e.g., fil-
+tering clauses), and values (e.g., values in the conditions).
+We choose regex over an LLM-based parser because it
+achieves higher accuracy empirically (see Appendix B.2).
+To mitigate potential hallucinations in C (i.e., resulting from
+LLM SQL generation), we compute the longest common
+subsequence (LCS) ratio between each extracted column
+name and the column names of T. A column ci ∈C is re-
+placed with the matched column name from T if the best
+LCS score exceeds 0.2, or discarded otherwise.
+We construct the initial sub-table T (0)
+SUB using the corrected
+tripe (C∗, P, V ) by applying column projection and row fil-
+tering over the DataFrame form of T. Each SQL-style condi-
+tion pi ∈P is mapped to a corresponding DataFrame filter-
+ing operation (see Appendix B.3). For string-based filters,
+we adopt a fuzzy matching strategy where strict equality
+conditions (“=” in SQL) are relaxed to substring matching
+(“LIKE” in SQL), implemented using Python’s in operator.
+If filtering fails, all rows in the target column are retained.
+CoTR:
+Sub-table
+Refinement
+(post-decomposition)
+The Decomposition Refiner also verifies the completeness
+of T (0)
+SUB. If T (0)
+SUB is insufficient for answering Q, we present
+a Chain-of-Table-Retrieval (CoTR) mechanism inspired by
+the Chain-of-Table paradigm (Wang et al. 2024). CoTR
+uses an LLM to iteratively generate retrieval actions, such
+as to retrieve more rows, columns, or cells, to incrementally
+augment T (0)
+SUB. These actions are implemented as executable
+Python instructions over T, leading to a more complete
+sub-table TSUB (the prompts used are in Appendix A.4).
+Stage II: Answer Generation
+At this stage, we leverage the strong semantic-parsing
+and reasoning capabilities of LLM to perform end-to-end
+TableQA. If the Decomposition Refiner in the previous stage
+has already produced a complete answer, it is returned di-
+rectly. Otherwise, we feed the refined sub-table TSUB and
+question Q (see prompt template in Appendix A.5) into the
+Answer Generator (an LLM) to generate the final answer A.
+Dataset Construction
+Prior work typically tests their models on a small sub-
+set of large tables from existing TableQA datasets (e.g.,
+WikiTableQuestions), where the proportion of such
+tables is limited. Other efforts use large tables from NL-
+to-SQL datasets such as Spider. The QA pairs from such
+datasets are tailored for SQL generation and not for queries
+over semi-structured tables.
+To address these issues, we construct two new large-table
+TableQA datasets: SEQA and SLQA, which contain QA pairs
+automatically generated through a self-adaptive QA gener-
+ation pipeline using GPT-4o mini (OpenAI 2024), with
+minimal human annotation and correction. Our approach
+achieves over 70% QA pair acceptance rate (see Appendix
+C.1), allowing for scalable and cost-efficient dataset con-
+struction. Figure 3 shows examples of generated QA pairs.
+Self-adaptive QA pair generation. We observe that di-
+rectly prompting an LLM with a selected cell or sub-table as
+the ground-truth answer to generate a corresponding ques-
+tion often leads to low-quality QA pairs (acceptance rate
+< 50% based on human evaluation). To overcome this is-
+sue, we propose a self-adaptive QA pair generation method,
+where the LLM generates an answer – derived either from
+
+Additional Info
+Cost
+Details
+Item
+{'Weight': '1.2kg', 
+'Battery': '12 hrs'}
+1200
+Dell XPS 13
+Laptop
+{'Camera': '48MP', 
+'Chipset': 'A17 
+Bionic'}
+999
+iPhone 15
+Smartphone
+…
+…
+…
+…
+{'Brand': 'Amazon', 
+'Assistant': 'Alexa'}
+99
+Amazon Echo
+Smart
+Speaker
+{'Provider': 'Google 
+Drive', 'Storage': 
+'1TB'}
+10
+Cloud Storage
+Subscription
+…
+…
+…
+…
+Table Title: Item Information
+Q: What is the name of the smartphone 
+mentioned in the table?
+A: iPhone 15
+Q: Which brand produces the Smart 
+Speaker and what voice assistant does 
+it use?
+A: Amazon, Alexa
+Q: What is the price of the first item?
+A: 1200
+Q: Which is cheaper Laptop or
+Smartphone?
+A: Smartphone
+Figure 3: Generated QA pair examples.
+a specific cell or an answer field (i.e., row, column, or sub-
+table) – and then constructs the corresponding question. The
+generated QA pairs are further manually reviewed and post-
+processed: questions deemed unreasonable are revised, and
+incorrect answers are corrected to ensure the final QA pair
+is valid. This method significantly improves QA pair qual-
+ity, with fewer than 30% of the QA pairs requiring human
+correction (see details in Appendix C.1).
+We propose three answer field selection strategies:
+cell-based, column/row-based, and sub-table-based, which
+prompt the LLM to randomly select a cell, a column/row,
+and a sub-table (containing multiple rows and columns) as
+the ground-truth answer, respectively, and to generate a QA
+pair based on the answer (see prompts in Appendix C.2).
+SLQA is construed by extracting all the large tables
+(with more than 4,096 tokens) from the Spider dataset.
+Spider’s original QA pairs are designed for NL-to-SQL
+tasks, which tend to align with rigid logical forms and thus
+lack the diversity and complexity required for TableQA test-
+ing. To address this gap, we regenerate QA pairs using our
+LLM-based pipeline above. Importantly, we include both
+SQL-executable questions and non-SQL-executable ques-
+tions (detailed in Appendices C.4 and C.5; see prompts and
+analysis in Appendix C.6), enabling more challenging rea-
+soning beyond rigid logical forms.
+SEQA first expands the small tables (with 4,096 tokens
+or fewer) in Spider via LLM-based row and column aug-
+mentation, while maintaining structure consistency (see Ap-
+pendix C.3). The expanded tables are then used with the
+same QA generation as above to produce diverse questions.
+Experiments
+Experimental Settings
+Datasets
+We evaluate TADRE on five datasets: the two
+new large-table benchmarks constructed by us SLQA and
+SEQA, and three public datasets: WikiTableQuestions
+(WTQ), HybridQA (HybQA) and TabFact.
+WTQ is derived from Wikipedia tables. To focus on large
+tables, we extract all tables with more than 4,096 tokens
+from the WTQ dataset to form a large-table subset, denoted as
+WTQL. We also evaluate on the full WTQ dataset to assess
+model generalizability across different table sizes.
+HybQA combines semi-structured tables with texts from
+Wikipedia. To maintain consistency in prompt formatting,
+we include the texts directly in the corresponding table cells.
+Dataset # Cols. # Rows # Toks. # Toks. # Toks.
+# QA Pairs
+/ Table / Table / Table
+/ Cell / Answer Train Validation Test
+TabFact
+6.3
+13.5
+317.9
+3.7
+1.0
+92,283
+12,792
+2,024
+WTQ
+6.4
+25.4
+662.6
+4.1
+1.7
+11,321
+2,831
+4,344
+WTQL
+6.8
+232.8
+6,860.8
+4.3
+2.9
+191
+33
+81
+HybQAL
+4.6
+16.9
+9,035.7
+116.2
+4.4
+48,541
+2,694
+2,630
+SLQA
+11.0
+733.8
+9,786.2
+1.2
+2.8
+1,324
+239
+1,110
+SEQA
+10.7
+519.6 18,291.5
+3.3
+3.7
+226
+46
+169
+Table 1: Dataset statistics (all values are average values).
+‘Cols.’ means ‘Columns’; ‘Toks.’ means ‘Tokens’; ‘∗L’ de-
+notes a dataset adapted to include only the large tables.
+Then, we take all the tables with more than 4,096 tokens to
+construct a large-table subset, denoted as HybQAL.
+TabFact is a table-based fact verification benchmark.
+We use it to assess TADRE’s capability to handle different
+TableQA tasks beyond standard question answering.
+Table 1 summarizes the five datasets.
+Model Input Preparation
+Following the literature (Liu,
+Wang, and Chen 2024; Wang et al. 2024; Wang, Qi, and
+Gan 2025), tables are linearized into sequences by flatten-
+ing their structure and incorporating them into prompts for
+LLMs. Table cells are delineated using ‘|’s, while rows are
+separated by line breaks. The questions are directly included
+in the prompts.
+For our TADRE model, the Decomposition Planner takes
+the question, the table header, and in-context examples
+to generate an SQL query. The Table Decomposer takes
+the generated SQL query and the original table to ex-
+tract a raw sub-table. The Decomposition Refiner, at pre-
+decomposition, takes the raw SQL query, the question, and
+the table header to generate a refined SQL query; at post-
+decomposition, it takes the question, the table header, and
+the initial sub-table to generate a refined sub-table. The An-
+swer Generator takes the question and the refined sub-table
+as input, forms a compact prompt for the LLM to generate
+the final TableQA answer.
+Competitors
+We compare with models of three cate-
+gories: (i) NL-to-SQL based: DIN-SQL (Pourreza and Rafiei
+2023); (ii) Fine-tuned PLM-based: TAPEX-Large (Liu et al.
+2022), OmniTab-Large (Jiang et al. 2022), and CAB-
+INET (Patnaik et al. 2024) (SOTA); (iii) LLM-based:
+TableRAG (Chen et al. 2024), TabSQLify (Nahid and Rafiei
+2024), DATER (Ye et al. 2023), and End-to-End QA (with
+full Tables) (OpenAI 2024; Anil et al. 2023) (SOTA).
+Implementation Details
+We use GPT-4o mini (default
+and shared by all LLM-based models) and Gemini 2.0
+as the LLM backbones. All baseline models use their
+default context window sizes if not specified. We use
+all-mpnet-base-v2 from the Sentence Transformers
+library (Reimers and Gurevych 2019) as the encoder for
+SQL example selection. For the study on token length, we
+use the cl100k base tokenizer from tiktoken. All ex-
+periments are run with an NVIDIA A100 80 GB GPU.
+
+Evaluation Metric
+We report the performance based on
+the exact-match Accuracy, following the official evaluator
+from Pasupat and Liang (2015).
+Model
+WTQL
+HybQAL SLQA SEQA
+NL-to-SQL DIN-SQL
+41.98
+0.27
+49.82 69.82
+Fine-tuned
+OmniTab-Large 29.63
+7.83
+20.95 13.02
+TAPEX-Large
+30.86
+6.46
+17.09 10.65
+† CABINET
+43.21
+8.72
+21.47 13.61
+LLM-based
+Base: GPT-4o mini
+† TableRAG
+30.86
+9.89
+27.12 36.69
+† TabSQLify
+32.10
+21.60
+22.97 15.38
+† DATER
+35.80
+26.81
+44.95 53.25
+End-to-End QA 48.15
+30.95
+57.75 64.50
+TADRE (ours) 61.73
+36.01
+71.35 76.33
+∆
+↑28.20 ↑16.35 ↑23.55 ↑9.32
+Base: Gemini 2.0
+† TableRAG
+41.98
+15.02
+34.23 38.46
+† TabSQLify
+40.74
+19.90
+25.67 21.89
+† DATER
+39.51
+18.78
+47.03 52.07
+End-to-End QA 60.49
+36.24
+65.41 71.01
+TADRE (ours) 70.37
+38.02
+69.64 77.51
+∆
+↑16.33 ↑4.91
+↑6.47 ↑9.15
+Table 2: Overall performance results. The best results are
+in boldface, while the best baseline results are underlined;
+∆(%) denotes the performance gain of TADRE compared
+with the best baseline results. † denotes baselines with table
+decomposition. The other baselines take full tables as input.
+Results and Analysis
+Overall Results
+Table 2 reports the overall performance
+results. Our model TADRE consistently outperforms all
+competitors across all four datasets using two different back-
+bone LLMs. This confirms the effectiveness of TADRE on
+dealing with large tables.
+Among the datasets, HybQAL is the most challenging due
+to its mix with lengthy textual contents in cells. This invali-
+dates the NL-to-SQL-based model DIN-SQL. Although the
+End-to-End QA model is relatively stable across datasets
+due to the strong textual understanding capability of the
+backbone LLMs, its accuracy degrades as the table length in-
+creases, as shown in Figure 1a. In contrast, TADRE is just as
+robust while its accuracy is higher, benefiting from its table
+decomposition process to reduce the table length and sim-
+plify LLM reasoning (comparison shown in Appendix B.4).
+Effectiveness of the Table Decomposer
+As shown in Fig-
+ure 4, our Table Decomposer effectively reduces the length
+of the table fed to the LLM in the Answer Generator by
+40.0%, 63.5%, 69.8%, 48.5%, 84.0%, and 91.4% on the six
+datasets, respectively. This substantial reduction enables the
+Answer Generator to focus on important sub-tables while
+enhancing data efficiency.
+As TADRE also uses LLMs in its other modules, Figure 5
+further compares the total number of input tokens per ques-
+tion for all LLMs in TADRE with that of the End-to-End
+QA. TADRE reduces the overall LLM input size by 32.6%,
+TabFact
+WTQ
+WTQL HybQAL SLQA
+SEQA
+0.0
+5000.0
+10000.0
+15000.0
+20000.0
+# Tokens per Table
+Full Table
+Decomposed Table
+Figure 4: Comparison of the lengths of tables input to the
+LLM reasoning module with and without running Table De-
+composer of TADRE on the test sets of the datasets.
+WTQL
+HybQAL
+SLQA
+SEQA
+0.0
+5000.0
+10000.0
+15000.0
+20000.0
+# Tokens per Question
+End-to-End QA
+TaDRe (ours)
+Figure 5: Comparison of the overall number of LLM input
+tokens per question between TADRE and the End-to-End
+QA model.
+22.6%, 63.5%, and 79.4% on the four large-table bench-
+marks, WTQL, HybQAL, SLQA, and SEQA, respectively.
+The substantial reduction allows the sub-tables to fit the
+input window constraints of the fine-tuned PLM-based mod-
+els and “small” LLMs, creating opportunities to achieve
+high accuracy with such models. Table 3 verifies this by
+powering PLM-based models TAPEX-Large and OmniTab-
+Large and “small” LLMs Qwen2.5-3B-Instruct and
+Qwen2.5-32B-Instruct (Qwen et al. 2025) with our
+Table Decomposer. We observe consistent and substan-
+tial accuracy gains with our Table Decomposer. Notably,
+Qwen2.5-32B-Instruct with our Table Decomposer
+matches or even surpasses the performance of GPT-4o
+mini- and Gemini 2.0-based End-to-End QA models
+(72.78 on SEQA vs. 64.50 and 71.01 as shown in Table 2).
+We compare with an LLM-Decomposer, i.e., directly
+prompting GPT-4o mini to return the indexes of row and
+column relevant to input questions (see the prompt in Ap-
+pendix D.1). We see that this decomposer leads to reduced
+accuracy, because the LLM struggles to reason effectively
+over large tables in full.
+Model Applicability
+Table 2 has reported the applicabil-
+ity of TADRE to different backbone LLMs on large tables.
+Here, we further evaluate TADRE’s applicability on the full
+WTQ dataset containing smaller tables and the TabFact
+dataset for the Table Verification task.
+Table 4 shows that TADRE also outperforms the baselines
+on the full WTQ dataset – see Appendix B.2 for a detailed
+breakdown of accuracy on tables of different lengths. On the
+
+Model
+WTQL HybQAL SLQA SEQA
+TAPEX-Large
+30.86
+6.46
+17.09 10.63
+w/ LLM-Decomposer
+25.93
+5.89
+17.66
+8.28
+w/ TADRE-Decomposer
+39.51
+11.60
+40.27
+42.60
+OmniTab-Large
+29.63
+7.83
+20.95 13.02
+w/ LLM-Decomposer
+24.61
+6.43
+20.10 11.24
+w/ TADRE-Decomposer
+46.92
+10.80
+54.23
+50.89
+Qwen2.5-3B-Instruct
+25.93
+19.58
+27.57 26.04
+w/ LLM-Decomposer
+25.93
+14.07
+21.35 11.83
+w/ TADRE-Decomposer
+39.51
+23.19
+49.46
+59.17
+Qwen2.5-32B-Instruct 41.98
+34.98
+54.05 53.25
+w/ LLM-Decomposer
+32.10
+14.20
+32.34 19.51
+w/ TADRE-Decomposer
+58.02
+36.12
+66.31
+72.78
+Table 3: Performance gains from applying our Table Decom-
+poser to PLM-based and “small” LLM-based models.
+Model
+WTQ TabFact
+NL-to-SQL DIN-SQL
+53.11
+69.17
+Fine-tuned
+TAPAS-Large
+48.80
+78.46
+TAPEX-Large
+57.50
+75.30
+OmniTab-Large
+61.21
+85.15
+LLM-based
+Qwen2.5-3B-Instruct
+37.25
+66.95
+∗Qwen2.5-3B-Instruct 38.28
+73.37
+End-to-End QA
+50.87
+86.46
+TableRAG
+54.10
+69.57
+TabSQLify
+56.49
+70.55
+DATER
+62.15
+82.36
+TADRE (ours)
+64.27
+83.89
+Table 4: Results on the full WTQ dataset and the TabFact
+dataset. ∗represents model with our Table Decomposer.
+table verification dataset TabFact, TADRE is slightly less
+accurate than End-to-End GPT-4o mini. This is likely
+due to the small tables in TabFact (cf. Table 1), which are
+easy for GPT-4o mini while table decomposition poses
+risks in omitting question-relevant information.
+Ablation Study
+We run an ablation study with four
+model variants: (1) DP SQL execution: Directly execut-
+ing SQL queries generated by the Decomposition Planner;
+(2) TADRE-w/o-DP+TD: TADRE without both the De-
+composition Planner and the Table Decomposer, i.e., only
+using the Answer Generator; (3) TADRE-w/o-DR (pre):
+TADRE without SQL refinement using the Decomposition
+Refiner; (4) TADRE-w/o-DR (post): TADRE without sub-
+table refinement using the Decomposition Refiner (also ex-
+cluding the Chain-of-Table-Retrieval).
+As Table 5 shows, directly executing SQL queries (i.e.,
+DP SQL execution) results in substantial accuracy drops,
+because the SQL queries do not fit the semi-structured ta-
+bles. Similarly, using only the Answer Generator (TADRE-
+w/o-DP+TD) leads to accuracy drops, since LLMs struggle
+with digesting large tables in full. The Decomposition Re-
+finer helps improve the generated SQL queries for table de-
+Model
+WTQL HybQAL SLQA SEQA
+DP SQL execution
+23.46
+0.42
+12.61 26.04
+TADRE-w/o-DP+TD
+48.15
+30.95
+57.75 64.50
+TADRE-w/o-DR (Pre)
+56.79
+28.40
+69.01 72.25
+TADRE-w/o-DR (Post) 58.02
+31.83
+70.10 75.15
+TADRE
+61.73
+36.01
+71.35 76.33
+Table 5: Ablation study results. ‘DP’ denotes the Decompo-
+sition Planner; ‘TD’ denotes the Table Decomposer; ‘DR’
+denotes the Decomposition Refiner.
+composition and refines the sub-tables. Removing the mod-
+ule (TADRE-w/o-DR (pre) and TADRE-w/o-DR (post)) also
+hurts model accuracy.
+Error Analysis
+We count the number of cases where
+directly executing the generated SQL queries results in
+execution errors (e.g., BinderException, IndexError, and
+ParserException). The execution error rates are 64.2%,
+88.7%, 70.6%, and 61.5% on WTQL, HybQAL, SLQA, and
+SEQA, respectively, further emphasizing that NL-to-SQL-
+based solutions struggle on these datasets. See Appendix
+D.2 for detailed results.
+For the Decomposition Refiner, the acceptance rates (i.e.,
+the proportion of cases where SRAW is considered adequate
+to guide the Table Decomposer in retrieving an information-
+complete sub-table without refinement) are 71.6%, 54.3%,
+77.1%, and 78.7%, respectively. The lower acceptance rate
+on HybQAL (54.3%) suggests that SQL generation strug-
+gles more with the hybrid table-text format, thereby requir-
+ing more frequent refinement.
+We also manually analyze 60 error cases of TADRE and
+report results in Appendix D.3. The primary accuracy bot-
+tleneck is the backbone LLM’s reasoning capability over
+tabular data. Even when provided with valid sub-tables, the
+model could still produce incorrect answers.
+Other Results
+We further include a case study with three
+TableQA examples that fail existing table decomposition
+models but not our TADRE model (Appendix D.4).
+Conclusions
+We proposed TADRE, a TableQA model designed for large,
+semi-structured tables. TADRE utilizes an LLM-based De-
+composition Planner to generate an SQL query as a decom-
+position plan, leveraging both structural and semantic infor-
+mation in SQL to guide sub-table construction without di-
+rect, error-prone SQL execution. We designed a Table De-
+composer that uses pattern-driven extraction to accurately
+identify table-relevant fields from the SQL query. To fur-
+ther enhance table decomposition quality, the Decomposi-
+tion Refiner refines both the SQL query and the sub-tables
+generated. We evaluated TADRE on five datasets. The re-
+sults show that TADRE consistently outperforms all existing
+models, establishing new SOTA performance for TableQA
+over large tables.
+
+References
+Anil, R.; Borgeaud, S.; Wu, Y.; Alayrac, J.; Yu, J.; Sori-
+cut, R.; Schalkwyk, J.; Dai, A. M.; Hauth, A.; Millican, K.;
+Silver, D.; Petrov, S.; Johnson, M.; Antonoglou, I.; Schrit-
+twieser, J.; Glaese, A.; Chen, J.; Pitler, E.; Lillicrap, T. P.;
+Lazaridou, A.; Firat, O.; Molloy, J.; Isard, M.; Barham, P. R.;
+Hennigan, T.; Lee, B.; Viola, F.; Reynolds, M.; Xu, Y.; Do-
+herty, R.; Collins, E.; Meyer, C.; Rutherford, E.; Moreira,
+E.; Ayoub, K.; Goel, M.; Tucker, G.; Piqueras, E.; Krikun,
+M.; Barr, I.; Savinov, N.; Danihelka, I.; Roelofs, B.; White,
+A.; Andreassen, A.; von Glehn, T.; Yagati, L.; Kazemi, M.;
+Gonzalez, L.; Khalman, M.; Sygnowski, J.; and et al. 2023.
+Gemini: A Family of Highly Capable Multimodal Models.
+CoRR, abs/2312.11805.
+Chen, S.; Miculicich, L.; Eisenschlos, J.; Wang, Z.; Wang,
+Z.; Chen, Y.; Fujii, Y.; Lin, H.; Lee, C.; and Pfister, T. 2024.
+TableRAG: Million-Token Table Understanding with Lan-
+guage Models. In NeurIPS, 74899–74921.
+Chen, W.; Zha, H.; Chen, Z.; Xiong, W.; Wang, H.; and
+Wang, W. Y. 2020.
+HybridQA: A Dataset of Multi-Hop
+Question Answering over Tabular and Textual Data.
+In
+EMNLP, 1026–1036.
+Cheng, Z.; Xie, T.; Shi, P.; Li, C.; Nadkarni, R.; Hu,
+Y.; Xiong, C.; Radev, D.; Ostendorf, M.; Zettlemoyer, L.;
+Smith, N. A.; and Yu, T. 2023. Binding Language Models
+in Symbolic Languages. In ICLR.
+Devlin, J.; Chang, M.-W.; Lee, K.; and Toutanova, K. 2019.
+BERT: Pre-training of Deep Bidirectional Transformers for
+Language Understanding. In NAACL, 4171–4186.
+Herzig, J.; Nowak, P. K.; M¨uller, T.; Piccinno, F.; and Eisen-
+schlos, J. 2020. TaPas: Weakly Supervised Table Parsing via
+Pre-training. In ACL, 4320–4333.
+Jiang, Z.; Mao, Y.; He, P.; Neubig, G.; and Chen, W. 2022.
+OmniTab: Pretraining with Natural and Synthetic Data for
+Few-shot Table-based Question Answering.
+In NAACL,
+932–942.
+Kong, K.; Zhang, J.; Shen, Z.; Srinivasan, B.; Lei, C.;
+Faloutsos, C.; Rangwala, H.; and Karypis, G. 2024.
+OpenTab: Advancing Large Language Models as Open-
+domain Table Reasoners. In ICLR.
+Lee, Y.; Kim, S.; Rossi, R. A.; Yu, T.; and Chen, X. 2024.
+Learning to Reduce: Towards Improving Performance of
+Large Language Models on Structured Data. In ICML Work-
+shop on Long-Context Foundation Models.
+Lewis, M.; Liu, Y.; Goyal, N.; Ghazvininejad, M.; Mo-
+hamed, A.; Levy, O.; Stoyanov, V.; and Zettlemoyer, L.
+2020. BART: Denoising Sequence-to-Sequence Pre-training
+for Natural Language Generation, Translation, and Compre-
+hension. In ACL, 7871–7880.
+Liu, N. F.; Lin, K.; Hewitt, J.; Paranjape, A.; Bevilacqua,
+M.; Petroni, F.; and Liang, P. 2024. Lost in the Middle: How
+Language Models Use Long Contexts. Transactions of the
+Association for Computational Linguistics, 12: 157–173.
+Liu, Q.; Chen, B.; Guo, J.; Ziyadi, M.; Lin, Z.; Chen, W.; and
+Lou, J.-G. 2022. TAPEX: Table Pre-training via Learning a
+Neural SQL Executor. In ICLR.
+Liu, T.; Wang, F.; and Chen, M. 2024. Rethinking Tabu-
+lar Data Understanding with Large Language Models. In
+NAACL, 450–482.
+Nahid, M. M. H.; and Rafiei, D. 2024. TabSQLify: Enhanc-
+ing Reasoning Capabilities of LLMs Through Table Decom-
+position. In NAACL, 5725–5737.
+Ni, A.; Iyer, S.; Radev, D.; Stoyanov, V.; Yih, W.-t.; Wang,
+S.; and Lin, X. V. 2023.
+LEVER: Learning to Verify
+Language-to-Code Generation with Execution.
+In ICML,
+26106–26128.
+OpenAI. 2024. GPT-4o mini. https://platform.openai.com/
+docs/models/#gpt-4o-mini.
+Pasupat, P.; and Liang, P. 2015. Compositional Semantic
+Parsing on Semi-Structured Tables. In ACL/IJCNLP, 1470–
+1480.
+Patnaik, S.; Changwal, H.; Aggarwal, M.; Bhatia, S.; Ku-
+mar, Y.; and Krishnamurthy, B. 2024. CABINET: Content
+Relevance-based Noise Reduction for Table Question An-
+swering. In ICLR.
+Pourreza, M.; and Rafiei, D. 2023. DIN-SQL: Decomposed
+In-Context Learning of Text-to-SQL with Self-Correction.
+In NeurIPS, 359–371.
+Qwen; :; Yang, A.; Yang, B.; Zhang, B.; Hui, B.; Zheng, B.;
+Yu, B.; Li, C.; Liu, D.; Huang, F.; Wei, H.; Lin, H.; Yang,
+J.; Tu, J.; Zhang, J.; Yang, J.; Yang, J.; Zhou, J.; Lin, J.;
+Dang, K.; Lu, K.; Bao, K.; Yang, K.; Yu, L.; Li, M.; Xue,
+M.; Zhang, P.; Zhu, Q.; Men, R.; Lin, R.; Li, T.; Tang, T.;
+Xia, T.; Ren, X.; Ren, X.; Fan, Y.; Su, Y.; Zhang, Y.; Wan,
+Y.; Liu, Y.; Cui, Z.; Zhang, Z.; and Qiu, Z. 2025. Qwen2.5
+Technical Report.
+Reimers, N.; and Gurevych, I. 2019.
+Sentence-BERT:
+Sentence Embeddings using Siamese BERT-Networks. In
+EMNLP-IJCNLP, 3980–3990.
+Robertson, S. E.; and Zaragoza, H. 2009. The Probabilis-
+tic Relevance Framework: BM25 and Beyond. Foundations
+and Trends in Information Retrieval, 3: 333–389.
+Shi, T.; Zhao, C.; Boyd-Graber, J. L.; III, H. D.; and Lee,
+L. 2020. On the Potential of Lexico-logical Alignments for
+Semantic Parsing to SQL Queries. In EMNLP, 1849–1864.
+Song, K.; Tan, X.; Qin, T.; Lu, J.; and Liu, T. 2020. MP-
+Net: Masked and Permuted Pre-training for Language Un-
+derstanding. In NeurIPS, 16857–16867.
+Wang, Y.; Qi, J.; and Gan, J. 2025. Accurate and Regret-
+aware Numerical Problem Solver for Tabular Question An-
+swering. In AAAI, 12775–12783.
+Wang, Z.; Dong, H.; Jia, R.; Li, J.; Fu, Z.; Han, S.; and
+Zhang, D. 2021. TUTA: Tree-Based Transformers for Gen-
+erally Structured Table Pre-training. In KDD, 1780–1790.
+Wang, Z.; Zhang, H.; Li, C.-L.; Eisenschlos, J. M.; Perot,
+V.; Wang, Z.; Miculicich, L.; Fujii, Y.; Shang, J.; Lee, C.-Y.;
+and Pfister, T. 2024. Chain-of-Table: Evolving Tables in the
+Reasoning Chain for Table Understanding. In ICLR.
+Wei, J.; Wang, X.; Schuurmans, D.; Bosma, M.; Xia, F.;
+Chi, E.; Le, Q. V.; and Zhou, D. 2022. Chain-of-Thought
+Prompting Elicits Reasoning in Large Language Models. In
+NeurIPS, 24824–24837.
+
+Ye, Y.; Hui, B.; Yang, M.; Li, B.; Huang, F.; and Li, Y.
+2023. Large Language Models are Versatile Decomposers:
+Decomposing Evidence and Questions for Table-based Rea-
+soning. In SIGIR, 174–184.
+Yin, P.; Neubig, G.; Yih, W.-t.; and Riedel, S. 2020.
+TaBERT: Pretraining for Joint Understanding of Textual and
+Tabular Data. In ACL, 8413–8426.
+Yu, T.; Zhang, R.; Yang, K.; Yasunaga, M.; Wang, D.; Li,
+Z.; Ma, J.; Li, I.; Yao, Q.; Roman, S.; Zhang, Z.; and Radev,
+D. 2018. Spider: A Large-Scale Human-Labeled Dataset for
+Complex and Cross-Domain Semantic Parsing and Text-to-
+SQL Task. In EMNLP, 3911–3921.
+Zhang, S.; Luu, A. T.; and Zhao, C. 2024. SynTQA: Syner-
+gistic Table-based Question Answering via Mixture of Text-
+to-SQL and E2E TQA. In EMNLP, 2352–2364.
+Zhong, V.; Xiong, C.; and Socher, R. 2017. Seq2SQL: Gen-
+erating Structured Queries from Natural Language using Re-
+inforcement Learning. arXiv:1709.00103.
+
+Appendix A. Prompts for Modules of TADRE
+The section lists the prompts used by our model compo-
+nents.
+A.1. Prompt for SQL Generation
+The prompt used for the Decomposition Planner LLM to
+generate SQL queries is shown as follows.
+Prompt: Decomposition Planner
+/* Some example questions and
+corresponding SQL queries
+are provided based on similar
+problems: */
+Answer the following: [P1]
+[S1]
+Answer the following: [P2]
+[S2]
+Answer the following: [P3]
+[S3]
+Answer the following: [P4]
+[S4]
+Answer the following: [P5]
+[S5]
+The target questions: [P]
+Table columns: [Columns]
+The corresponding SQL:
+Note:
+- Do not add any explanation after the
+SQL.
+A.2. Prompt for SQL Verification
+The prompt used for the Decomposition Refiner LLM to ver-
+ify the generated SQL queries is shown as follows.
+Prompt: SQL Verification
+Please determine whether the sub-table
+obtained using raw SQL is sufficient
+to answer the given question.
+The question is: [Question]
+Raw Sub-table Columns: [Columns]
+Raw Sub-table Content: [TAB CONTENT]
+Notes:
+- Complete table contains the
+following columns: [ORG COLS]
+- Give me the answer in format "Final
+Answer: True / False" form (should
+be either True or False, without any
+explanation)
+A.3. Prompt for SQL Refinement
+The prompt used for the Decomposition Refiner LLM to re-
+fine the SQL queries is as follows.
+Prompt: SQL Refinement
+Please refine the given SQL according
+to the question and the table header.
+The SQL is: [SQL]
+The table header: [Header]
+The question is: [Question]
+Notes:
+- The current SQL query can not solve
+the problem well.
+- Please optimize it and return the
+optimized SQL directly.
+A.4. Prompt for Sub-table Refinement
+The prompt used for the Decomposition Refiner LLM to ver-
+ify, and if necessary, to refine the sub-table is as follows.
+Prompt:
+Decomposition
+Refiner
+Post-
+Decomposition
+Please answer the question using the
+given table.
+The question is: [Question]
+Table Columns: [Columns]
+Table Content: [TAB CONTENT]
+CASE 1: If you can answer the question
+correctly, directly return the answer
+(without any explanation).
+CASE 2: If information is missing,
+choose the necessary action with
+Python code for the DataFrame.
+Complete DF column names: [ORG COLS]
+Action list:
+1. Retrieve rows (you need additional
+rows information to answer the
+question)
+2. Retrieve columns (you need
+additional columns information to
+answer the question)
+3. Retrieve cells (you need additional
+cells information to answer the
+question)
+In this case, directly return the
+action names (can be one action or
+more) with their Python code, for
+example:
+Action: Retrieve rows
+Code: "Python code"
+Notes:
+- You should either return the answer
+or return the action with its Python
+code (no other cases).
+A.5. Prompt for Answer Generation
+The prompt used for the Answer Generator LLM to generate
+the final question answer is shown as follows.
+
+Purpose
+Regular expressions
+Column name filters
+1: select\s+(.*?)\s+from
+2:([\w\s\(\)]+)\s*(=|like|not like|in|not in|>|<|
+<>|>=|<=|!=|between|is null|is not null)
+Condition & Value filters
+1: where\s+(.*)
+2: \(\s*select.*?where\s+(.*?)\s*\)
+3:(\w+)\s*(=|!=|<>|>|<|>=|<=|like|not like|in|not in|
+between|is null|is not null)\s*(’?[\w\s\-%]+?’?)
+4:(?:(where|having)\s+(.*?))?(?:\s*group by\s+
+([\w,\s]+))?(?:\s*limit\s+(\d+))?
+Table 6: Regular expressions used to parse SQL queries.
+Prompt: Answer Generator
+Please answer the question according
+to the given table.
+The header is: [Columns]
+The table content: [TAB CONTENT]
+The question is: [Question]
+Notes:
+- Give me the answer in the format
+"Final Answer: AnswerName1,
+AnswerName2..." form (should be a
+number or entity names, as short as
+possible, without any explanation).
+Appendix B. Additional Details on the Table
+Decomposer
+B.1. Regex Used by the Table Decomposer
+The regular expressions used by our Table Decomposer to
+extract the column names, conditions, and values are sum-
+marized in Table 6.
+B.2. Effectiveness of the Regex-based Parser
+To assess the effectiveness of our regex-based parser,
+we empirically compare it with an LLM-based parser
+(GPT-4o-mini with the prompt shown below). We use
+100 random SQL queries generated by our Decomposition
+Planner and manually evaluate whether each parser can ex-
+tract the intended column names, conditions, and values.
+Prompt: LLM-based SQL Parsing
+Please directly extract the column
+names and filter conditions in the
+given SQL based on the question for
+table decomposition.
+Question: [Q]
+SQL: [SQL]
+Note:
+- Directly return the answer, without
+explanation.
+As shown in Table 7, our regex-based parser achieves an
+accuracy of 87%, outperforming the LLM-based parser (i.e.,
+70%) substantially. The LLM-based parser often halluci-
+nates non-existent columns and tends to omit critical compo-
+nents of the SQL queries. In contrast, the regex-based parser
+performs reliably in most cases and yields consistent results,
+even though it may still fail on highly complex queries not
+covered by the regular expressions.
+Table 7: Accuracy comparison between regex-based and
+LLM-based SQL parsers over 100 SQL queries.
+Parser
+Accuracy (%)
+LLM-based Parser
+70.0
+Regex-based Parser (ours))
+87.0
+B.3. SQL-to-Python Mapping
+The Table Decomposer maps SQL operators to Python
+DataFrame operations following Table 8.
+B.4. TADRE Performance by Table Size
+We show the accuracy of TADRE and two best baselines,
+DATER and End-to-End GPT-4o mini, over tables of dif-
+ferent sizes in Figure 6. The accuracy drops as the tables
+get larger, which is expected. Importantly, TADRE drops the
+slowest, demonstrating its stronger robustness and scalabil-
+ity towards large tables.
+Appendix C. Additional Details on Dataset
+Construction
+C.1. QA Pair Generation Errors
+Figure 7 summarizes error statistics of our LLM-based QA
+pair generation process. Particularly, for the “Answer Error”
+cases, the generated questions are valid while the answers
+are incorrect. We manually correct the answers according to
+the tables to retain more QA pairs in the final datasets. For
+the “Invalid Question” cases, we remove the questions and
+their corresponding answers.
+
+SQL
+DataFrame
+Examples
+Comparison
+=
+==
+df[df[’age’] == 30]
+!= or <>
+!=
+df[df[’age’] != 30]
+>
+>
+df[df[’salary’] > 5000]
+<
+<
+df[df[’salary’] < 5000]
+>=
+>=
+df[df[’rating’] >= 4.5]
+<=
+<=
+df[df[’rating’] <= 4.5]
+Logic
+AND
+&
+df[(df[’age’] > 25) & (df[’salary’] > 500]
+OR
+—
+df[(df[’age’] > 25) — (df[’salary’] > 500)]
+NOT
+˜
+df[˜(df[’active’] == 1)]
+Range
+BETWEEN AND
+>= x &
+df[(df[’age’] >= 20) &]
+<= y
+(df[’age’] <= 30)]
+IN
+isin
+df[df[’city’].isin
+([’New York’, ’Los Angeles’])]
+NOT IN
+˜.isin
+df[˜df[’city’].isin
+([’New York’, ’Los Angeles’])]
+NULL
+IS NULL
+isna
+df[df[’phone’].isna()]
+IS NOT NULL
+notna
+df[df[’phone’].notna()]
+Matching
+LIKE
+startswith
+df[df[’name’].str.startswith(’A’)]
+contains
+df[df[’name’].str.contains(’A’)]
+endswith
+df[df[’email’].str.endswith(’A’)]
+NOT LIKE
+˜.contains
+df[˜df[’name’].str.contains(’A’)]
+Sorting
+ORDER BY
+sort_values
+df.sort_values(’age’, ascending=True/False)
+Grouping
+GROUP BY
+groupby
+df.groupby(’column’)
+HAVING
+filter
+df.groupby().filter(lambda x: len(x) > x)
+Aggregation
+SUM
+sum
+df[’salary’].sum()
+AVG
+mean
+df[’salary’].mean()
+COUNT
+count
+df[’salary’].count()
+MIN
+min
+df[’salary’].min()
+MAX
+max
+df[’salary’].max()
+LIMIT
+LIMIT
+head
+df.head(10)
+OFFSET LIMIT
+iloc
+df.iloc[5:15]
+Table 8: Mapping between SQL operators and Python DataFrame operations.
+C.2. Prompt for QA Pair Generation
+The prompts used to generate QA pairs are as follows.
+(a) Cell-based
+Use the given table as evidence.
+Table Header: [HEADER]
+Table Content: [TAB]
+Task: Randomly select one cell in the
+table as the answer and generate a
+question that can produce the answer.
+Return both the question and the
+answer. Repeat this process 10 times
+and return to me 10 QA pairs.
+Notes:
+- Directly return questions in
+format "Q: question content; A:
+answer content" (without any
+explanation).
+- Try to make the question diverse.
+- Keep answers as concise as possible
+and only contain entities.
+(b) Row-based
+Use the given table as evidence.
+Table Header: [HEADER]
+Table Content: [TAB]
+Selected Row: [ROW]
+Task: Please use the selected row
+above to generate one question using
+the information within this row.
+Return the question and its answer.
+Repeat this process 4 times.
+Notes:
+- Directly return questions in
+format "Q: question content; A:
+answer content" (without any
+explanation).
+- Try to make the question diverse.
+- Do not include "selected row/given
+data" in questions, as the selected
+columns are not known to the person
+answering the question.
+- Keep answers as concise as possible
+and only contain entities.
+
+[0-100]
+[100-200]
+[200-300]
+[300-400]
+[400-500]
+[500-600]
+[600-700]
+[700-800]
+[800-900]
+[900-1000]
+Number of tokens in a table
+0.4
+0.5
+0.6
+0.7
+0.8
+Accuracy
+Accuracy vs Number of tokens in a table
+TaDRe
+DATER
+End-to-End GPT-4o mini
+(a) WTQ
+[4000-10000]
+[10000-12000]
+[12000-14000]
+[14000-16000]
+[16000-18000]
+[18000-20000]
+Number of tokens in a table
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+Accuracy
+Accuracy vs Number of tokens in a table
+TaDRe
+DATER
+End-to-End GPT-4o mini
+(b) SLQA
+Figure 6: Breakdown of model accuracy over tables of different sizes (using GPT-4o mini as the backbone).
+Correct
+Answer Error
+Invalid Question
+0.0
+20.0
+40.0
+60.0
+80.0
+100.0
+Percentage (%)
+Correct
+Answer Error
+Invalid Question
+Figure 7: Error analysis for our LLM-based QA pair gener-
+ation process: (a) Results for the SLQA dataset; (b) Results
+for the SEQA dataset. “Correct” means that the QA pairs are
+correct. “Answer Error” means that the generated questions
+are valid, but the answers are incorrect. “Invalid Question”
+means that the questions themselves are invalid.
+(c) Column-based
+Use the given table as evidence.
+Table Header: [HEADER]
+Table Content: [TAB]
+Selected Column: [COL]
+Task: Please use the selected column
+above to generate one question using
+the information within this column.
+Return the question and its answer.
+Repeat this process 4 times.
+Notes:
+- Directly return questions in
+format "Q: question content; A:
+answer content" (without any
+explanation).
+- Try to make the question diverse.
+- Do not include "selected
+column/given data" in questions, as
+the selected columns are not known to
+the person answering the question.
+- Keep answers as concise as possible
+and only contain entities.
+(d) Sub-table-based
+Use the given table as evidence.
+Table Header: [HEADER]
+Table Content: [TAB]
+Sub-table: [SUB]
+Task: Please use the sub-table above
+to generate one question using the
+information within this sub-table.
+Return the question and its answer.
+Repeat this process 4 times.
+Notes:
+- Directly return questions in
+format "Q: question content; A:
+answer content" (without any
+explanation).
+- Try to make the question diverse.
+- Do not include "sub-table/given
+data" in questions, as the sub-table
+is not known to the person answering
+the question.
+- Keep answers as concise as possible
+and only contain entities.
+C.3. Prompt for Table Expansion
+The prompt used to expand a small table into a larger one is
+shown as follows.
+Prompt: Table Expansion via Synthesis
+Please use the synthesized data to
+expand the existing table and increase
+its rows and columns.
+Table Header: [HEADER]
+Table Content: [TAB]
+Notes:
+- Directly returns the new table.
+- Make sure there are no duplicate
+rows and columns.
+C.4. Executable SQL Queries
+Let T be a relation instance (i.e., a table) with known column
+names and data values. Let Cols(T) be the set of column
+names in T. A SQL query s is considered executable on T
+if the following conditions are met:
+
+• 1. Column Validity: All column references in s (includ-
+ing those used in projection π, selection σ, renaming ρ,
+or extended relational operations) correspond to existing
+column names in T.
+• 2. Semantic Interpretability: Every operation in s can
+be semantically interpretable and safely applied to the ta-
+ble’s values. This includes:
+– Value-level operations (e.g., arithmetic, comparison,
+and string functions).
+– Aggregation and grouping operations (e.g., SUM and
+GROUP BY).
+– Logical and set-level operations (e.g., AND, IN,
+EXISTS, and UNION).
+• 3. Algebraic Mapping: Query s can be faithfully trans-
+lated into a relational algebra expression A(s) whose
+evaluation on the instance R represented by table T is
+well-defined and returns a valid relation.
+• 4. Runtime Error-Free: The execution of s on T does
+not result in any runtime errors, such as division by zero,
+null dereferencing, invalid function domains, or other
+data-dependent failures that cannot be detected statically.
+C.5. SQL Executable Questions
+Let q be a natural language question. Let EXECT
+sql denote the
+set of all executable SQL queries on table T under the above
+semantics. Let M denotes a mapping mechanism from a
+question q to sets of semantically equivalent SQL queries.
+We say that q is SQL-executable under semantics T if and
+only if:
+M(q) ∩EXECT
+sql̸ = ∅
+That is, at least one semantically correct SQL query
+mapped from q is executable on table T.
+C.6. Prompt for Checking Question Executability
+The prompt used for checking if a question is SQL-
+executable is shown as follows.
+Prompt: SQL-executable Question Checking
+Task: Given a natural language
+question q and a table column
+name C, determine whether q is a
+SQL-executable question under the
+following semantics:
+A question q is considered
+SQL-executable if there exists at
+least one SQL query s that:
+- Maps from q through a valid equal
+semantic mapping mechanism (i.e.,
+s ∈M(q), and
+- Satisfies all the following
+conditions:
+1. Column Validity: All column
+references in s refer to column names
+in C.
+2. Semantic Interpretability:
+Every operation in s | including
+value-level operations (e.g.,
+comparisons, arithmetic, string
+functions), aggregate and grouping
+operations (e.g., SUM, GROUP BY), and
+logical/set-level operations (e.g.,
+AND, IN, EXISTS, UNION) | can be
+semantically interpreted and safely
+applied to the actual values in the
+referenced columns.
+3. Algebraic Mapping: s can be
+faithfully translated into a
+well-defined relational algebra
+expression whose evaluation on the
+table is valid and returns a relation.
+4. Runtime Error-Free: The execution
+of s on the given table would
+not lead to runtime errors (e.g.,
+division by zero, null dereferencing,
+invalid function usage, or other
+data-dependent failures).
+Few-shot Examples:
+#### Condition 1: Violates Column
+Validity
+Question:
+What is the average employee rating by
+department?
+Table Header:
+["Department", "Employee Name",
+"Performance Score", "Join Date"]
+Sample Row Values:
+[["HR", "Alice", 4.5, "2018-01-01"],
+["Engineering", "Bob", 3.8,
+"2020-06-01"]]
+Explanation:
+Although the question mentions
+"department" and "employee rating",
+the column "employee rating" does
+not exist. There is no column with a
+matching name or sufficiently clear
+mapping. "Performance Score" might be
+intended, but the mapping is ambiguous
+without schema-level aliases.
+Condition Violated: Column Validity
+Final Answer: No
+#### Condition 2: Violates Semantic
+Interpretability
+Question:
+What is the median value among
+departments?
+Table Header:
+["Employee ID", "Name", "Department",
+"Salary"]
+
+Sample Row Values:
+[["E001", "Alice", "HR", 70000],
+["E002", "Bob", "Engineering", 75000]]
+Explanation:
+"Median" is a statistical operation
+valid only on numeric or ordered data.
+"Department" is a categorical string
+column, so computing a median on it
+is semantically meaningless, even if
+syntactically allowed.
+Condition Violated: Semantic
+Interpretability
+Final Answer: No
+#### Condition 3: Violates Algebraic
+Mapping
+Question:
+Which students performed better than
+average in subjects they are strongest
+at?
+Table Header:
+["Student", "Math Score", "English
+Score", "Science Score"]
+Sample Row Values:
+[["Alice", 88, 76, 91], ["Bob", 90,
+85, 80], ["Charlie", 72, 95, 70]]
+Explanation:
+The question requires identifying the
+strongest subject (highest score) per
+student, then comparing it against
+that subject’s average across all
+students. This involves row-wise
+dynamic column selection and per-row
+conditional aggregation, which cannot
+be represented in standard relational
+algebra or SQL without structural
+transformations like unpivoting.
+Therefore, a valid relational algebra
+mapping is not possible.
+Condition Violated: Algebraic Mapping
+Final Answer: No
+#### Condition 4: Violates Runtime
+Error-Free
+Question:
+What is the highest average revenue
+per unit cost?
+Table Header:
+["Product", "Revenue", "Unit Cost"]
+Sample Row Values:
+[["P1", 10000, 0], ["P2", 20000, 100]]
+HybQAL
+WTQL
+SLQA
+SEQA
+0
+20
+40
+60
+80
+100
+Percentage (%)
+23.12%
+76.88%
+71.96%
+28.04%
+73.96%
+26.04%
+79.55%
+20.45%
+Proportion of SQL-executable vs Non-SQL-executable Questions
+SQL-executable
+Non SQL-executable
+Figure 8: Question type statistics.
+Explanation:
+While the SQL query SELECT MAX(Revenue
+/ Unit Cost) is syntactically and
+semantically valid, it can result
+in a division by zero runtime error
+when Unit Cost is 0, which is highly
+probable in the given data. Thus,
+it fails the Runtime Error-Free
+condition.
+Condition Violated: Runtime Error-Free
+Final Answer: No
+Input:
+Question: [Q]
+Table Header (Column Names Only): [C]
+Sample Row Values (Not the entire
+table): [V]
+Output:
+Is the question SQL-executable with
+respect to the given table? (Yes or
+No)
+If Yes, explain briefly what a
+possible executable SQL query might
+look like.
+If No, specify which condition(s) in
+the definition are violated.
+Notes:
+- For condition: Runtime Error-Free,
+don’t assume that this condition has
+been violated unless the probability
+of s execution error is very high.
+- If No, firstly specify which
+condition(s) in the definition are
+violated, and then give answers. If
+Yes, directly give answers.
+- Then respond in format: Final
+Answer: Yes/No
+Figure 8 shows the proportion of SQL-executable and
+non-SQL-executable questions in the large-table datasets.
+Our datasets SLQA and SEQA closely resemble the human-
+annotated dataset WTQ in the question type distributions.
+We also manually check the classification accuracy of the
+prompt above. As Table 9 shows, the LLM can clarify the
+
+Executable SQL Condition
+Accuracy
+Column validity
+83%
+Semantic interpretability
+91%
+Algebraic mapping
+95%
+Runtime error-free
+90%
+Overall
+79%
+Table 9: Question type classification accuracy.
+𝑾𝑻𝑸𝑳
+𝑯𝒚𝒃𝑸𝑨𝑳
+SLQA
+SEQA
+Figure 9: Statistics on SQL execution errors.
+questions at 79% accuracy.
+Appendix D. Additional Experimental Results
+D.1. Prompt for LLM-based Table Decomposer
+In Table 3 earlier, we compared the Table Decomposer with
+an LLM-based table decomposition method. Here, we show
+the prompt used for the method as follows.
+Prompt: LLM Table Decomposer
+Please return the row and column
+indices of the given table that
+contains the information to answer
+the question.
+Table header: [Header]
+Table content: [Table]
+Question: [Q]
+Notes:
+- Include all the information
+regarding the question, not just the
+answer.
+- Directly return the row indices
+in one list and return the column
+indices in another list (without any
+explanation).
+D.2. SQL Execution Error Analysis
+Figure 9 presents statistics on errors when directly exe-
+cuting the Decomposition Planner’s generated SQL queries
+Fail Case
+Percentage
+Decompose Fail
+28.33%
+Python Retrieval Fail
+31.67%
+Decompose + Retrieval Fail
+16.67%
+Reasoning Fail with Valid Sub-tables
+83.33%
+Table 10: Failure rates for different error types.
+to obtain answers. BinderException, which occurs
+when a query refers to invalid tables, columns, aliases,
+or incorrect conditions, is the most common error type.
+It is followed by IndexError, which happens at run-
+time due to out-of-bounds index access. The dominance of
+BinderException suggests schema or condition errors,
+while IndexError indicates issues with indexing.
+On different datasets, the distributions of errors vary. This
+is because different datasets have various table size distri-
+butions (see Table 1), reflected in the number of rows and
+columns, and the complexity of the contents in each cell,
+e.g., the presence of lengthy descriptive texts in HybQAL.
+D.3. Error Analysis for Modules of TADRE
+In addition to SQL execution errors, we analyze errors in
+other stages of the TADRE. There are three main types of
+errors, as summarized in Table 10 over 60 error cases. “De-
+compose Fail” means that the decomposition process either
+fails to extract any useful information (falls back to using
+the entire table) or the resulting sub-table lacks the infor-
+mation necessary to answer the question. “Python Retrieval
+Fail” (for the CoTR process) means that either Python ex-
+ecution failure or the Python program fails to retrieve use-
+ful information. “Reasoning Fail with Valid Sub-tables” in-
+dicates that the final output errors are caused by the LLM
+reasoning process, even when the given sub-tables are valid.
+The main reason for errors, as shown in the table, is the lim-
+ited LLM reasoning capability, which caused 83.33% of all
+errors, while only 16.67% of the errors are due to the de-
+composition and retrieval failure of TADRE–i.e., the final
+sub-table lacks the necessary information to derive the cor-
+rect answer.
+D.4. Case Study
+We show three examples in Figure 10 and Figure 11, where
+TADRE successfully returns the question answers, while
+existing table decomposition-based models fail. CABINET
+fails to accurately identify and assign higher weights to
+the cells containing the answers when handling large ta-
+bles, while DATER may miss the answer field during the
+table decomposition process. Reasons why the program-as-
+decomposer baselines fail are shown in Figure 10.
+
+Table:
+| Name | Location | Date established | Area | Description |
+| Acadia | Maine\\n44°21′N 68°13′W\ufeff / \ufeff44.35°N 68.21°W |
+February 26, 1919 | 47,389.67 acres (191.8\xa0km2) | Covering most 
+of Mount Desert Island and other coastal islands, Acadia features the 
+tallest mountain on the Atlantic coast of the United States, granite 
+peaks, ocean shoreline, woodlands, and lakes. There are freshwater, 
+estuary, forest, and intertidal habitats. |
+| ... | ... | ... | ... | ... |
+Question:
+which us state is home to the greatest number of national parks?
+CABINET Answer
+DATER Answer
+TaDRe Answer
+Utah ×
+59 ×
+California √
+(a)
+Table:
+| Name | Character | Unicode code point (decimal) |
+| Standard | DTD | Old ISO subset | Description |
+| ... | ... | ... | ... | ... |
+Question:
+what is the last symbol listed?
+CABINET Answer
+DATER Answer
+TaDRe Answer
+sup ×
+thorn ×
+diams √
+| diams | ♦| U+2666 (9830) | HTML 4.0 | HTMLsymbol | ISOpub
+| black diamond suit |
+(b)
+Figure 10: Two TableQA questions that TADRE answers correctly while CABINET and DATER fail.
+Year|Competition|Venue|Position|Event|Notes
+2000|World Junior Championships|Santiago, Chile|1st|Discus throw|59.51 m
+2003|All-Africa Games|Abuja, Nigeria|5th|Shot put|17.76 m
+2003|All-Africa Games|Abuja, Nigeria|2nd|Discus throw|62.86 m
+2004|African Championships|Brazzaville, Republic of the Congo|2nd|Discus throw|63.50 m
+2004|Olympic Games|Athens, Greece|8th|Discus throw|62.58 m
+2006|Commonwealth Games|Melbourne, Australia|7th|Shot put|18.44 m
+2006|Commonwealth Games|Melbourne, Australia|4th|Discus throw|60.99 m
+2007|All-Africa Games|Algiers, Algeria|3rd|Discus throw|57.79 m
+2008|African Championships|Addis Ababa, Ethiopia|2nd|Discus throw|56.98 m
+Question: in which competition did hopley finish 5th?
+Table: Hannes Hopley
+Text-to-SQL
+SELECT Competition
+FROM "Hannes Hopley"
+WHERE Position = 5
+AND (Event LIKE '%Hopley%' OR Notes LIKE '%Hopley%');
+no result
+TabSQLify
+SELECT *
+FROM "Hannes Hopley"
+WHERE Event LIKE '%Hopley%' OR Notes LIKE '%Hopley%';
+Empty Sub-table
+TableRAG
+Schema Retrieval
+Name | Type | Example Values
+Competition | String | “World Junior 
+Championships”, “All-Africa Games|Abuja” …
+Cell Retrieval
+Column | Cell Value
+Position | 5th
+unable to answer
+TaDRe
+SELECT Competition FROM "Hannes Hopley"
+WHERE Position = 5 AND Event = 'hopley'
+Competition|Position|Event
+World Junior Championships|1st|Discus throw
+All-Africa Games|5th|Shot put
+All-Africa Games|2nd|Discus throw
+African Championships|2nd|Discus throw
+Olympic Games|8th|Discus throw
+Commonwealth Games|7th|Shot put
+Commonwealth Games|4th|Discus throw
+All-Africa Games|3rd|Discus throw
+African Championships|2nd|Discus throw
+Action: Retrieve_rows
+Code: "df[df['Position'] == ‘5th’]"
+All-Africa Games
+⚙
+Execute
+no result
+Missing table structure information
+×
+×
+×
+√
+Figure 11: A question that TADRE answers correctly while program-as-decomposer models fail.

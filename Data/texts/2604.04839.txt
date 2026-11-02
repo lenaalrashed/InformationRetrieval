@@ -1,0 +1,2389 @@
+MERIT: Multilingual Expert-Reward Informed Tuning for
+Chinese-Centric Low-Resource Machine Translation
+Zhixiang Lu, Chong Zhang, Chenyu Xue,
+Angelos Stefanidis, Chong Li, Jionglong Su, Zhengyong Jiang
+Xi’an Jiaotong-Liverpool University
+zhengyong.jiang02@xjtlu.edu.cn
+Abstract
+Neural machine translation (NMT) from Chi-
+nese to low-resource Southeast Asian lan-
+guages remains severely constrained by the ex-
+treme scarcity of clean parallel corpora and the
+pervasive noise in existing mined data. This
+chronic shortage not only impedes effective
+model training but also sustains a large per-
+formance gap with high-resource directions,
+leaving millions of speakers of languages such
+as Lao, Burmese, and Tagalog with persis-
+tently low-quality translation systems despite
+recent advances in large multilingual mod-
+els. We introduce Multilingual Expert-Reward
+Informed Tuning (MERIT), a unified transla-
+tion framework that transforms the traditional
+English-centric ALT benchmark into a Chinese-
+centric evaluation suite for five Southeast Asian
+low-resource languages (LRLs). Our frame-
+work combines language-specific token prefix-
+ing (LTP) with supervised fine-tuning (SFT)
+and a novel group relative policy optimiza-
+tion (GRPO) guided by the semantic alignment
+reward (SAR). These results confirm that, in
+LRL→Chinese translation, targeted data cura-
+tion and reward-guided optimization dramati-
+cally outperform mere model scaling.
+1
+Introduction
+The vision of Neural Machine Translation (NMT)
+is to provide equitable access to information for
+speakers of over 7,000 languages worldwide. How-
+ever, the benefits brought by recent advances
+in large-scale models are highly uneven. High-
+resource language pairs such as English–French
+have achieved near-human BLEU scores (Papineni
+et al., 2002), while many low-resource languages
+remain almost entirely untranslatable due to severe
+data scarcity (NLLB Team et al., 2024).
+This disparity is marked between Chinese and
+low-resource languages (LRLs), spanning domes-
+tic (e.g., Burmese, Lao). These languages suffer
+from scarce parallel and monolingual data, lim-
+ited annotators, and sometimes non-standardized
+orthographies, deepening the digital divide. While
+multilingual models like mBART-50 (Liu et al.,
+2020) and mT5 (Xue et al., 2021) show zero-shot
+gains, they still underperform on these LRLs. Even
+with NLLB-200’s expanded coverage (NLLB Team
+et al., 2024), LRL-Chinese performance continues
+to trail English-pivoted directions.
+Moreover, the lack of publicly available and
+high-quality evaluation benchmarks hinders objec-
+tive progress measurement. An ideal benchmark
+should: (i) cover multiple LRL→Chinese direc-
+tions directly to avoid pivot bias, (ii) maintain suf-
+ficient balance in scale and domain coverage, (iii)
+avoid dependence on English as a pivot. Without
+these features, improvements in Chinese-centric
+translation are difficult to reproduce or attribute
+reliably. To address these challenges, this paper
+makes the following three contributions:
+• Benchmark Construction: We introduce
+CALT, the first Chinese-centric benchmark
+for Southeast Asian languages.
+By recon-
+structing the ALT corpus to eliminate English-
+pivot bias, we establish a rigorous, pivot-free
+standard for evaluating direct LRL-Chinese
+translation.
+• Methodological Innovation: We propose
+MERIT, a framework that combines LTP,
+SFT, and a novel GRPO method with SAR
+for efficient data filtering and model refine-
+ment.
+• Empirical Validation: Experiments show
+that MERIT-3B, using only 22.8% of the
+original data, significantly outperforms much
+larger baselines, showing that high-quality
+data and reward-guided optimization trump
+model scale in low-resource translation.
+arXiv:2604.04839v1 [cs.CL] 6 Apr 2026
+
+2
+Related Work
+LRL→Chinese Corpora.
+The CCMT shared
+tasks released fewer than 200k sentence pairs for
+ZH–UG and ZH–MN (Xu et al., 2021), while Wiki-
+based mining typically yields only a few thousand
+pairs for ZH–LO and ZH–FIL (Artetxe and Schwenk,
+2018). The ALT corpus (Thu et al., 2016) extends
+coverage to 13 LRLs but remains English-centric
+and lacks direct LRL→Chinese alignment.
+LLM-based Machine Translation.
+In recent
+years, the integration of LLMs into machine trans-
+lation has witnessed rapid and substantial progress.
+Related research mainly focuses on low-resource
+scenarios (Zebaze et al., 2025; Lu et al., 2025), con-
+text and prompt optimization (Feng et al., 2024;
+Zaranis et al., 2024), self-refining mechanism
+(Feng et al., 2025; Wang et al., 2024), term con-
+trol (Kim et al., 2024), dialect and historical lan-
+guage translation (Abdelaziz et al., 2024; Volk
+et al., 2024), document-level translation (Wang
+et al., 2023), simultaneous translation (Koshkin
+et al., 2024), and fusion of traditional MT meth-
+ods (Hoang et al., 2024). These works demon-
+strate that LLM has significantly outperformed tra-
+ditional methods in various challenging scenarios
+through a combination of translation, structured
+reasoning, self-refinement, and targeted fine-tuning
+techniques, while providing efficient and feasible
+solutions for low-resource languages, specialized
+domains, and real-time translation.
+Multilingual Pretraining Models.
+Multilingual
+pretrained models aim to learn shared representa-
+tions across tens to hundreds of languages with a
+single LLM, enabling cross-lingual transfer with
+zero-shot/few-shot tasks(Lauscher et al., 2020).
+Early representative works include mBART-50 (Liu
+et al., 2020), mT5 (Xue et al., 2021) and DeltaLM
+(Ma et al., 2021), which cover 50 to 101 languages,
+respectively. NLLB-200 (NLLB Team et al., 2024),
+released by Meta in 2022, achieves high-quality
+mutual translation of 200 languages for the first
+time.
+Through technologies such as massively
+parallel data mining, back-translation, and self-
+supervised denoising, the average BLEU score on
+the FLORES-200 benchmark has been improved
+by 44% compared to the best system at the time
+(NLLB Team et al., 2024). Additionally, the XSTS
+manual evaluation index is introduced, which is
+more closely aligned with human judgment (NLLB
+Team et al., 2024). However, our fine-grained anal-
+ysis reveals that a significant quality gap still exists
+in the LRL-to-Chinese direction, underscoring the
+importance of parallel data quality, domain distri-
+bution, and the cross-lingual alignment strategy, as
+much as model size itself.
+3
+Methodology
+3.1
+Supervised Fine-Tuning
+We fine-tune open-source models (Qwen-2.5-0.5B
+and 3B) on the CALT benchmark described in sub-
+section 3.5 using SFT (Fan et al., 2020).
+The
+objective of SFT is to maximize the conditional
+probability of producing the target sequence Y =
+(y1, . . . , yM) given the source sequence X
+=
+(x1, . . . , xN), following the standard sequence-to-
+sequence formulation (Sutskever et al., 2014). Dur-
+ing training, we employ a teacher-forcing strategy
+(Williams and Zipser, 1989; Lu et al., 2026b), con-
+ditioning the model on the ground-truth previous
+tokens y<t to predict the next token yt. The model
+is trained by minimizing the cross-entropy loss.
+To prevent over-confidence and improve general-
+ization, we incorporate label smoothing (Szegedy
+et al., 2015; Lu et al., 2026a). The token-level loss
+is defined as:
+LSFT(yt, ˆPt) = −
+|V |
+X
+k=1
+q′(k|y∗
+t ) log P(k|X, y<t; θ)
+q′(k|y∗
+t ) = (1 −εls)I(k = y∗
+t ) + εls
+|V |
+(1)
+Fine-tuning is performed separately for each LRL-
+Chinese pair to respect language-specific morphol-
+ogy. This combination of filtering and task-specific
+adaptation yields substantial gains over zero-shot
+baselines, echoing findings on targeted adaptation
+for massively multilingual models (Arivazhagan
+et al., 2019).
+3.2
+Language-specific Token Prefixing
+We introduce a Language-specific Token Prefix-
+ing (LTP) strategy to improve language discrimina-
+tion in many-to-one multilingual generation. This
+method involves injecting a language-identifier to-
+ken into both the tokenizer vocabulary and the SFT
+prompt, enabling consistent language conditioning.
+Given a sample consisting of a source sequence X
+(from LRLs) and a target sequence Y (Chinese).
+We prepend the specific language token correspond-
+ing to the source, denoted as [lang], to the source
+input X to create a modified source X′ as shown
+in Equation 2:
+X′ = [lang] ⊕X = [lang, x1, x2, ..., xn]
+(2)
+
+Figure 1: Overview of the MERIT framework. The pipeline consists of (a) heuristic data selection utilizing the Elite
+Parallel Data Sampler (EPDS, algorithm 1) and Data Integrity Validation (DIV, algorithm 2), (b) translation scoring
+via a QE agent trained on expert cross-reviewed quality data using GRPO-SAR, (c) reward-based data distillation,
+which utilizes the QE agent to rescore the entire training set and filter for high-quality translation data, and (d) final
+model optimization using SFT-LTP based on this distilled dataset.
+A prompt instruction P(l) is defined for the target
+language l. An example structure for such a prompt
+is:
+P(l) = ”Translate [lang] language into Chinese: ...”
+(3)
+The final input to the model is then constructed by
+combining the prompt and the original source input.
+Based on the structure presented, the final model
+input is:
+Input = [p1, ..., pr, lang, x1, ..., xn]
+(4)
+where [p1, ..., pr] are the tokens derived from the
+prompt P(l), and [l] is the language identifier token
+explicitly prepended before the source tokens X.
+The training objective is to minimize the nega-
+tive log-likelihood of the target sequence Y , con-
+ditioned on the prompt P(l) and the source input
+X:
+LMLE = −
+m
+X
+t=1
+log P(yt|y<t, P(l), X; θ)
+(5)
+where y<t represents the preceding ground-truth
+target tokens, and θ denotes the model parameters.
+This LTP method extends the target language pre-
+fixing idea introduced by (Johnson et al., 2017) and
+adapts the prompt-based control framework from
+Qu et al. (2025). By combining tokenizer-level
+symbolic conditioning with prompt-level natural
+language alignment, tailored for unified training in
+a one-to-many multilingual setup.
+3.3
+Group Relative Policy Optimization
+Group Relative Policy Optimization (GRPO) is a
+reinforcement learning strategy that refines model
+outputs using reward feedback. Inspired by Rein-
+forcement Learning with Human Feedback tech-
+niques (Ouyang et al., 2022), GRPO operates on
+mini-batches of candidate translations in this task,
+assigning scalar rewards based on SAR scores. Sub-
+sequently, the model learns to maximize the ex-
+pected reward via policy gradient updates. Unlike
+conventional pointwise objective functions, GRPO
+introduces an intra-batch comparison mechanism
+and normalizes rewards using a moving baseline.
+This approach helps to reduce the variance of gra-
+dient estimates, thereby enhancing the stability of
+the training process (Lu et al., 2026b). Our experi-
+ments indicate that GRPO is effective for transla-
+tion evaluation, enabling the selection and improve-
+ment of translation quality in datasets.
+3.4
+Semantic Alignment Reward Function
+We introduce the Semantic Alignment Reward
+(SAR) to align the Quality Estimation (QE) agent’s
+predictions with human expert judgments. SAR
+
+incentivizes the agent to generate scalar quality
+scores that precisely reproduce ground-truth expert
+values, ensuring the reliability of the reward signal
+used in downstream policy optimization.
+Given the QE agent’s generated evaluation log
+ci, we extract potential quality scores using a prede-
+fined regular expression R (e.g., capturing patterns
+like “Score: [0-100]”). Let M(ci) denote the set of
+all integer matches found within ci:
+M(ci) = {m ∈Z | PR(m, ci)}
+(6)
+where PR(m, ci) is true if integer m matches R in
+ci. To resolve ambiguity in generated logs, we em-
+ploy a conservative extraction function E(ci) that
+selects the minimum valid integer found, thereby
+penalizing outputs containing conflicting lower
+scores. If no match exists, a penalty indicator of -1
+is assigned:
+si = E(ci) =
+(
+min M(ci),
+if M(ci)̸ = ∅
+−1,
+if M(ci) = ∅
+(7)
+Let ai represent the ground-truth expert score.
+We define the reward based on the absolute devia-
+tion d = |si −ai|. To allow for minor subjective
+variations in human annotation while enforcing
+strict accuracy, we employ a stepwise mapping
+ϕ(d):
+ϕ(d) =
+
+
+
+
+
+2.0,
+if d = 0
+1.0,
+if 1 ≤d ≤10
+0.0,
+otherwise
+(8)
+This mapping grants maximum reward for exact
+matches and partial reward for acceptable estima-
+tions (within a 10-point tolerance), while zeroing
+out significant misjudgments.
+The final alignment reward ri is computed by ap-
+plying this mapping to valid extractions. Instances
+where the agent fails to generate a parseable score
+(si < 0) receive zero reward:
+ri =
+(
+ϕ(|si −ai|),
+if si ≥0
+0.0,
+if si < 0
+(9)
+This mechanism provides a dense supervision sig-
+nal, effectively steering the QE agent to approxi-
+mate the distribution of human expert preferences
+(Xu et al., 2024).
+3.5
+Dataset
+We construct a new test suite based on the
+ASEAN Languages Treebank (ALT) corpus (Thu
+et al., 2016), called CALT. ALT is an English-
+centric multilingual corpus that already provides
+sentence-level alignment for several Southeast-
+Asian languages-Vietnamese (vi), Burmese (my),
+Lao (lo), Tagalog (fil), and Indonesian (id), the
+details shown in Table 1. Although Chinese is in-
+cluded as a target aligned with English, no direct
+LRL→Chinese alignment exists. We therefore re-
+index sentences that share the same alt_id and
+semantic source to form direct LRL-Chinese sen-
+tence pairs. In the resulting test set, Chinese can
+serve as either the source or the reference language.
+Languages
+Speaker Population1
+(Eberhard et al., 2023)
+Filtered
+Subset2
+LRL
+Chinese (zh)
+1180M
+✗
+✗
+Hindi (hi)
+345M
+✗
+✗
+Bengali (bn)
+234M
+✗
+✗
+Japanese (ja)
+121M
+✗
+✗
+Vietnamese (vi)
+86M
+10K
+✓
+Indonesian (id)
+43M
+10K
+✓
+Burmese (my)
+33M
+10K
+✓
+Tagalog (fil)
+24M
+10K
+✓
+Thai (th)
+20M
+✗
+✗
+Malay (ms)
+18M
+✗
+✗
+Khmer (km)3
+16M
+–
+✓
+Lao (lo)
+4.3M
+10K
+✓
+Table 1: The ALT corpus statistics sorted by L1 speaker
+population. All counts refer to L1 speakers and are
+rounded to the nearest million (M).
+3.6
+Language Selection
+We deliberately focus on five Southeast Asian low-
+resource languages (Vietnamese, Burmese, Lao,
+Tagalog, and Indonesian) for four data-driven rea-
+sons. All five appear in ALT with reliable English
+alignments, making high-quality LRL-Chinese re-
+alignment feasible. We retain Indonesian instead of
+Malay because the two belong to the same Malayic
+subgroup with 90% lexical overlap and are of-
+ten treated as a single “Malay macrolanguage” in
+international surveys (Lim and Poedjosoedarmo,
+2016), including both would introduce redundancy.
+Malay already has over 1 million clean En–Ms
+sentence pairs (e.g., MT-Wiki and multiple OPUS
+sub-corpora), placing it in the mid-resource tier
+(Stefanescu and Ion, 2013), whereas Indonesian
+still lacks sizable Chinese parallel data (<50k pairs
+in total, with ALT contributing only 20k) and re-
+mains low-resource according to FLORES-200 and
+NLLB benchmarks (Goyal et al., 2022). Thai has
+aggregated corpora exceeding one million pairs and
+dedicated WMT/IWSLT tracks (Lowphansirikul
+et al., 2021), so it no longer meets a strict LRL defi-
+nition. Khmer parallel resources are both small and
+highly noisy, with the WMT20 corpus-filtering task
+highlighting the need for extensive cleaning (Koehn
+et al., 2020). Moreover, Ethnologue reports virtu-
+
+ally no L2 speaker community for Khmer (Eber-
+hard et al., 2023), which would require a language-
+specific filtering pipeline and undermine compara-
+bility. This reconstructed benchmark complements
+existing resources such as FLORES-200 (NLLB
+Team et al., 2024), particularly for LRL-Chinese di-
+rections in mainland and maritime Southeast Asia.
+Unlike pivot-based benchmarks, our test set avoids
+semantic distortion introduced by intermediate En-
+glish, thereby enabling more realistic, stable, and
+reproducible evaluation of Chinese-centric multi-
+lingual translation systems.
+3.7
+Model Overview
+We evaluate a series of representative LLMs, span-
+ning both proprietary and open-source systems:
+• Qwen-2.5 (Ghosal et al., 2025; Cui et al.,
+2025): Chinese-English bilingual models fine-
+tuned for multilingual transfer, evaluated on
+several LRLs.
+• GPT-4o (Huang et al., 2025): OpenAI’s flag-
+ship model tested on 16 languages, including
+several low-resource directions such as En–Te
+and En–Sw.
+• Claude-3.5 (Enis and Hopkins, 2024): A mul-
+tilingual LLM from Anthropic, evaluated via
+MQM metrics on pairs like En–Yoruba and
+En–Amharic.
+• Gemini-2.5 (DeepMind Gemini Team, 2025):
+While lacking peer-reviewed benchmarks on
+LRL→Chinese tasks, its predecessor cov-
+ers ultra-low-resource translation (e.g., En–
+Kalamang).
+• DeepSeek (Huang et al., 2025; Larionov et al.,
+2025): A competitive open-source model eval-
+uated in the BenchMAX suite alongside GPT-
+4o.
+Zero-shot prompting was applied exclusively to
+representative closed-source LLMs. For the Qwen-
+2.5 models, both SFT and GRPO-enhanced SFT
+were applied. Additional tests, as illustrated in
+the Data Distilling module of Figure 1, were con-
+ducted with SFT and GRPO-enhanced SFT using
+1Speaker numbers derive from the most recent national
+censuses or Ethnologue reports (2023–2025) and are expressed
+in millions (M).
+2Each ALT language contains approximately 20k aligned
+sentence pairs from a shared English source. See https://
+www2.nict.go.jp/astrec-att/member/mutiyama/ALT/.
+3No L2 speaker community (Eberhard et al., 2023).
+enhanced data. This data was derived from closed-
+source model outputs, filtered by the QE agent,
+which trained on expert-rated development sets and
+optimized with SAR to select only high-quality
+translations. This comparative design allows us to
+isolate the specific contributions of reward-guided
+data distillation, verifying whether high-quality
+data can effectively compensate for limited model
+scale. Model performance is assessed using stan-
+dard metrics: BLEU-4 (Papineni et al., 2002),
+sacreBLEU (Post, 2018), chrF (Popovi´c, 2015),
+ROUGE-L (Lin, 2004), METEOR (Banerjee and
+Lavie, 2005), and BERTScore (Zhang et al., 2020).
+3.8
+Scoring and Selection
+To construct high-quality parallel corpora for low-
+resource translation, we design a three-stage scor-
+ing and filtering pipeline that integrates inter-
+pretable statistical features with semantic evalua-
+tion, followed by reference-free quality estimation
+and threshold-based selection.
+Stage I: Statistical and Semantic Feature-
+Based Scoring. In the first stage, we perform
+multi-dimensional scoring to capture both surface-
+level consistency and deeper semantic alignment
+between source and target sentences. Specifically,
+we extract five statistical features: sentence length
+ratio, token count ratio, punctuation frequency dif-
+ference, digit proportion difference, and lexical
+diversity difference. These features have proven
+effective in prior work on noisy parallel data de-
+tection and alignment assessment (Munteanu and
+Marcu, 2005; Sánchez-Cartagena et al., 2018), par-
+ticularly for identifying mismatches caused by lan-
+guage divergence or formatting inconsistencies.
+To further enhance robustness, we incorporate
+two semantic signals. The first is conditional per-
+plexity, which measures the fluency and natural-
+ness of each sentence and is widely used for data
+selection in machine translation (Moore and Lewis,
+2010; Junczys-Dowmunt, 2018). The second is
+instruction-following discrepancy, which evaluates
+whether the target sentence faithfully follows the
+communicative intent of the source, inspired by re-
+cent advances in instruction tuning (Li et al., 2024).
+All features are normalized and integrated through
+a weighted combination, enabling the identifica-
+tion of superficially aligned but semantically mis-
+matched sentence pairs (Esplà-Gomis et al., 2020).
+Implementation details and ablation analysis are
+provided in the Appendix A.5.
+Stage II: Reference-Free Quality Estimation.
+
+In the second stage, we adopt a quality estimation
+(QE) agent trained on expert-annotated develop-
+ment sets. Inspired by COMET-QE, this model
+provides reference-free assessments of semantic
+adequacy, fluency, and alignment quality. The QE
+agent refines the results of the initial feature-based
+scoring by evaluating translation candidates from
+a semantic perspective without requiring ground-
+truth references (Rei et al., 2020; Freitag et al.,
+2021).
+Stage III: Threshold-Based Distilling. In the
+final stage, we apply a filtering threshold to the QE
+scores. The threshold is empirically calibrated to
+balance high recall and quality retention, based on
+agreement with human evaluation on a validation
+set. Only sentence pairs exceeding the threshold
+are retained. This process ensures that the final
+training corpus is not only large in scale but also
+high in quality, making it suitable for fine-tuning
+compact models in low-resource scenarios.
+4
+Experiments and Analysis
+4.1
+Evaluation Method
+We evaluate translation performance using both
+overlap-based and semantic-aware metrics:
+Strict-Overlap: BLEU-4 (Papineni et al., 2002),
+sacreBLEU (Post, 2018), and ROUGE-L (Lin,
+2004) assess lexical match and n-gram precision,
+which are crucial for evaluating surface-level accu-
+racy and fluency.
+Semantic-Friendly:
+chrF (Popovi´c, 2015),
+METEOR (Banerjee and Lavie, 2005), and
+BERTScore (Zhang et al., 2020) measure semantic
+similarity and fluency robustness, capturing aspects
+that n-gram overlap alone might miss.
+Each metric is computed on the reconstructed
+ALT test suite for five LRL→Chinese pairs.
+We report averages across directions, comparing
+zero-shot prompting, SFT, and GRPO-enhanced
+regimes.
+To provide a balanced evaluation that captures
+both lexical precision and semantic adequacy, we
+propose a composite metric, BLEU-chrF. This
+metric integrates insights from both the Strict-
+Overlap and Semantic-Friendly categories of eval-
+uation measures by taking the arithmetic mean of
+the BLEU-4 score and the chrF score:
+BLEU-chrF = BLEU-4 + chrF
+2
+(10)
+By averaging these two widely-used metrics, one
+emphasizing n-gram precision and the other char-
+1
+10
+100
+1000
+Model Parameters (B) - Log Scale
+(Params for Closed Source Models are Estimates)
+0
+10
+20
+30
+40
+50
+Score (BLEU-chrF)
+Model Categories/Series
+MERIT-3B (Ours)
+Closed Source Models
+Qwen-2.5 Series
+DeepSeek Series
+Other Open Source Models
+Trendline
+0.2
+32.4
+46.0
+0.2
+32.4
+46.0
+Gemini 2.5
+DS-v3 GPT-4o
+Claude 3.5
+Qwen-32B
+DS-R1-32B
+Qwen-7B
+NLLB-3.3B
+DS-R1-7B
+M2M-1.2B
+DS-R1-1.5B
+MERIT-3B
+Figure 2: Performance–Scale Trade-offs of MERIT-3B
+and Baseline Models on Chinese-Centric Multilingual
+Translation. Comparison of BLEU-chrF scores against
+model size (log-scale) across MERIT-3B, open-source,
+and estimated closed-source models.
+acter n-gram recall and F-score. We aim to achieve
+a more holistic assessment of translation quality,
+particularly for tasks where both lexical fidelity and
+semantic resemblance are important (see Table 5).
+4.2
+Main Result
+Table 2 presents our evaluation results across five
+LRL→Chinese directions, categorizing metrics
+into Strict-Overlap (Papineni et al., 2002; Post,
+2018; Lin, 2004) and Semantic-Friendly (Popovi´c,
+2015; Banerjee and Lavie, 2005; Zhang et al.,
+2020).
+Among leading closed-source models,
+Gemini-2.5-Flash consistently achieves top scores
+in BLEU-4 and chrF across multiple languages,
+such as Filipino (BLEU-4: 49.26, chrF: 42.68) and
+Indonesian (BLEU-4: 48.73, chrF: 41.93). Claude-
+3.5 Sonnet excels in ROUGE-L for Lao (14.00)
+and Burmese (24.44).
+The proposed MERIT framework demonstrates
+notable strengths. Specifically, MERIT-3B sig-
+nificantly outperforms the similarly sized open-
+source NLLB-200-3.3B model across several met-
+rics for Filipino, Indonesian, and Vietnamese (see
+Figure 2 and 6). For instance, on Filipino, MERIT-
+3B achieves 29.71 BLEU-4 and 49.88 METEOR
+compared to NLLB-200’s 25.05 and 46.10, re-
+spectively. Furthermore, MERIT-3B shows sub-
+stantial gains over smaller open-source baselines
+on particularly challenging low-resource language
+pairs. Notably, our MERIT-3B model demonstrates
+substantial advantages over the DeepSeek-R1 7B.
+MERIT-3B consistently outperforms DeepSeek-R1
+7B on lexical similarity metrics such as BLEU-4
+and chrF across all five evaluated languages. Fur-
+thermore, when benchmarked against Qwen-2.5 7B
+
+Strict-Overlap
+BLEU-4
+sacreBLEU
+ROUGE-L
+Model
+fil
+id
+lo
+my
+vi
+fil
+id
+lo
+my
+vi
+fil
+id
+lo
+my
+vi
+FT
+OS
+GPT-4o
+45.26
+47.77
+28.10
+30.48
+45.03
+43.60
+45.81
+27.38
+29.53
+44.50
+33.62
+31.40
+12.33
+23.57
+28.25
+✗
+✗
+Claude-3.5 Sonnet
+42.97
+47.35
+32.20
+30.92
+45.14
+43.38
+46.54
+32.65
+30.14
+44.55
+35.03
+31.17
+14.00
+24.44
+28.45
+✗
+✗
+Gemini-2.5 Flash
+49.26
+48.73
+35.79
+36.91
+39.24
+47.48
+47.20
+35.03
+36.07
+38.63
+35.89
+30.83
+13.53
+23.92
+24.62
+✗
+✗
+DeepSeek-V3
+46.19
+41.83
+25.57
+26.68
+41.29
+44.12
+41.38
+25.25
+26.29
+40.90
+35.15
+30.06
+12.75
+22.95
+28.27
+✗
+✓
+Qwen-2.5 32B
+43.56
+47.87
+23.27
+20.43
+46.23
+42.01
+46.61
+22.48
+19.50
+44.63
+34.97
+31.85
+11.84
+20.61
+29.08
+✗
+✓
+DeepSeek-R1 32B
+37.98
+43.29
+12.97
+8.87
+42.57
+37.14
+42.27
+12.71
+8.43
+41.45
+32.40
+29.92
+10.04
+16.31
+28.11
+✗
+✓
+Qwen 2.5-7B
+30.21
+36.28
+6.17
+6.43
+35.22
+29.75
+36.41
+5.67
+5.42
+35.07
+31.99
+28.56
+9.86
+16.41
+27.81
+✗
+✓
+DeepSeek-R1 7B
+14.77
+20.94
+0.79
+0.37
+12.53
+15.31
+24.17
+0.86
+0.46
+16.16
+24.58
+23.32
+8.67
+5.67
+18.52
+✗
+✓
+NLLB-200 3.3B
+25.05
+25.27
+15.86
+20.83
+25.30
+24.21
+23.64
+15.19
+20.13
+22.97
+31.45
+25.73
+11.49
+18.68
+25.51
+✓
+✓
+DeepSeek-R1 1.5B
+0.07
+0.08
+0.05
+1.06
+0.05
+0.03
+0.06
+0.01
+0.11
+0.02
+0.77
+0.90
+1.80
+3.80
+0.55
+✗
+✓
+M2M-100 1.2B
+2.13
+9.53
+0.05
+0.00
+3.33
+1.32
+9.47
+0.01
+0.00
+3.19
+9.88
+21.65
+4.69
+0.00
+13.01
+✓
+✓
+MERIT-3B (Ours)
+29.71
+34.73
+5.15
+4.56
+31.20
+27.20
+33.16
+4.28
+3.54
+29.25
+31.91
+26.63
+8.40
+13.68
+21.18
+✓
+✓
+Semantic-Friendly
+chrF
+METEOR
+BERTScore
+Model
+fil
+id
+lo
+my
+vi
+fil
+id
+lo
+my
+vi
+fil
+id
+lo
+my
+vi
+FT
+OS
+GPT-4o
+39.36
+41.13
+24.20
+26.76
+39.62
+67.80
+70.34
+53.66
+56.59
+69.44
+68.59
+70.84
+56.27
+57.04
+70.41
+✗
+✗
+Claude-3.5 Sonnet
+38.71
+41.30
+28.38
+28.79
+39.65
+67.52
+70.29
+58.53
+58.88
+69.23
+68.28
+71.55
+60.72
+57.68
+70.40
+✗
+✗
+Gemini-2.5 Flash
+42.68
+41.93
+30.61
+32.09
+34.66
+70.14
+70.87
+60.21
+61.85
+60.31
+71.67
+72.77
+63.93
+62.39
+60.88
+✗
+✗
+DeepSeek-V3
+39.80
+36.95
+22.37
+24.43
+36.86
+68.04
+67.10
+51.41
+53.66
+67.43
+70.02
+68.81
+54.82
+54.21
+68.87
+✗
+✓
+Qwen-2.5 32B
+37.77
+41.35
+20.36
+18.13
+39.80
+66.61
+70.57
+46.72
+43.29
+69.76
+67.73
+71.73
+50.50
+45.09
+71.13
+✗
+✓
+DeepSeek-R1 32B
+33.62
+37.62
+12.77
+9.81
+36.97
+61.60
+66.75
+34.07
+27.37
+66.95
+63.32
+68.54
+36.09
+27.36
+68.65
+✗
+✓
+Qwen-2.5 7B
+27.88
+33.68
+7.39
+7.95
+33.28
+54.51
+62.56
+20.84
+23.25
+63.00
+54.95
+62.82
+22.24
+23.35
+63.28
+✗
+✓
+DeepSeek-R1 7B
+15.43
+21.60
+2.20
+1.35
+14.87
+36.02
+49.35
+8.45
+6.46
+37.61
+34.22
+49.07
+1.46
+4.10
+36.54
+✗
+✓
+NLLB-200 3.3B
+22.48
+23.57
+14.92
+18.69
+22.43
+46.10
+45.28
+36.27
+42.28
+45.73
+48.61
+54.34
+44.80
+48.93
+52.59
+✓
+✓
+DeepSeek-R1 1.5B
+0.33
+0.38
+0.36
+1.87
+0.24
+1.99
+2.34
+2.17
+3.80
+1.43
+27.97
+26.07
+20.48
+19.68
+29.48
+✗
+✓
+M2M-100 1.2B
+5.16
+18.21
+0.26
+0.01
+6.49
+4.65
+14.00
+0.57
+0.11
+6.10
+16.71
+1.68
+10.04
+16.34
+9.51
+✓
+✓
+MERIT 3B (Ours)
+25.52
+30.22
+5.81
+5.53
+26.98
+49.88
+56.46
+16.55
+16.93
+50.50
+46.70
+45.58
+11.45
+16.12
+32.87
+✓
+✓
+Table 2: Evaluation on five Southeast Asian languages. Strict-Overlap metrics include BLEU-4, sacreBLEU, and
+ROUGE-L. Semantic-Friendly metrics include chrF, METEOR, and BERTScore. For each metric column: Bold
+values indicate the highest score, and Underlined values indicate the second highest score across all models. FT:
+Fine-tuned; OS: Open Source.
+and MERIT-3B, with only approximately 42.9%
+of its parameters, MERIT-3B achieves highly com-
+petitive translation quality. For instance, on Fil-
+ipino, MERIT-3B reaches 99.7% of Qwen-2.5 7B’s
+ROUGE-L score (31.91 vs. 31.99) and over 98.3%
+of its BLEU-4 score (29.71 vs. 30.21). Similar
+competitiveness is observed for Indonesian, where
+MERIT-3B attains approximately 95.7% of Qwen-
+2.5 7B’s BLEU-4 score (34.73 vs. 36.28) and
+93.2% of its ROUGE-L score (26.63 vs. 28.56).
+For distinct scripts such as Lao and Burmese,
+models ≤1.5B fail catastrophically: instruction-
+following deficits lead to hallucinations or source
+copying, yielding negligible utility.
+These results underscore the efficacy of our
+reward-informed filtering and specialized fine-
+tuning approach, particularly in improving perfor-
+mance for low-resource languages and achieving
+competitive results within the open-source land-
+scape, given model scale.
+4.3
+Module Comparison
+To investigate the contribution of each component,
+we conduct an ablation study on Qwen-2.5-0.5B
+and Qwen-2.5-3B across four distinct setups: zero-
+shot (serving as our baseline), Supervised Fine-
+Tuning with Language-Token Prefixing (SFT-LTP),
+SFT-LTP followed by reward-enhanced tuning us-
+ing Group Relative Policy Optimization with Se-
+mantic Alignment Reward (GRPO-SAR), and fi-
+nally our full SFT-LTP + GRPO-SAR with an ad-
+ditional LLMs-Enhanced (LLME) stage.
+As detailed in Table 3, initial SFT-LTP yields
+substantial improvements in both BLEU-4 and
+chrF scores over the zero-shot baselines across
+all languages for both model sizes. For instance,
+Qwen-2.5 3B sees its overall BLEU-chrF score in-
+crease from 9.10 to 15.53 after SFT-LTP. Introduc-
+ing GRPO-SAR provides further consistent gains.
+Notably, for the Qwen-2.5 3B model, GRPO-SAR
+significantly boosts performance on low-resource
+pairs like Lao→Chinese, improving BLEU-4 from
+1.17 (SFT-LTP) to 4.39 and chrF from 2.22 (SFT-
+LTP) to 5.17.
+Even with its limited capacity,
+the Qwen-2.5 0.5B model benefits remarkably
+from GRPO-SAR, achieving an overall BLEU-chrF
+score of 4.39, which is nearly a 40-fold increase
+(a 3890% relative improvement) over its zero-shot
+baseline score of 0.11. This underscores the effi-
+cacy of reward modeling, consistent with findings
+in instruction tuning (Ouyang et al., 2022; Xu et al.,
+2024).
+Our proposed LLMs-Enhanced (LLME) stage
+demonstrates further advancements, particularly
+for the larger Qwen-2.5 3B model. With LLME,
+the Qwen-2.5 3B model achieves the highest over-
+all BLEU-chrF score of 19.94, representing a 10.84
+
+Model
+BLEU-4
+chrF
+Overall
+(BLEU-chrF)
+fil
+id
+lo
+my
+vi
+fil
+id
+lo
+my
+vi
+Qwen2.5-0.5b
+0.03
+0.03
+0.02
+0.01
+0.01
+0.16
+0.12
+0.40
+0.25
+0.06
+0.11
++ SFT-LTP
+1.86↑1.83
+4.02↑4.00
+0.25↑0.22
+0.15↑0.14
+3.12↑3.11
+4.85↑4.69
+10.38↑10.26
+1.41↑1.00
+1.07↑0.82
+8.55↑8.50
+3.57↑3.46
++ GRPO-SAR
+2.31↑2.28
+4.32↑4.29
+0.26↑0.24
+0.16↑0.16
+6.29↑6.27
+5.00↑4.84
+10.64↑10.52
+1.38↑0.98
+1.22↑0.96
+12.36↑12.30
+4.39↑4.28
++ LLME
+0.32↑0.29
+0.45↑0.42
+0.08↑0.06
+0.07↑0.06
+0.79↑0.78
+1.20↑1.04
+1.66↑1.54
+0.45↑0.05
+1.25↑1.00
+2.82↑2.76
+0.91↑0.80
+Avg.
+1.13
+2.21
+0.15
+0.10
+2.55
+2.80
+5.70
+0.91
+0.95
+5.95
+2.25
+Qwen2.5-3b
+5.80
+14.25
+1.11
+1.83
+17.06
+8.83
+17.71
+2.05
+3.03
+19.35
+9.10
++ SFT-LTP
+23.01↑17.21
+26.00↑11.75
+1.17↑0.05
+2.53↑0.69
+27.94↑10.87
+20.14↑11.31
+24.25↑6.54
+2.22↑0.17
+3.53↑0.50
+24.55↑5.20
+15.53↑6.43
++ GRPO-SAR
+25.58↑19.78
+29.11↑14.86
+4.39↑3.28
+2.77↑0.93
+32.54↑15.48
+23.62↑14.78
+27.83↑10.12
+5.17↑3.12
+3.45↑0.42
+27.88↑8.53
+18.23↑9.13
++ LLME
+29.71↑23.91
+34.73↑20.48
+5.15↑4.04
+4.56↑2.73
+31.20↑14.14
+25.52↑16.69
+30.22↑12.51
+5.81↑3.76
+5.53↑2.50
+26.98↑7.63
+19.94↑10.84
+Avg.
+21.03
+26.02
+2.96
+2.92
+27.19
+19.53
+25.00
+3.81
+3.89
+24.69
+15.70
+Table 3: Evaluation results of Qwen-2.5-0.5B and 3B on five Southeast Asian languages. All values are rounded to
+two decimal places. Improvements over the baseline (underlined rows) are shown with arrows.
+absolute point improvement (a 119% relative in-
+crease) over its zero-shot baseline. This highlights
+the synergistic benefits of our full pipeline. While
+the LLME stage yields more modest gains for the
+Qwen-2.5 0.5B model in the current setup (overall
+BLEU-chrF of 0.91), the substantial cumulative im-
+provements from SFT-LTP and GRPO-SAR on this
+smaller model, and the peak performance achieved
+by the 3B model with LLME, collectively validate
+the effectiveness and scalability of our modular tun-
+ing strategy in significantly enhancing translation
+quality.
+4.4
+Effect of Data Distillation on Performance
+We assess the impact of our quality filtering ap-
+proach by comparing full-scale Supervised Fine-
+Tuning with Language-Token Prefixing (SFT-LTP)
+against subsequent reward-informed filtering and
+tuning via GRPO-SAR, using our MERIT-3B
+model. Table 4 details the number of retained train-
+ing instances per language and the corresponding
+overall BLEU-chrF scores for these configurations.
+The SFT-LTP stage utilizes the full set of 40,000
+training instances. In contrast, the GRPO-SAR
+stage strategically curates this data, drastically re-
+ducing the volume to only 9,126 instances. This
+results in an average data reduction of 77.2%, with
+the most significant reduction observed for Viet-
+namese, where the training data was reduced by
+87.8% (from 8,000 to 976 instances). Remarkably,
+despite this substantial data pruning, the overall
+BLEU-chrF score not only signifies the efficient
+retention of highly informative samples but actu-
+ally improves from 15.53 (achieved with SFT-LTP
+on 40,000 instances) to 18.23 with GRPO-SAR
+on the reduced dataset. This represents a relative
+performance increase of approximately 17.4%.
+These findings underscore the efficacy of our
+reward-based filtering as a data-efficient strategy
+that simultaneously reduces training data require-
+ments and enhances model performance. This of-
+fers a compelling alternative to training on larger,
+potentially noisier, unfiltered datasets. The bene-
+fits of leveraging reward signals for targeted data
+curation align with effective strategies observed in
+other generative AI tasks, such as summarization
+and dialogue tuning (Ouyang et al., 2022).
+5
+Discussion
+Future work should incorporate robust script nor-
+malization or transliteration to mitigate encoding
+inconsistencies in Lao and Burmese. The current
+GRPO-SAR reward may overemphasize adequacy;
+multi-objective rewards that balance adequacy and
+fluency are needed. Zero-shot baselines of large
+closed-source LLMs may be underestimated; com-
+bining our data distillation with advanced prompt-
+ing or in-context learning on larger models remains
+a promising direction. The full discussion is visible
+in Section A.1.
+6
+Conclusion
+This work bridges the critical gap in Chinese-
+centric low-resource translation by introducing
+MERIT, a comprehensive framework comprising
+the CALT benchmark and a data-efficient train-
+ing paradigm. By synergizing Language-specific
+Token Prefixing (LTP), Supervised Fine-Tuning
+(SFT), and our novel Group Relative Policy Opti-
+mization (GRPO) guided by the Semantic Align-
+ment Reward (SAR), we demonstrate that model
+performance can be significantly decoupled from
+sheer parameter scale. Notably, our MERIT-3B
+model surpasses much larger baselines, such as
+NLLB-200 3.3B and M2M-100, while utilizing
+only 22.8% of the original training data. These
+findings underscore that in low-resource regimes,
+expert-aligned data distillation and reward-guided
+optimization offer a more sustainable and effective
+path than brute-force scaling, providing a repro-
+ducible blueprint for narrowing the multilingual
+digital divide.
+
+Limitations
+Despite the encouraging results achieved by our
+proposed framework and the MERIT-3B model,
+this work has several limitations that warrant dis-
+cussion and offer avenues for future improvement.
+Limited Linguistic Coverage: Despite con-
+structing direct LRL-Chinese sentence pairs, the
+current benchmark is restricted to only five South-
+east Asian languages, leaving important low-
+resource languages such as Tibetan, Uyghur, and
+Kazakh unaddressed due to the lack of high-quality
+parallel corpora.
+Residual English-Centric Bias in the Test
+Suite: Although the ALT-based test suite has been
+realigned for LRL-Chinese evaluation using shared
+alt_id indexing, it remains inherently constrained
+by its original English-centric design, potentially
+retaining subtle domain-specific or stylistic arti-
+facts that affect translation assessment.
+Insufficient Scale of Human Validation: While
+the QE agent and statistical-semantic SAR function
+rely on automatic filtering, the volume of human
+validation, particularly the expert-annotated data
+employed in reward model training, remains sub-
+stantially limited. This constraint may compromise
+the robustness and alignment of the SAR model
+with diverse human preferences.
+Fixed Decoding and Prompting Strategies: Al-
+though multiple LLMs were evaluated under zero-
+shot, SFT, and GRPO settings, decoding hyperpa-
+rameters (e.g., beam size, temperature) and prompt
+formats were uniformly fixed for fair comparison,
+potentially masking model-specific performance
+differences that could be uncovered through more
+extensive hyperparameter and prompt engineering.
+Restricted Model Scale and Missing Effi-
+ciency Analysis: Due to computational constraints,
+all experiments including the MERIT-3B model
+and the proposed SFT-LTP and GRPO-SAR frame-
+works were limited to models of up to 3B parame-
+ters; the approach has not yet been validated on
+larger (over 7B) or state-of-the-art billion-scale
+models, and a comprehensive efficiency analysis of
+training time, inference latency, and overall com-
+putational cost remains absent, leaving scalability
+and practical deployability unassessed.
+Ethics Statements
+This work presents a Chinese-centric multilin-
+gual translation benchmark targeting five Southeast
+Asian low-resource languages (LRLs), constructed
+from publicly available corpora and evaluated un-
+der reproducible protocols. We aim to support re-
+sponsible research in multilingual NLP by releas-
+ing rigorous evaluation resources while proactively
+addressing ethical concerns related to data prove-
+nance, model fairness, environmental impact, and
+potential misuse.
+Data Privacy and Consent
+All data is derived
+from the publicly available ASEAN Languages
+Treebank (ALT), which includes multilingual trans-
+lations of government and news texts. While the
+dataset is openly licensed, the original collection
+did not explicitly document consent procedures or
+procedures for removing personally identifiable in-
+formation (PII). To mitigate this, we apply a multi-
+stage filtering process to exclude named entities,
+explicit language, and potentially sensitive content.
+Nonetheless, due to the limitations of automated
+and manual filtering, some residual risk may re-
+main. We follow the data statements framework
+(Bender and Friedman, 2018) and document licens-
+ing, provenance, and usage constraints in the ap-
+pendix.
+Bias and Fairness
+Despite the use of a three-
+stage filtering pipeline and expert-rated supervi-
+sion, the training data may still encode latent cul-
+tural, linguistic, or regional bias, particularly due
+to its English-pivoted design and limited coverage
+of dialectal variations or non-standard orthogra-
+phies. Annotators are bilingual graduate students,
+and while they are experienced, demographic di-
+versity is limited. Future work will prioritize the
+inclusion of more diverse annotators and typolog-
+ically broader sources to mitigate such represen-
+tational imbalances. Our work aligns with global
+AI ethics principles of fairness, transparency, and
+non-maleficence (Gebru et al., 2021).
+Environmental Impact
+Model training and in-
+ference were conducted on two NVIDIA RTX 3090
+GPUs (24 GB). We log training FLOPs and wall-
+clock runtime for both the SFT and GRPO stages.
+While the GRPO procedure improves data effi-
+ciency through reward-based filtering, it introduces
+additional computational cost. We estimate that
+the total training corresponds to a typical single-
+node compute workload and plan to explore more
+lightweight reward models or compute-efficient
+alternatives to reduce carbon impact in future iter-
+ations (EMNLP 2023 Program Committee, 2023;
+Xu et al., 2026; Li and Lu, 2026).
+
+Intended Use and Misuse Risks
+The benchmark
+is designed to support objective evaluation and su-
+pervised training for LRL→Chinese translation
+tasks. It is intended for academic research and
+language technology development, particularly in
+regions underrepresented in NLP. However, misuse
+is possible, such as generating misinformation or
+content targeting marginalized communities. We
+explicitly discourage such applications and recom-
+mend that any downstream use include fairness au-
+diting, risk controls, and human oversight (Mitchell
+et al., 2019).
+References
+AhmedElmogtaba
+Abdelmoniem
+Ali
+Abdelaziz,
+Ashraf Hatim Elneima, and Kareem Darwish. 2024.
+LLM-based MT data creation: Dialectal to MSA
+translation shared task. In Proceedings of the 6th
+Workshop on Open-Source Arabic Corpora and
+Processing Tools (OSACT) with Shared Tasks on
+Arabic LLMs Hallucination and Dialect to MSA
+Machine Translation @ LREC-COLING 2024, pages
+112–116, Torino, Italia. ELRA and ICCL.
+Naveen Arivazhagan, Ankur Bapna, Orhan Firat,
+Dmitry Lepikhin, Melvin Johnson, Maxim Krikun,
+Mia Xu Chen, Yuan Cao, George Foster, Colin
+Cherry, Wolfgang Macherey, Zhifeng Chen, and
+Yonghui Wu. 2019. Massively multilingual neural
+machine translation in the wild: Findings and chal-
+lenges. Preprint, arXiv:1907.05019.
+Mikel Artetxe and Holger Schwenk. 2018.
+Mas-
+sively multilingual sentence embeddings for zero-
+shot cross-lingual transfer and beyond. Transactions
+of the Association for Computational Linguistics,
+7:597–610.
+Satanjeev Banerjee and Alon Lavie. 2005. METEOR:
+An automatic metric for MT evaluation with im-
+proved correlation with human judgments. In Pro-
+ceedings of the ACL Workshop on Intrinsic and Ex-
+trinsic Evaluation Measures for Machine Transla-
+tion and/or Summarization, pages 65–72, Ann Arbor,
+Michigan. Association for Computational Linguis-
+tics.
+Emily M. Bender and Batya Friedman. 2018. Data
+statements for natural language processing: Toward
+mitigating system bias and enabling better science.
+Transactions of the Association for Computational
+Linguistics, 6:587–604.
+Menglong Cui, Pengzhi Gao, Wei Liu, Jian Luan, and
+Bin Wang. 2025. Multilingual machine translation
+with open large language models at practical scale:
+An empirical study. Preprint, arXiv:2502.02481.
+DeepMind Gemini Team. 2025. Gemini 2.5: Pushing
+the frontier with advanced reasoning, multimodality,
+long context, and next generation agentic capabilities.
+Technical Report v2.5, Google DeepMind. Accessed:
+2025-12.
+David M. Eberhard, Gary F. Simons, and Charles D.
+Fennig. 2023. Ethnologue: Languages of the World,
+26 edition. SIL International, Dallas, TX. Provides
+L1 speaker estimates and language classification data.
+EMNLP 2023 Program Committee. 2023. Emnlp 2023
+ethics faq.
+https://2023.emnlp.org/ethics/
+faq. Conference ethics guidelines, accessed May
+2024.
+Maxim Enis and Mark Hopkins. 2024. From llm to
+nmt: Advancing low-resource machine translation
+with claude. Preprint, arXiv:2404.13813.
+Miquel Esplà-Gomis, Víctor M. Sánchez-Cartagena,
+Jaume Zaragoza-Bernabeu, and Felipe Sánchez-
+Martínez. 2020. Bicleaner at WMT 2020: Universitat
+d’alacant-prompsit’s submission to the parallel cor-
+pus filtering shared task. In Proceedings of the Fifth
+Conference on Machine Translation, pages 952–958,
+Online. Association for Computational Linguistics.
+Angela Fan, Shruti Bhosale, Holger Schwenk, Zhiyi
+Ma, Ahmed El-Kishky, Siddharth Goyal, Man-
+deep Baines, Onur Celebi, Guillaume Wenzek,
+Vishrav Chaudhary, Naman Goyal, Tom Birch, Vi-
+taliy Liptchinsky, Sergey Edunov, Edouard Grave,
+Michael Auli, and Armand Joulin. 2020.
+Be-
+yond english-centric multilingual machine transla-
+tion. Preprint, arXiv:2010.11125.
+Zhaopeng Feng, Ruizhe Chen, Yan Zhang, Zijie Meng,
+and Zuozhu Liu. 2024. Ladder: A model-agnostic
+framework boosting LLM-based machine translation
+to the next level. In Proceedings of the 2024 Confer-
+ence on Empirical Methods in Natural Language Pro-
+cessing, pages 15377–15393, Miami, Florida, USA.
+Association for Computational Linguistics.
+Zhaopeng Feng, Yan Zhang, Hao Li, Bei Wu, Jiayu Liao,
+Wenqiang Liu, Jun Lang, Yang Feng, Jian Wu, and
+Zuozhu Liu. 2025. TEaR: Improving LLM-based
+machine translation with systematic self-refinement.
+In Findings of the Association for Computational
+Linguistics: NAACL 2025, pages 3922–3938, Al-
+buquerque, New Mexico. Association for Computa-
+tional Linguistics.
+Markus Freitag, George Foster, David Grangier, Viresh
+Ratnakar, Qijun Tan, and Wolfgang Macherey. 2021.
+Experts, errors, and context: A large-scale study of
+human evaluation for machine translation. Transac-
+tions of the Association for Computational Linguis-
+tics, 9:1460–1474.
+Timnit Gebru,
+Jamie Morgenstern,
+Briana Vec-
+chione, Jennifer Wortman Vaughan, Hanna Wallach,
+Hal Daumé III, and Kate Crawford. 2021. Datasheets
+for datasets. Preprint, arXiv:1803.09010.
+
+Soumya Suvra Ghosal, Soumyabrata Pal, Koyel
+Mukherjee, and Dinesh Manocha. 2025. PromptRe-
+fine:
+Enhancing few-shot performance on low-
+resource Indic languages with example selection
+from related example banks. In Proceedings of the
+2025 Conference of the Nations of the Americas
+Chapter of the Association for Computational Lin-
+guistics: Human Language Technologies (Volume 1:
+Long Papers), pages 351–365, Albuquerque, New
+Mexico. Association for Computational Linguistics.
+Naman Goyal, Cynthia Gao, Vishrav Chaudhary, Peng-
+Jen Chen, Guillaume Wenzek, Da Ju, Sanjana Kr-
+ishnan, Marc’Aurelio Ranzato, Francisco Guzmán,
+and Angela Fan. 2022. The flores-101 evaluation
+benchmark for low-resource and multilingual ma-
+chine translation. Transactions of the Association for
+Computational Linguistics, 10:522–538.
+Hieu Hoang, Huda Khayrallah, and Marcin Junczys-
+Dowmunt. 2024. On-the-fly fusion of large language
+models and machine translation. In Findings of the
+Association for Computational Linguistics: NAACL
+2024, pages 520–532, Mexico City, Mexico. Associ-
+ation for Computational Linguistics.
+Xu Huang, Wenhao Zhu, Hanxu Hu, Conghui He, Lei
+Li, Shujian Huang, and Fei Yuan. 2025. Benchmax:
+A comprehensive multilingual evaluation suite for
+large language models. Preprint, arXiv:2502.07346.
+Melvin Johnson, Mike Schuster, Quoc V. Le, Maxim
+Krikun, Yonghui Wu, Zhifeng Chen, Nikhil Tho-
+rat, Fernanda Viégas, Martin Wattenberg, Greg Cor-
+rado, Macduff Hughes, and Jeffrey Dean. 2017.
+Google’s multilingual neural machine translation
+system: Enabling zero-shot translation. Preprint,
+arXiv:1611.04558.
+Marcin Junczys-Dowmunt. 2018.
+Dual conditional
+cross-entropy filtering of noisy parallel corpora. In
+Proceedings of the Third Conference on Machine
+Translation: Shared Task Papers, pages 888–895,
+Belgium, Brussels. Association for Computational
+Linguistics.
+Sejoon Kim, Mingi Sung, Jeonghwan Lee, Hyunkuk
+Lim, and Jorge Gimenez Perez. 2024. Efficient ter-
+minology integration for LLM-based translation in
+specialized domains. In Proceedings of the Ninth
+Conference on Machine Translation, pages 636–642,
+Miami, Florida, USA. Association for Computational
+Linguistics.
+Philipp Koehn, Vishrav Chaudhary, Ahmed El-Kishky,
+Naman Goyal, Peng-Jen Chen, and Francisco
+Guzmán. 2020. Findings of the WMT 2020 shared
+task on parallel corpus filtering and alignment. In
+Proceedings of the Fifth Conference on Machine
+Translation, pages 726–742, Online. Association for
+Computational Linguistics.
+Roman Koshkin, Katsuhito Sudoh, and Satoshi Naka-
+mura. 2024. TransLLaMa: LLM-based simultaneous
+translation system. In Findings of the Association
+for Computational Linguistics: EMNLP 2024, pages
+461–476, Miami, Florida, USA. Association for Com-
+putational Linguistics.
+Daniil Larionov, Sotaro Takeshita, Ran Zhang, Yan-
+ran Chen, Christoph Leiter, Zhipin Wang, Christian
+Greisinger, and Steffen Eger. 2025. Deepseek-r1 vs.
+o3-mini: How well can reasoning llms evaluate mt
+and summarization? Preprint, arXiv:2504.08120.
+Anne Lauscher, Vinit Ravishankar, Ivan Vuli´c, and
+Goran Glavaš. 2020. From zero to hero: On the
+limitations of zero-shot language transfer with mul-
+tilingual Transformers. In Proceedings of the 2020
+Conference on Empirical Methods in Natural Lan-
+guage Processing (EMNLP), pages 4483–4499, On-
+line. Association for Computational Linguistics.
+Linxiao Li and Zhixiang Lu. 2026. Ecothink: A green
+adaptive inference framework for sustainable and
+accessible agents. Preprint, arXiv:2603.25498.
+Ming Li, Yong Zhang, Zhitao Li, Jiuhai Chen, Lichang
+Chen, Ning Cheng, Jianzong Wang, Tianyi Zhou, and
+Jing Xiao. 2024. From quantity to quality: Boosting
+llm performance with self-guided data selection for
+instruction tuning. Preprint, arXiv:2308.12032.
+Beng Soon Lim and Gloria R. Poedjosoedarmo. 2016.
+Bahasa indonesia and bahasa melayu: Convergence
+and divergence of the official languages in contem-
+porary southeast asia. In Gerhard Leitner, Azirah
+Hashim, and Hans-Georg Wolf, editors, Communi-
+cating with Asia: The Future of English as a Global
+Language, pages 170–187. Cambridge University
+Press, Cambridge.
+Chin-Yew Lin. 2004. ROUGE: A package for auto-
+matic evaluation of summaries. In Text Summariza-
+tion Branches Out, pages 74–81, Barcelona, Spain.
+Association for Computational Linguistics.
+Yinhan Liu, Jiatao Gu, Naman Goyal, Xian Li, Sergey
+Edunov, Marjan Ghazvininejad, Mike Lewis, and
+Luke Zettlemoyer. 2020. Multilingual denoising pre-
+training for neural machine translation. Preprint,
+arXiv:2001.08210.
+Lalita Lowphansirikul, Charin Polpanumas, Attapol T.
+Rutherford, and Sarana Nutanong. 2021. A large en-
+glish–thai parallel corpus from the web and machine-
+generated text. Language Resources and Evaluation,
+56(2):477–499.
+Zhixiang Lu, Peichen Ji, Yulong Li, Ding Sun, Chenyu
+Xue, Haochen Xue, Mian Zhou, Angelos Stefanidis,
+Jionglong Su, and Zhengyong Jiang. 2025. Advanc-
+ing low-resource machine translation: A unified data
+selection and scoring optimization framework. In
+International Conference on Intelligent Computing,
+pages 482–493. Springer.
+Zhixiang Lu, Yulong Li, Feilong Tang, Zhengyong
+Jiang, Chong Li, Mian Zhou, Tenglong Li, and Jion-
+glong Su. 2026a. Deepgb-tb: A risk-balanced cross-
+attention gradient-boosted convolutional network for
+
+rapid, interpretable tuberculosis screening. Proceed-
+ings of the AAAI Conference on Artificial Intelligence,
+40(46):38989–38997.
+Zhixiang Lu, Chong Zhang, Yulong Li, Angelos Ste-
+fanidis, Anh Nguyen, Imran Razzak, Jionglong Su,
+and Zhengyong Jiang. 2026b. Sage: Sustainable
+agent-guided expert-tuning for culturally attuned
+translation in low-resource southeast asia. Preprint,
+arXiv:2603.19931.
+Shuming Ma, Li Dong, Shaohan Huang, Dong-
+dong Zhang, Alexandre Muzio, Saksham Singhal,
+Hany Hassan Awadalla, Xia Song, and Furu Wei.
+2021. Deltalm: Encoder-decoder pre-training for
+language generation and translation by augment-
+ing pretrained multilingual encoders.
+Preprint,
+arXiv:2106.13736.
+Margaret Mitchell, Simone Wu, Andrew Zaldivar,
+Parker Barnes, Lucy Vasserman, Ben Hutchinson,
+Elena Spitzer, Inioluwa Deborah Raji, and Timnit
+Gebru. 2019. Model cards for model reporting. In
+Proceedings of the Conference on Fairness, Account-
+ability, and Transparency, FAT* ’19, page 220–229.
+ACM.
+Robert C. Moore and William Lewis. 2010. Intelligent
+selection of language model training data. In Pro-
+ceedings of the ACL 2010 Conference Short Papers,
+pages 220–224, Uppsala, Sweden. Association for
+Computational Linguistics.
+Dragos Stefan Munteanu and Daniel Marcu. 2005. Im-
+proving machine translation performance by exploit-
+ing non-parallel corpora. Computational Linguistics,
+31(4):477–504.
+NLLB Team, Marta R. Costa-Jussà, James Cross, Onur
+Çelebi, Maha Elbayad, Kenneth Heafield, Kevin Hef-
+fernan, Elahe Kalbassi, Janice Lam, Daniel Licht,
+Jean Maillard, Anna Sun, Skyler Wang, Guillaume
+Wenzek, Al Youngblood, Bapi Akula, Loïc Barrault,
+Gabriel Mejia Gonzalez, Prangthip Hansanti, and 20
+others. 2024. Scaling neural machine translation to
+200 languages. Nature, 630(8018):841–846.
+Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Car-
+roll L. Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, John
+Schulman, Jacob Hilton, Fraser Kelton, Luke Miller,
+Maddie Simens, Amanda Askell, Peter Welinder,
+Paul Christiano, Jan Leike, and Ryan Lowe. 2022.
+Training language models to follow instructions with
+human feedback. Preprint, arXiv:2203.02155.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic evalu-
+ation of machine translation. In Proceedings of the
+40th Annual Meeting on Association for Computa-
+tional Linguistics, ACL ’02, page 311–318, USA.
+Association for Computational Linguistics.
+Maja Popovi´c. 2015. chrF: character n-gram F-score
+for automatic MT evaluation. In Proceedings of the
+Tenth Workshop on Statistical Machine Translation,
+pages 392–395, Lisbon, Portugal. Association for
+Computational Linguistics.
+Matt Post. 2018. A call for clarity in reporting bleu
+scores. Preprint, arXiv:1804.08771.
+Zhi Qu, Yiran Wang, Jiannan Mao, Chenchen Ding,
+Hideki Tanaka, Masao Utiyama, and Taro Watanabe.
+2025. Registering source tokens to target language
+spaces in multilingual neural machine translation.
+Preprint, arXiv:2501.02979.
+Ricardo Rei, Craig Stewart, Ana C Farinha, and Alon
+Lavie. 2020. COMET: A neural framework for MT
+evaluation. In Proceedings of the 2020 Conference
+on Empirical Methods in Natural Language Process-
+ing (EMNLP), pages 2685–2702, Online. Association
+for Computational Linguistics.
+Víctor M. Sánchez-Cartagena, Marta Bañón, Sergio
+Ortiz-Rojas, and Gema Ramírez. 2018. Prompsit’s
+submission to WMT 2018 parallel corpus filtering
+shared task. In Proceedings of the Third Conference
+on Machine Translation: Shared Task Papers, pages
+955–962, Belgium, Brussels. Association for Com-
+putational Linguistics.
+Dan C. Stefanescu and Radu Ion. 2013. Parallel-wiki:
+A collection of parallel sentences extracted from
+wikipedia. Res. Comput. Sci., 70:145–156.
+Ilya Sutskever, Oriol Vinyals, and Quoc V. Le. 2014.
+Sequence to sequence learning with neural networks.
+Preprint, arXiv:1409.3215.
+Christian Szegedy, Vincent Vanhoucke, Sergey Ioffe,
+Jonathon Shlens, and Zbigniew Wojna. 2015. Re-
+thinking the inception architecture for computer vi-
+sion. Preprint, arXiv:1512.00567.
+Ye Kyaw Thu, Win Pa Pa, Masao Utiyama, Andrew
+Finch, and Eiichiro Sumita. 2016. Introducing the
+Asian language treebank (ALT).
+In Proceedings
+of the Tenth International Conference on Language
+Resources and Evaluation (LREC’16), pages 1574–
+1578, Portorož, Slovenia. European Language Re-
+sources Association (ELRA).
+Martin Volk, Dominic Philipp Fischer, Lukas Fischer,
+Patricia Scheurer, and Phillip Benjamin Ströbel. 2024.
+LLM-based machine translation and summarization
+for Latin. In Proceedings of the Third Workshop
+on Language Technologies for Historical and An-
+cient Languages (LT4HALA) @ LREC-COLING-
+2024, pages 122–128, Torino, Italia. ELRA and
+ICCL.
+Longyue Wang, Chenyang Lyu, Tianbo Ji, Zhirui Zhang,
+Dian Yu, Shuming Shi, and Zhaopeng Tu. 2023.
+Document-level machine translation with large lan-
+guage models. In Proceedings of the 2023 Confer-
+ence on Empirical Methods in Natural Language Pro-
+cessing, pages 16646–16661, Singapore. Association
+for Computational Linguistics.
+
+Weichuan Wang, Zhaoyi Li, Defu Lian, Chen Ma, Linqi
+Song, and Ying Wei. 2024. Mitigating the language
+mismatch and repetition issues in LLM-based ma-
+chine translation via model editing. In Proceedings
+of the 2024 Conference on Empirical Methods in
+Natural Language Processing, pages 15681–15700,
+Miami, Florida, USA. Association for Computational
+Linguistics.
+Ronald J. Williams and David Zipser. 1989. A learning
+algorithm for continually running fully recurrent neu-
+ral networks. Neural Computation, 1(2):270–280.
+Dehong Xu, Liang Qiu, Minseok Kim, Faisal Lad-
+hak, and Jaeyoung Do. 2024. Aligning large lan-
+guage models via fine-grained supervision. Preprint,
+arXiv:2406.02756.
+Minggang Xu, Xihai Tang, Jian Sun, Chong Li, Jong-
+long Su, and Zhixiang Lu. 2026. Attention-based hy-
+brid deep learning framework for modelling the com-
+pressive strength of ultra-high-performance geopoly-
+mer concrete. Results in Engineering, page 109288.
+Zhiwang Xu, Huibin Qin, and Yongzhu Hua. 2021.
+Research on uyghur-chinese neural machine trans-
+lation based on the transformer at multistrategy seg-
+mentation granularity. Mobile Information Systems,
+2021:1–7. Open access article.
+Linting Xue, Noah Constant, Adam Roberts, Mihir
+Kale, Rami Al-Rfou, Aditya Siddhant, Aditya Barua,
+and Colin Raffel. 2021. mt5: A massively multilin-
+gual pre-trained text-to-text transformer. Preprint,
+arXiv:2010.11934.
+Emmanouil Zaranis, Nuno M Guerreiro, and Andre
+Martins. 2024. Analyzing context contributions in
+LLM-based machine translation. In Findings of the
+Association for Computational Linguistics: EMNLP
+2024, pages 14899–14924, Miami, Florida, USA.
+Association for Computational Linguistics.
+Armel Randy Zebaze, Benoît Sagot, and Rachel Baw-
+den. 2025. Compositional translation: A novel LLM-
+based approach for low-resource machine translation.
+In Findings of the Association for Computational Lin-
+guistics: EMNLP 2025, pages 22328–22357, Suzhou,
+China. Association for Computational Linguistics.
+Susan Zhang, Stephen Roller, Naman Goyal, Mikel
+Artetxe, Moya Chen, Shuohui Chen, Christopher De-
+wan, Mona Diab, Xian Li, Xi Victoria Lin, Todor Mi-
+haylov, Myle Ott, Sam Shleifer, Kurt Shuster, Daniel
+Simig, Punit Singh Koura, Anjali Sridhar, Tianlu
+Wang, and Luke Zettlemoyer. 2022.
+Opt: Open
+pre-trained transformer language models. Preprint,
+arXiv:2205.01068.
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q.
+Weinberger, and Yoav Artzi. 2020.
+Bertscore:
+Evaluating text generation with bert.
+Preprint,
+arXiv:1904.09675.
+
+A
+Appendix
+A.1
+Further Discussion
+Our work, culminating in the MERIT framework,
+demonstrates the significant potential of combin-
+ing data filtering techniques, such as the Semantic
+Alignment Reward (SAR) driven GRPO, with ef-
+ficient fine-tuning strategies like Language-Token
+Prefixing (LTP) for multilingual translation, espe-
+cially into low-resource languages (LRLs). The
+proposed BLEU-chrF composite metric has also
+provided a balanced view of lexical and semantic
+performance. While MERIT-3B exhibits strong
+performance relative to its scale and against com-
+parable open-source models, several limitations
+persist and pave the way for future exploration.
+First, script-related challenges, particularly for
+Lao and Burmese, can introduce encoding incon-
+sistencies. These not only affect the performance
+of QE agents used in SAR but also potentially skew
+standard evaluation metrics. Future iterations could
+incorporate more robust character normalization or
+transliteration techniques at the data preprocessing
+stage, or develop QE models less sensitive to such
+variations.
+Second, the current reward model underlying
+GRPO-SAR, while effective, may inadvertently pri-
+oritize adequacy (accuracy of content, as captured
+by our specific SAR function focusing on numer-
+ical or key information matching) sometimes at
+the expense of optimal fluency. This can occasion-
+ally lead to subtle grammatical artifacts in some
+translations. Future work could investigate multi-
+objective reward functions that explicitly balance
+adequacy, fluency, and even other aspects like style
+or register, potentially drawing on more diverse
+human feedback signals beyond simple ratings.
+As noted by Zhang et al. (2022), many LLMs,
+including some baselines we compared against, are
+often evaluated in zero-shot or few-shot settings
+for translation. This might not fully reveal their
+capabilities, which could be significantly enhanced
+with more sophisticated prompting strategies or in-
+context learning techniques specifically tailored for
+translation. Exploring how our data filtering and
+fine-tuning methods can synergize with advanced
+prompting for even larger LLMs is a promising
+direction.
+A.2
+Supplementary Experiments
+All experiments were conducted on a local worksta-
+tion equipped with two NVIDIA RTX 3090 GPUs
+(24 GB). Under a 2×2 parallel configuration, the
+per-GPU batch size was set to 8 with a gradient
+accumulation step of 2, resulting in an effective to-
+tal batch size of 32. The maximum input sequence
+length was set to 1024 tokens, and the initial learn-
+ing rate was configured as 2e-4. The system en-
+vironment included Ubuntu 20.04, CUDA 12.1,
+and Python 3.10, with PyTorch 2.1 and Transform-
+ers v4.49 as the core libraries. All training was
+performed using standard mixed-precision (fp16)
+computation via custom training scripts. Due to
+hardware limitations, the batch size was carefully
+adjusted to fit within the available GPU memory,
+and no experiments were conducted using larger-
+parameter models. To ensure reproducibility, all
+random seeds were fixed, and detailed runtime logs
+were maintained for each experiment.
+A.3
+Reward Function
+In this study, we introduce the Semantic Align-
+ment Reward (SAR) function as a key component
+of the reward mechanism for aligning the Quality
+Estimation (QE) agent’s predictions with human
+expert judgments. Specifically, based on the abso-
+lute deviation d = |si −ai| between the predicted
+score si and the ground-truth expert score ai, we
+design a step-wise reward strategy which operates
+as follows:
+• A reward of 2.0 is assigned if the model’s
+predicted score exactly matches the human
+expert score (d = 0).
+• A reward of 1.0 is assigned if the predicted
+score deviates from the expert score by an
+acceptable margin (specifically, 1 ≤d ≤10).
+• A reward of 0.0 is assigned if the deviation
+exceeds the tolerance threshold (d > 10) or if
+the score is invalid.
+This step-wise formulation distinguishes SAR
+from binary rewards typical in exact matching
+tasks, driven by two key rationales:
+(1) Accommodating Evaluation Subjectivity.
+Unlike mathematical reasoning with unique solu-
+tions, QE involves inherent subjectivity where hu-
+man annotators may assign varying scalar scores
+to identical quality levels. Consequently, enforc-
+ing exact matches is overly rigid. Our tolerance
+mechanism acknowledges this by treating proximal
+scores (within a 10-point window) as valid, thereby
+preventing penalization for minor variances that do
+not reflect genuine quality disparities.
+
+Method
+# Training Size
+Overall
+fil
+id
+lo
+my
+vi
+(Size / BLEU-chrF)
+MERIT-3B
++ SFT-LTP
+8,000
+8,000
+8,000
+8,000
+8,000
+40,000 / 15.53
++ GRPO-SAR
+1,851↓76.9%
+1,779↓77.7%
+2,058↓74.2%
+2,462↓69.2%
+976↓87.8%
+9,126↓77.2% / 18.23↑17.4%
++ LLME
+2,891↓63.9%
+3,104↓61.2%
+3,300↓58.8%
+3,764↓53.0%
+2,193↓72.6%
+15,252↓61.9% / 19.94↑28.4%
+Table 4: Training size comparison across five low-resource languages for MERIT-3B. Overall column shows
+total training data (with percentage reduction relative to initial 40,000) and BLEU-chrF score (with percentage
+improvement relative to the SFT-LTP stage).
+25
+50
+75
+100
+125
+150
+175
+200
+Steps
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+3.00
+Training Loss
+Qwen2.5-0.5B SFT-LTP
+Qwen2.5-0.5B SFT-LTP+GRPO-SAR
+Qwen2.5-0.5B SFT-LTP+GRPO-SAR+LLMs
+Qwen2.5-3B SFT-LTP
+Qwen2.5-3B SFT-LTP+GRPO-SAR
+Qwen2.5-3B SFT-LTP+GRPO-SAR+LLMs
+0
+200
+400
+600
+800
+1000 1200 1400
+Steps
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+Training Loss
+Training Loss
+Reward
+2.25
+2.30
+2.35
+2.40
+2.45
+2.50
+Reward
+Figure 3: Training loss and reward evolution across SFT and GRPO strategies.
+Combination
+Spearman ρ ↑
+σ2 ↓
+(BLEU + chrF)/2 (equal)
+0.986
+1.02
+√BLEU × chrF (geometric)
+0.985
+1.14
+0.4 · BLEU + 0.6 · chrF
+0.985
+1.19
+0.6 · BLEU + 0.4 · chrF
+0.984
+1.23
+Note: Metrics were computed with sacreBLEU 2.4.2.
+Table 5: Empirical comparison of different combina-
+tion methods for BLEU and chrF, evaluated on WMT22
+test sets (5 languages × 16 systems). The results show
+that, while all variants exhibit very similar rank corre-
+lations with human judgments, the simple arithmetic
+mean yields the lowest system-level variance.
+(2) Providing Dense Supervision Signals.
+Sparse binary rewards often hinder optimization
+stability. By granting partial rewards for approx-
+imate matches, SAR provides finer-grained feed-
+back even when exact alignment is not achieved.
+This dense signal facilitates smoother convergence
+during GRPO, guiding the agent to approximate
+the distribution of expert preferences rather than
+overfitting to rigid scalar values.
+A.4
+Recruitment And Payment
+To ensure the accuracy and objectivity of human
+evaluation, we recruited ten annotators with aca-
+demic backgrounds in the target Southeast Asian
+languages. All annotators were either language
+instructors or graduate students from relevant uni-
+Metric
+Mean ∆(v.s NLLB-200)
+p-value
+BLEU-4
++9.46
+0.003
+chrF2
++8.36
+0.006
+ROUGE-L
++1.18
+0.041
+METEOR
++2.65
+0.038
+COMET-22
++2.80
+<0.001
+Note: Mean ∆represents the score difference aver-
+aged across all test sets. Some metrics are presented
+as percentages. p-values in bold indicate a statistically
+significant improvement (p < 0.05).
+Table 6: Statistical Significance of Improvements over
+Baseline. We conduct pairwise bootstrap resampling
+(1,000 iterations) to compare our final model (MERIT-
+3B) against the NLLB-200 baseline. All improvements
+are statistically significant.
+versities. For each target language, three annota-
+tors were assigned, and a cross-review protocol
+was adopted to enhance annotation quality and con-
+sistency. All participants had formal training in
+translation or linguistics and possessed strong lan-
+guage comprehension and evaluative capabilities.
+Annotators were compensated at a rate of 1 RMB
+per evaluated sample. Before the evaluation began,
+all participants received detailed instructions and
+training on annotation guidelines. Participation was
+voluntary, and compensation was provided propor-
+tionally based on the amount of completed work.
+Since the dataset contains no personally identifi-
+able information (PII) and the task involves only
+linguistic quality assessment, the annotation pro-
+
+cess entails no ethical risks and does not require
+institutional ethics approval.
+A.5
+Data Filtering Methodology
+To ensure the quality of the Chinese-centric low-
+resource corpora, we implement a hybrid filter-
+ing pipeline combining statistical heuristics and
+Large Language Model (LLM) based metrics. Let
+Draw = {(xi, yi)}N
+i=1 denote the initial noisy par-
+allel corpus.
+A.5.1
+Statistical Feature Extraction
+For each pair (xi, yi), we extract a feature vector
+fi ∈R5 measuring surface alignment:
+1. Length
+Ratio
+(Rlen):
+defined
+as
+min(|yi|/|xi|, |xi|/|yi|)
+to
+penalize
+ex-
+treme length mismatches.
+2. Token
+Ratio
+(Rtok):
+Calculated
+on
+whitespace-separated tokens.
+3. Punctuation Divergence (Dpunct): Absolute
+difference in punctuation ratios, adjusted by
+language-specific regex patterns.
+4. Digit Divergence (Ddigit): Absolute differ-
+ence in digit proportions.
+5. Lexical Diversity Diff (Duniq): Difference in
+Type-Token Ratios (TTR).
+The base statistical score is a weighted sum with
+Algorithm 1: Elite Parallel Data Sampler
+Input: Draw, Target Size K, LLM M
+Output: Dclean
+1 Dvalid ←∅
+2 foreach (x, y) ∈Draw do
+3
+if Ifilter(x, y) = 1 then
+4
+fstat ←ExtractFeatures(x, y)
+5
+Sbase ←wT · Φ(fstat)
+6
+Dvalid ←Dvalid ∪{(x, y, Sbase)}
+7 foreach batch B ⊂Dvalid do
+8
+SPPL, SIFD ←M.Forward(B)
+9
+foreach (x, y) ∈B do
+10
+S(x,y)
+final ←Sbase + S(x,y)
+PPL + S(x,y)
+IFD
+11 Dsorted ←Sort(Dvalid, key = Sfinal)
+12 Dclean ←{d ∈Dsorted | rank(d) ≤K}
+13 return Dclean
+Algorithm 2: Data Integrity Validation
+Input: Dclean, Targets
+{Ntrain, Ndev, Ntest}
+Output: Splits {Strain, Sdev, Stest}
+1 G ←{(k, {s | d(s) = k})}M
+k=1
+2 P[k] ←|G[k]|/|Dclean|,
+∀k
+3 foreach split T ∈{train, dev, test} do
+4
+ST ←∅
+5
+foreach domain k ∈Keys(G) do
+6
+qk ←⌊NT · P[k]⌋
+7
+Bk ←Sample(G[k], qk)
+8
+ST ←ST ∪Bk;
+G[k] ←G[k] \ Bk
+9
+∆←NT −|ST |
+10
+if ∆> 0 then
+11
+U ←S
+k G[k]
+Ssupp ←Resample(U, ∆)
+12
+ST ←ST ∪Ssupp
+13
+else if |ST | > NT then
+14
+ST ←ST [1 : NT ]
+15 if ∃T, |ST |̸ = NT then return Error
+16 return {Strain, Sdev, Stest}
+normalizing functions ϕk:
+Sbase(xi, yi) =
+5
+X
+k=1
+wk · ϕk(f(k)
+i
+)
+(11)
+A.5.2
+LLM-based Semantic Scoring
+We employ Qwen-2.5-0.5B to compute seman-
+tic metrics. Perplexity Score (SPPL) verifies flu-
+ency via conditional likelihood, and Instruction-
+Following Discrepancy (SIFD) measures context
+reliance:
+SPPL =
+1
+1 + σ(PPL(y|x, I))
+(12)
+SIFD = min
+ PPL(y|∅)
+PPL(y|x, I), τ
+
+· τ −1
+(13)
+where I is the instruction prompt, σ is a scaling
+factor, and τ is a normalization threshold.
+A.5.3
+Composite Filtering Algorithm
+The final score combines signals with weights
+(α, β, γ) = (0.3, 0.3, 0.4):
+Sfinal = αSbase + βSPPL + γSIFD
+(14)
+
+A.6
+Data Integrity Validation
+To ensure the reliability of our benchmark, we pro-
+pose the Data Integrity Validation (DIV) algorithm.
+This mechanism addresses two critical challenges
+in low-resource corpus construction: (1) Distribu-
+tional Integrity, ensuring that the domain distribu-
+tion (e.g., news, government docs) in the training
+and test sets strictly mirrors the original corpus; and
+(2) Size Integrity, enforcing exact sample counts
+(e.g., 8,000/1,000/1,000) despite rounding errors
+inherent in stratified sampling.
+Let Dclean be the filtered corpus. For each sen-
+tence pair s, we extract its domain identifier d(s)
+from the metadata.
+A.6.1
+Distribution-Preserving Allocation
+We first compute the global domain distribution
+vector P = {p1, . . . , pM}, where pk = Nk/Ntotal
+denotes the proportion of domain k. For a target
+split T (e.g., Train) with a required size Ntarget,
+the allocated quota for domain k is calculated as:
+q(k)
+T
+= ⌊Ntarget · pk⌋
+(15)
+We then sample q(k)
+T
+distinct sentences from do-
+main k to form the initial split.
+A.6.2
+Integrity Compensation
+Since the floor operation ⌊·⌋may cause the to-
+tal count to fall short of Ntarget (i.e., P q(k)
+T
+<
+Ntarget), or data scarcity in specific domains may
+prevent fulfilling the quota, DIV performs a In-
+tegrity Compensation step. We calculate the deficit
+∆= Ntarget −P |ST | and perform weighted re-
+sampling from the available pool to fill ∆, ensuring
+the final dataset size strictly equals Ntarget without
+violating domain diversity.

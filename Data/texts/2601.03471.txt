@@ -1,0 +1,4219 @@
+EPIQAL: Benchmarking Large Language Models in Epidemiological
+Question Answering and Reasoning
+Mingyang Wei1, Dehai Min2, Zewen Liu1, Yuzhang Xie1, Guanchen Wu1, Ziyang Zhang1,
+Carl Yang1, Max S.Y. Lau1, Qi He3, Lu Cheng2, Wei Jin1*
+1Emory University,
+2University of Illinois Chicago,
+3Microsoft
+{mingyang.wei, zewen.liu, yuzhang.xie, guanchen.wu, ziyang.zhang2}@emory.edu
+{j.carlyang, msy.lau, wei.jin}@emory.edu
+{dmin10, lucheng}@uic.edu,
+qhe@microsoft.com
+Abstract
+Reliable epidemiological reasoning requires
+synthesizing study evidence to infer disease
+burden, transmission dynamics, and interven-
+tion effects at the population level. Existing
+medical question answering benchmarks pri-
+marily emphasize clinical knowledge or patient-
+level reasoning, yet few systematically evalu-
+ate evidence-grounded epidemiological infer-
+ence. We present EpiQAL, to our knowledge
+the first diagnostic benchmark for epidemio-
+logical question answering over research lit-
+erature, comprising three subsets built from
+open-access articles across diverse diseases.
+The three subsets progressively test factual re-
+call, multi-step inference, and conclusion re-
+construction under incomplete information, and
+are constructed through a quality-controlled
+pipeline combining taxonomy guidance, multi-
+model verification, and difficulty screening.
+Experiments on fifteen models spanning open-
+source and proprietary systems reveal that cur-
+rent LLMs show limited performance on epi-
+demiological reasoning, with multi-step infer-
+ence posing the greatest challenge. Model rank-
+ings shift across subsets, and scale alone does
+not predict success. Chain-of-Thought prompt-
+ing benefits multi-step inference but yields
+mixed results elsewhere. EpiQAL provides
+fine-grained diagnostic signals for evidence-
+grounding, inferential reasoning, and conclu-
+sion reconstruction.1
+1
+Introduction
+The COVID-19 pandemic underscored the chal-
+lenge of extracting reliable insights from a
+rapidly
+expanding
+epidemiological
+literature
+(Wang and Tian, 2021; Diéguez-Campa et al.,
+2020). Evidence-informed public health practice
+targets populations rather than individual patients
+*Correspondence: wei.jin@emory.edu
+1Benchmark and code are available at https://github.
+com/myweiii/EpiQAL.
+and often demands synthesizing heterogeneous,
+context-dependent study findings (Brownson et al.,
+2009; Orton et al., 2011). Biomedical QA systems
+retrieve and summarize evidence from large article
+collections (Bauer and Berleant, 2012; Tsatsaronis
+et al., 2015; Wallace, 2019), and recent agentic AI
+systems further extend healthcare AI with planning,
+tool use, and multi-agent collaboration (Xu et al.,
+2025a), but these efforts primarily support clini-
+cal knowledge retrieval and patient-level decision
+making. Epidemiological reasoning, by contrast,
+requires population-level statistical and causal in-
+ference about disease burden, transmission dynam-
+ics, and intervention effects (Glass et al., 2013).
+This gap motivates QA benchmarks tailored to epi-
+demiological inference.
+A suitable benchmark should be controlled, lim-
+iting shortcut cues that allow models to exploit
+superficial patterns such as lexical overlap between
+questions and contexts (Shinoda et al., 2021), and
+trustworthy, anchoring answers to verifiable study
+evidence rather than relying solely on annotator
+judgment. Existing resources only partially meet
+these requirements. Exam-style benchmarks pri-
+marily test clinical knowledge (Jin et al., 2021; Pal
+et al., 2022); literature-grounded datasets rely on
+abstracts and constrained label spaces (Jin et al.,
+2019); epidemic-focused datasets are typically
+disease-specific with extractive formats (Möller
+et al., 2020; Raza et al., 2022; Goodwin et al.,
+2022). Moreover, expert annotation remains costly,
+limiting both scale and topic coverage.
+We present EpiQAL (Epidemiological QA over
+the Literature), which to our knowledge is the
+first benchmark to systematically evaluate epi-
+demiological QA by combining broad topic cover-
+age, set-based evaluation that accommodates both
+single- and multi-answer questions, and document-
+grounded answer derivation. Building EpiQAL
+requires addressing four challenges.
+(1) Scope. A benchmark limited to a single disease
+arXiv:2601.03471v4 [cs.CL] 31 Aug 2026
+
+cannot assess generalization across the diverse
+phenomena epidemiological research spans.
+(2) Grounding.
+Epidemiological conclusions
+must be traceable to study evidence. With-
+out such grounding, it is difficult to distinguish
+genuine inference from hallucination.
+(3) Verification. Epidemiological questions may
+admit multiple valid answers, for instance
+when a study identifies several vector species,
+all of which are correct responses. Validating
+such multi-answer correctness at scale with-
+out exhaustive expert annotation requires auto-
+mated quality control.
+(4) Difficulty. Models can exploit superficial cues
+such as lexical overlap between question stems
+and correct options, succeeding without gen-
+uine comprehension.
+Our framework addresses each challenge. For
+scope, we develop a taxonomy of six categories
+and twenty-five topics with an epidemiology expert.
+For grounding, we adopt subset-specific strategies
+anchored in document evidence. For verification,
+we design a checking model group with human
+review for uncertain cases. For difficulty, we em-
+ploy difficulty screening and stem refinement (Bai
+et al., 2024; Wu et al., 2025b). These components
+yield three subsets: EpiQAL-A tests text-grounded
+factual recall, EpiQAL-B tests multi-step infer-
+ence requiring integration of multiple findings, and
+EpiQAL-C tests conclusion reconstruction with
+the Discussion section withheld. Our contributions
+are as follows.
+• We frame epidemiological QA as a distinct prob-
+lem requiring population-level reasoning over
+study evidence, and develop an expert-curated
+taxonomy ensuring broad subdomain coverage.
+• We propose an automated construction frame-
+work integrating multi-LLM verification, diffi-
+culty control, and targeted human review.
+• We release EpiQAL with three subsets and bench-
+mark fifteen models spanning open-source and
+proprietary systems under a set-based evaluation
+protocol.
+2
+Related Work
+Biomedical QA benchmarks. Existing biomed-
+ical QA benchmarks vary in format, evidence
+source, and domain scope.
+Exam-style bench-
+marks such as MedQA and MedMCQA use single-
+answer multiple-choice questions to test broad med-
+ical knowledge (Jin et al., 2021; Pal et al., 2022).
+BioASQ provides expert-curated questions with
+summaries and exact answers grounded in biomed-
+ical literature (Krithara et al., 2023), while Pub-
+MedQA links questions to abstracts but adopts a
+constrained yes/no/maybe label space that limits
+expressiveness (Jin et al., 2019). Epidemic-focused
+benchmarks such as COVID-QA, CoQUAD, and
+EPIC-QA ground questions in pandemic-related
+evidence but are typically disease-specific and use
+extractive formats (Möller et al., 2020; Raza et al.,
+2022; Goodwin et al., 2022). In contrast, EpiQAL
+covers diverse epidemiological topics, supports set-
+based evaluation accommodating both single- and
+multi-answer questions, and includes a masked-
+input setting for conclusion reconstruction.
+Automatic QA construction and quality control.
+Automatic QA construction has progressed from
+template-based generation (Du et al., 2017) to ad-
+versarial filtering and model-in-the-loop collection
+that select harder, less biased instances (Bartolo
+et al., 2020; Kiela et al., 2021; Bras et al., 2020;
+Lee et al., 2025). Multi-judge LLM verification
+mitigates single-model biases (Liu et al., 2023; Ma
+et al., 2025), though judge models draw on the
+same parametric knowledge as the systems they as-
+sess, which has motivated verification signals read
+off an external corpus instead (Fan et al., 2026).
+Set-based metrics support multi-answer evaluation
+(Yang et al., 2018; Lee et al., 2023), and difficulty
+screening further controls benchmark quality (Bai
+et al., 2024).
+3
+Method
+3.1
+Task Formulation
+Dataset generation. Given a source document
+D, the goal is to produce a question Q, a set of
+correct options Oc, and a set of distractors Od. We
+formulate this as constrained generation where a
+model Mg operates under a constraint schema G
+that specifies topic scope, reasoning requirements,
+and option construction rules:
+(Q, Oc, Od) = Mg(D, E; G)
+(1)
+Here E denotes optional external knowledge. For
+EpiQAL-B, E consists of epidemiological rela-
+tions from knowledge graphs used only during
+construction, whose contribution is analyzed in
+Appendix F.5; for EpiQAL-A and EpiQAL-C, E
+is empty. The constraint schema and its subset-
+specific instantiations are described in §3.2.
+
+QA Generation & Verification
+Question
+Answer
+Distractors
+Does the option make sense?
+Reject
+Multi-Model 
+Verification 
+Human
+Review
+EpiQAL-A&B&C
+Stem Refinement
+Question
+Core Entity
+Search
+Snippets
+Description
+Replace
+New
+Question
+Difficulty Judging
+Refinement
+EpiQAL-B&C
+Summarize
+Domain Knowledge Augmentation
+KG
+Input Doc
+Disease Name
+NER
+Summarize
+External
+Information
+Taxonomy Constraint
+Categorize
+Class
+Domain 
+Topic
+Defines 
+prevalence, 
+incidence...
+EpiQAL-B
+EpiQAL-A&B
+Paper Structure Constraint
+Discussion
+Rest Doc
+Extract
+Conclusions
+Key Insight
+Test Input
+EpiQAL-C
+Input Doc
+Input Doc
+Retrieve
+Categorize
+Answer
+Vote Ratio v 
+Accept
+Multiple LLMs solve the question 
+DiffScore < 
+EpiQAL-B&C
+LLM
+Input Constraints
+Difficulty Control
+Optional
+Figure 1: Overall framework for EpiQAL construction. The pipeline begins with subset-specific input processing
+(upper left), followed by QA generation and multi-model verification that routes uncertain cases to human review
+(upper right). For EpiQAL-B&C, difficulty judging screens overly easy instances and triggers stem refinement when
+needed (lower). EpiQAL-A outputs directly after verification.
+Benchmarking. The evaluation task is multiple
+choice QA. EpiQAL-A admits multiple correct op-
+tions per question, while EpiQAL-B and EpiQAL-
+C are single-answer by construction. The evalua-
+tion prompt nonetheless states that a question may
+have one, several, or no correct options, so that
+answer cardinality is not disclosed to the model
+and cannot be used as a shortcut. Models there-
+fore output a set of selected option indices in all
+cases. Let ˜D denote the test-time input: ˜D = D
+for EpiQAL-A and EpiQAL-B, and ˜D = D \ Dd
+for EpiQAL-C where the Discussion section Dd is
+masked. Given ˜D, question Q, and candidates O =
+Oc ∪Od, a tested model Mt predicts an answer set
+A = Mt( ˜D, Q, O). Evaluation uses set-based F1
+and Exact Match (EM). Given predicted set A and
+reference set Oc: F1 = 2|Oc ∩A| / (|Oc| + |A|)
+rewards partial overlap, while EM = 1[A = Oc]
+requires exact set recovery.
+3.2
+Framework and Subset Design
+We design three subsets that target complemen-
+tary capabilities along the epidemiological reason-
+ing spectrum: text-grounded recall (EpiQAL-A),
+multi-step inference (EpiQAL-B), and conclusion
+reconstruction under masked inputs (EpiQAL-C).
+Figure 1 illustrates the shared construction pipeline,
+which proceeds from subset-specific input pro-
+cessing through constrained QA generation, multi-
+LLM verification with human review, and difficulty
+control. Table 1 summarizes the key differences
+across subsets.
+EpiQAL-A: Text-grounded recall. EpiQAL-A
+contains retrieval-based questions whose correct
+options Oc are explicitly stated in the source doc-
+ument D. Each correct option must be directly
+supported by verbatim spans. Distractors Od are
+document-grounded confounders that match sur-
+face form but differ in role, population, or context.
+EpiQAL-B: Multi-step inference. EpiQAL-B tar-
+gets inference that links multiple cues in D with
+epidemiological knowledge. During construction,
+external knowledge E from knowledge graphs is
+optionally provided to supplement document ev-
+idence; at evaluation time E is withheld.
+Cor-
+rect options Oc express derived implications rather
+than passage restatements. Distractors Od contain
+reasoning-level flaws such as causal reversal (flip-
+ping the direction of an implied effect) or entity
+misattribution (applying a conclusion valid for one
+entity to a different one).
+EpiQAL-C: Masked-input reasoning. EpiQAL-
+C evaluates reconstruction of author-stated conclu-
+
+Table 1: Comparison of the three subsets in EpiQAL with representative examples.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Core Capability
+Fact recall
+Multi-step inference
+Conclusion reconstruction
+Knowledge Source
+Document
+Document
+Article body (Discussion masked)
+Taxonomy Guided
+Yes
+Yes
+No
+External Knowledge
+No
+Generation only
+No
+Test Input
+Full document
+Full document
+Document w/o Discussion
+Difficulty Control
+No
+Yes
+Yes
+EpiQAL-A | Q: What was the primary outcome measure recommended by WHO for assessing anthelmintic drug
+efficacy in STH infections? Opt: (0) Number of stool samples taken (1) Cure rate (2) Log-transformed EPG (3) Egg
+reduction rate Ans: 3
+EpiQAL-B | Q: In experimental rabies infection in dogs, what most strongly distinguishes survivors from non-
+survivors in CNS immune response? Opt: (0) Viral antigens in CNS (1) High-titer serum VNA regardless of CSF
+(2) Elevated CSF WBC counts (3) VNA in CSF indicating immune effector entry into CNS (4) Earlier symptom
+onset Ans: 3
+EpiQAL-C | Q: What can be inferred about the overall impact of AVI-7288 treatment on Marburg virus infection in
+the macaque model? Opt: (0) Treatment may impair adaptive immunity (1) Marked improvement in survival and
+amelioration of disease manifestations (2) Treatment delayed clinical disease onset (3) Most effective within 24h
+despite similar outcomes (4) May not prevent viral reservoir formation Ans: 1
+sions when the Discussion section Dd is masked.
+Correct options Oc are salient conclusions ex-
+tracted from Dd, but must be supportable by ev-
+idence in ˜D. Distractors Od are plausible under the
+paper narrative but unsupported, contradictory, or
+logically inverted.
+Table 1 shows a representative question from
+each subset.
+Generation follows a constraint
+schema G specifying topic scope, reasoning type,
+and option construction rules for each subset; de-
+tailed distractor design and full prompts are in Ap-
+pendices B.4 and G.
+3.3
+Input Constraints
+Epidemiology Taxonomy. Existing classification
+frameworks in epidemiology are organized along
+dimensions that do not suit our purpose. Study
+design taxonomies (Pearce, 2012) classify by re-
+search methodology, ICD-11 organizes diseases
+by pathology, and the CDC Field Epidemiology
+Manual structures knowledge by investigation pro-
+cedure. None of these frameworks organize epi-
+demiological knowledge by reasoning competency,
+which is what we need for controlling question
+generation across distinct inference types. To en-
+sure broad coverage across epidemiological sub-
+domains, we develop a taxonomy in consultation
+with a faculty member in biostatistics and epidemi-
+ology through five rounds of iterative refinement,
+where each round involved reviewing example arti-
+cles per topic and refining class/topic boundaries
+and their descriptions. The taxonomy is organized
+into six high-level classes covering complementary
+stages of epidemiological investigation. Each class
+contains multiple topics that provide finer-grained
+control over question intent. For EpiQAL-A and
+EpiQAL-B, we sample a topic and use its descrip-
+tion to steer evidence selection, question phrasing,
+and option design. EpiQAL-C derives supervision
+from paper structure rather than taxonomy guid-
+ance. The complete taxonomy with all 25 topics
+and their descriptions is provided in Appendix B.2.
+Domain Knowledge Retrieval. EpiQAL-B op-
+tionally incorporates external knowledge E from
+biomedical knowledge graphs during construction.
+When relevant knowledge graph triples are avail-
+able, they provide additional context that may en-
+courage broader inference-oriented questions. At
+evaluation time, E is withheld. Appendix B.3 de-
+tails the construction procedure.
+3.4
+Multi-model Verification
+Automatically generated QA instances may contain
+factual errors, label inconsistencies, or reasoning
+flaws. We address this through multi-model verifi-
+cation combined with targeted human review.
+Checking model group. A group of LLMs inde-
+pendently verifies each generated option in Oc∪Od.
+Checkers assess two properties: whether the op-
+tion is consistent with its assigned label given the
+cited evidence, and whether the implied reason-
+ing is coherent. Checkers operate at the option
+level rather than re-solving the full question, which
+allows efficient verification at scale. In particu-
+
+lar, checkers verify semantic equivalence between
+options, ensuring that trivially reordered or para-
+phrased variants of correct answers are not retained
+as distractors.
+Checkers judge correctness solely against the
+test-time input ˜D, so that validity does not depend
+on construction-only information. For EpiQAL-C
+the checker additionally receives Dd in order to
+confirm that each extracted conclusion is traceable
+to the Discussion, but is instructed to decide deriv-
+ability from ˜D alone (Appendix G).
+We run each checker multiple times with stochas-
+tic decoding and aggregate decisions into a vote
+ratio v ∈[0, 1] representing the fraction of keep
+votes. Two thresholds govern the decision process:
+options below the lower threshold are rejected au-
+tomatically, options above the upper threshold are
+accepted, and options in between are flagged for
+human review (e.g., with 9 total votes, options re-
+ceiving fewer than 5 keep votes are rejected, exactly
+5 are flagged for human review, and 6 or more are
+accepted). This tiered approach balances automa-
+tion with quality control.
+Human Review. For flagged options, a human re-
+viewer inspects the evidence to approve or discard.
+The reviewer may use LLMs for comprehension
+but all decisions are made by human judgment.
+3.5
+Difficulty Control
+For EpiQAL-B and EpiQAL-C, quality also de-
+pends on whether items demand nontrivial reason-
+ing. We apply difficulty control only to these two
+subsets because EpiQAL-A targets text-grounded
+recall rather than reasoning depth. Difficulty con-
+trol consists of two steps: difficulty judging to
+identify overly easy items, and stem refinement
+to reduce shortcut cues.
+Difficulty judging. We estimate instance difficulty
+using a pool of models ranging from small to large.
+For each model, we compare the predicted answer
+set A with the reference set Oc using set-based F1
+and Exact Match (Appendix B.1), then combine
+them into a difficulty score:
+DiffScore = 1 −(α · F1 + (1 −α) · EM)
+where α ∈[0, 1] controls the trade-off between
+partial overlap and exact set recovery. We average
+DiffScore across the model pool. Items below a
+threshold are treated as easy and passed to stem
+refinement.
+Stem refinement. Stem refinement is a rewriting
+step that replaces salient entities in the question
+stem Q with descriptive phrases. This reduces sur-
+face matching between Q and Oc, requiring models
+to reason about the described concept rather than
+pattern match on entity names. The refinement
+procedure iteratively replaces salient entities with
+descriptive phrases retrieved from web sources, re-
+peating until DiffScore exceeds the threshold or a
+maximum number of iterations is reached. No re-
+trieved text is provided at evaluation time. We cap
+iterations at Tr = 3 with early stopping, as later
+iterations can over-expand entity descriptions and
+partially offset the intended difficulty increase. The
+detailed procedure, an example, and performance
+analysis are in Appendices B.5 and F.1. Refine-
+ment touches a minority of items, since 317 of
+478 EpiQAL-B instances keep their original stem
+(Appendix B.6). We therefore treat it as one quality-
+control step for reducing lexical shortcuts on the
+easiest items, not as a central mechanism of the
+benchmark.
+4
+Experiment
+4.1
+Generation Settings
+Generation and verification. We use Qwen3-30B-
+A3B-Instruct-2507 as the generation model. For
+EpiQAL-B, disease entities are linked to biomed-
+ical knowledge graphs (Appendix B.3) to op-
+tionally supplement generation; post-hoc analy-
+sis found this knowledge contributed minimally
+(Appendix F.5). Generated options are verified
+by three models from different families (GPT-
+5-mini, DeepSeek-V3.2-Thinking, GLM-4.5-Air)
+with vote-ratio aggregation. Difficulty control uses
+a four-model pool (GPT-5-mini, DeepSeek-V3.2-
+Thinking, Qwen3-32B, Phi-4-mini-instruct) with
+α = 0.3 and threshold θd = 0.2. Implementa-
+tion details, DiffScore distribution, and threshold
+selection rationale are in Appendices C and B.6.
+Corpus.
+We build a corpus of approximately
+10,600 research articles from the Journal Archive
+of PLOS Neglected Tropical Diseases (Public Li-
+brary of Science, 2007–), which covers over 20
+diseases across viral, parasitic, bacterial, and fun-
+gal pathogens with consistent section formatting
+under a CC BY 4.0 license. We use a randomly
+sampled subset of 500 articles for the main experi-
+ments.
+Table 2 summarizes dataset statistics.
+After
+multi-model verification and human review of am-
+
+biguous options, instances where all correct options
+were rejected are discarded, yielding 475, 478, and
+479 instances for EpiQAL-A, B, and C respectively.
+The verification process is detailed in §4.2.
+4.2
+Benchmark Quality Evaluation
+We evaluate benchmark quality through automated
+verification statistics and human evaluation of the
+finalized dataset, with a concrete verification exam-
+ple in Appendix D.2.
+4.2.1
+Verification Pipeline Statistics
+Each checker runs 3 times with temperature 1.0,
+yielding 9 total votes per option. For flagged op-
+tions, a human reviewer inspects the evidence and
+votes to approve or discard; all decisions are made
+by human judgment. Table 2 reports verification
+outcomes across the three subsets.
+Table 2: Dataset statistics and verification outcomes.
+EpiQAL
+A
+B
+C
+Samples
+475
+478
+479
+Avg. #Options
+3.21
+4.90
+4.73
+Avg. #Correct
+1.19
+1.00
+1.00
+Option-Level
+Accept
+86.3%
+94.1%
+89.7%
+Reject
+9.8%
+4.4%
+7.5%
+Human Review
+3.9%
+1.5%
+2.8%
+Instance-Level
+All Accepted
+65.0%
+78.0%
+67.6%
+Partial Reject
+20.4%
+13.4%
+18.6%
+Needs Review
+11.0%
+6.2%
+11.6%
+Discarded
+3.6%
+2.4%
+2.2%
+The pipeline automatically resolves over 96% of
+options without human intervention, with only 2.2–
+3.6% of instances fully discarded. Appendix D.2
+illustrates the checker detecting semantic equiva-
+lence between superficially distinct options.
+4.2.2
+Human Evaluation
+Three computer science PhD students with biomed-
+ical training independently score a stratified sam-
+ple of 120 questions (40 per subset) after bench-
+mark construction is complete. Annotators may
+use LLMs to aid comprehension but all scoring is
+performed by human judgment. For EpiQAL-B
+and EpiQAL-C, we stratify by difficulty: 12 Easy
+(DiffScore = 0), 14 Medium (0 < DiffScore ≤0.4),
+and 14 Hard (DiffScore > 0.4). For EpiQAL-A, we
+use random sampling since difficulty screening is
+not applied.
+Annotators rate each question on subset-specific
+dimensions using a 1–3 scale (1 = poor, 2 = ac-
+ceptable, 3 = good). As shown in Table 3, all
+dimensions score above 2.0 across subsets, with
+Answer Correctness (≥2.81) and Evidence Suffi-
+ciency (≥2.75) scoring highest. Exact Agreement
+on the 3-point scale ranges from 47.5% to 68.8%;
+however, Binary Agreement (acceptable vs. poor)
+exceeds 91% on all subsets and Severe Disagree-
+ment (items where both 1 and 3 appear) stays be-
+low 8%, indicating that most variation reflects fine-
+grained distinctions between acceptable and good
+rather than genuine quality disputes.
+A faculty member in biostatistics and epidemiol-
+ogy scored 30 questions (10 per subset) using the
+same dimensions and scale, blind to the annotators’
+scores. Binary Agreement against annotator major-
+ity votes reaches 97.5% (A), 96.0% (B), and 98.3%
+(C), with Severe Disagreement at 2.5%, 2.0%, and
+0.0%, indicating that annotator judgments track
+the expert on whether an item is acceptable. This
+sample is small and does not establish that every au-
+tomatically verified label has been expert-validated.
+Detailed protocol and per-dimension analysis are
+in Appendix E.
+Table 3: Human evaluation scores (mean across annota-
+tors, 1–3 scale) and inter-annotator agreement.
+Dimension
+A
+B
+C
+Answer Correctness
+2.86
+2.81
+2.92
+Distractor Quality
+2.52
+2.53
+2.56
+Question Clarity
+2.77
+2.65
+2.51
+Evidence Sufficiency
+2.93
+2.75
+2.77
+Reasoning Depth
+–
+2.45
+2.45
+Answerability
+–
+–
+2.78
+Exact Agreement (%)
+68.8
+47.5
+55.4
+Binary Agreement (%)
+95.0
+91.5
+91.7
+Severe Disagreement (%)
+3.1
+7.5
+5.0
+4.3
+Model Evaluation
+4.3.1
+Setup
+We evaluate 15 models from seven families: Ope-
+nAI (Singh et al., 2025; OpenAI et al., 2024),
+DeepSeek (DeepSeek-AI et al., 2025; DeepSeek-
+AI, 2026), Zhipu AI (Team et al., 2025), Microsoft
+(Microsoft et al., 2025), Meta (Grattafiori et al.,
+2024), Mistral AI (Jiang et al., 2023), and Alibaba-
+Qwen (Yang et al., 2025), ranging from 3B to over
+100B parameters (full list in Table 4). After our
+initial experiments, the DeepSeek-V3.2-Thinking
+API was discontinued and replaced by V4-Flash-
+Thinking; we include both in the main evaluation,
+and appendix experiments use whichever version
+was available at the time. All models receive ˜D, Q,
+
+and O in a single prompt. Models output a JSON
+object with selected option indices; we use vLLM
+structured output for local models and regex post-
+processing for API models. Temperature is 0.3 ex-
+cept for reasoning models (1.0). We choose 0.3 to
+balance reproducibility with output diversity, avoid-
+ing degenerate repetitions sometimes observed at
+T=0. An ablation across 12 models confirms that
+switching to T=0 changes mean per-model EM
+by less than 1%, with Spearman rank correlation
+exceeding 0.99 on all subsets (Appendix F.8). A
+multi-run analysis further confirms that results are
+stable across three runs, with mean standard devia-
+tion under 1% (Appendix F.9). We report set-based
+F1 and Exact Match under zero-shot no-CoT, zero-
+shot CoT, and one-shot settings (Appendix G).
+4.3.2
+Results
+Table 4 reports Exact Match and F1 on all three sub-
+sets under zero-shot no-CoT and CoT settings. Ex-
+act Match is a pass rate over roughly 478 items per
+subset, so 95% Wilson intervals have a half-width
+of at most about 0.045. For instance, DeepSeek-
+V4-Flash-Thinking on EpiQAL-B is 0.703 with an
+interval of 0.661 to 0.742.
+4.4
+Distractor Error Analysis
+We classify each distractor by its deception mech-
+anism using GPT-5-mini and cross-reference with
+model misselections under zero-shot no-CoT. Man-
+ual verification of a random sample of 15 ques-
+tions per subset confirmed that the automatically
+assigned distractor categories were consistent with
+human judgment in inspected cases. Each sub-
+set uses four categories reflecting its distractor de-
+sign: EpiQAL-A distinguishes wrong entity/role,
+wrong context, wrong metric, and semantic near-
+miss; EpiQAL-B distinguishes methodological mis-
+match, causal/logical error, variable confusion, and
+assumption violation; EpiQAL-C distinguishes ex-
+ternal dependency, speculation/limitation, back-
+ground only, and causal reversal. Full categories
+and distractor distributions are provided in Ap-
+pendix F.2.
+We define the deception rate of a distractor cate-
+gory as the fraction of times it is misselected, com-
+puted over the 14 models available at the time of
+this analysis (Appendix F.2). Table 5 reports decep-
+tion rates across all three subsets. On EpiQAL-A,
+Semantic near-miss distractors are roughly twice as
+deceptive as other categories. On EpiQAL-B, rates
+are uniformly high (15.9–19.2%), and on EpiQAL-
+C, Speculation/limitation leads at 21.0%. Back-
+ground only is higher at 39.3% but is based on only
+8 distractors and is therefore excluded from this
+comparison. Per-model rates are in Appendix F.3.
+4.5
+Discussion
+Epidemiological reasoning remains challeng-
+ing. DeepSeek-V3.2-Thinking, the strongest model
+overall, achieves 0.928 EM on EpiQAL-A with
+CoT, essentially tied with DeepSeek-V4-Flash-
+Thinking at 0.935, and leads EpiQAL-B at 0.868,
+while Mistral-7B leads EpiQAL-C at 0.812, in-
+dicating that epidemiological reasoning over full
+research articles poses a distinct challenge.
+Document evidence matters, though grounding
+is weaker on EpiQAL-B. Input ablations (Ap-
+pendix F.7) feed models progressively less con-
+text. On EpiQAL-A and EpiQAL-C, replacing the
+correct article with a random one from the same
+subset drops Exact Match to near zero, below the
+question-only baseline, indicating that models con-
+dition on the article rather than on the options alone.
+Option-only accuracy does not exceed the empir-
+ical single-pick reference on any subset (0.31 on
+A, 0.21 on B, 0.22 on C), so the options are not
+self-revealing in isolation, though this does not
+rule out a shortcut that uses the question and op-
+tions together. EpiQAL-B is mixed: DeepSeek-V4-
+Flash-Thinking and GPT-4.1-nano gain 0.196 and
+0.240 EM from the correct passage over question-
+only, while GPT-5-mini and GPT-4o-mini show
+little measurable benefit. Residual question-only
+performance on B and C is comparable before and
+after stem refinement (B: 0.353 vs. 0.356; C: 0.253
+vs. 0.246), so it is not a refinement artifact, but the
+present controls cannot separate question-option
+informativeness from parametric knowledge. We
+therefore treat evidence grounding on EpiQAL-B
+as partial and revisit it in the Limitations. An OOD
+test set from 96 post-release articles yields Spear-
+man rank correlation at least 0.94 on all subsets
+(Appendix F.12), indicating that rankings are not
+driven by memorization of training-set passages. A
+cross-source evaluation on 82 articles from the In-
+ternational Journal of Epidemiology, which covers
+broader epidemiological topics including chronic
+and environmental epidemiology, reproduces the
+main qualitative patterns.
+Mistral-7B leads on
+EpiQAL-C, Llama-3.2-3B collapses on the reason-
+ing subsets, and scale does not predict success (Ap-
+pendix F.13). Because this uses the same generator
+
+Table 4: Exact Match|F1 Score for each model across subsets, with and without Chain-of-Thought prompting. Bold
+= best, underline = second best per column. Ties share the same mark.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Model
+w/o CoT
+CoT
+w/o CoT
+CoT
+w/o CoT
+CoT
+OpenAI
+GPT-5-mini
+0.905|0.966
+0.924|0.966
+0.533|0.788
+0.634|0.827
+0.599|0.789
+0.555|0.762
+GPT-4o-mini
+0.766|0.904
+0.796|0.913
+0.222|0.650
+0.531|0.760
+0.213|0.655
+0.236|0.661
+GPT-4.1-nano
+0.768|0.855
+0.792|0.868
+0.678|0.809
+0.642|0.789
+0.559|0.791
+0.553|0.780
+DeepSeek
+DeepSeek-V3.2-Thinking
+0.928|0.970
+0.928|0.969
+0.818|0.896
+0.868|0.909
+0.720|0.804
+0.716|0.822
+DeepSeek-V4-Flash-Thinking
+0.926|0.971
+0.935|0.970
+0.703|0.841
+0.795|0.862
+0.666|0.785
+0.697|0.794
+Microsoft
+Phi-4-mini-instruct
+0.583|0.811
+0.657|0.819
+0.249|0.678
+0.406|0.736
+0.426|0.755
+0.388|0.744
+Meta-Llama
+Llama-3.2-3B-Instruct
+0.366|0.553
+0.339|0.473
+0.157|0.511
+0.100|0.259
+0.088|0.375
+0.113|0.366
+Llama-3.1-8B-Instruct
+0.798|0.911
+0.834|0.920
+0.318|0.670
+0.665|0.799
+0.190|0.592
+0.384|0.708
+Llama-3.3-70B-Instruct
+0.779|0.884
+0.789|0.890
+0.651|0.825
+0.732|0.855
+0.580|0.805
+0.626|0.827
+Mistral AI
+Mistral-7B-Instruct-v0.3
+0.722|0.809
+0.709|0.799
+0.789|0.808
+0.812|0.814
+0.808|0.822
+0.812|0.816
+Mistral-Large-Instruct-2411
+0.901|0.956
+0.916|0.960
+0.644|0.844
+0.688|0.853
+0.685|0.856
+0.699|0.856
+Qwen
+Qwen3-8B
+0.811|0.921
+0.840|0.929
+0.508|0.763
+0.619|0.816
+0.484|0.752
+0.514|0.768
+Qwen3-30B-A3B-Instruct-2507
+0.882|0.956
+0.899|0.964
+0.573|0.807
+0.747|0.873
+0.585|0.807
+0.622|0.826
+Qwen3-32B
+0.872|0.949
+0.857|0.943
+0.743|0.864
+0.736|0.853
+0.547|0.783
+0.557|0.779
+Zhipu AI
+GLM-4.5-Air
+0.874|0.947
+0.884|0.953
+0.657|0.836
+0.655|0.835
+0.580|0.782
+0.572|0.733
+Table 5: Distractor deception rate by category.
+EpiQAL
+Category
+Rate
+A
+Semantic near-miss
+16.8%
+Wrong metric
+9.4%
+Wrong context
+8.1%
+Wrong entity/role
+8.0%
+B
+Variable confusion
+19.2%
+Causal/logical error
+17.7%
+Methodological mismatch
+17.0%
+Assumption violation
+15.9%
+C
+Speculation/limitation
+21.0%
+External dependency
+13.8%
+Causal reversal
+12.6%
+Background only
+39.3%†
+†Based on only 8 distractors; rate is unreliable.
+and checkers with no separate expert pass, we read
+it as evidence that the construction pipeline ports
+beyond neglected tropical diseases rather than as
+coverage of epidemiology as a whole.
+EpiQAL-B is empirically the most challenging
+subset under our evaluation setup, and model
+rankings suggest partially distinct behaviors
+across subsets. Without CoT, only four of fifteen
+models exceed 0.70 EM on EpiQAL-B, and decep-
+tion rates are uniformly high across all distractor
+categories (15.9–19.2%). By comparison, twelve
+exceed 0.76 on EpiQAL-A and ten exceed 0.50 on
+EpiQAL-C. Spearman correlation across the fifteen
+models (zero-shot no-CoT) yields ρ = 0.482 for
+A vs. B and ρ = 0.615 for A vs. C, while B vs.
+C reaches ρ = 0.760, suggesting that the subsets
+capture partially distinct model behaviors.
+Model rankings are subset-dependent, and scale
+alone does not predict success. DeepSeek-V3.2-
+Thinking ranks first on A and B but falls to second
+on C (0.720), behind Mistral-7B (0.808). Mistral-
+7B also outperforms Mistral-Large on both B
+(0.789 vs. 0.644) and C (0.808 vs. 0.685) despite
+having a fraction of the parameters. Llama-3.2-3B
+collapses on reasoning-intensive subsets (0.157 on
+B, 0.088 on C), suggesting that a capability thresh-
+old exists below which models cannot perform
+epidemiological reasoning; above it, instruction
+tuning quality and architecture may matter more
+than raw scale. Two models (Llama-3.3-70B and
+GLM-4.5-Air) use four-bit inference for memory
+reasons (Appendix C), so their absolute scores may
+be slightly depressed relative to full precision. The
+scale claim does not rest on them: Mistral-Large
+and Mistral-7B are both run at default precision and
+differ by more than an order of magnitude in param-
+eters. The two DeepSeek versions further illustrate
+this distinction: V4-Flash-Thinking nearly matches
+
+V3.2-Thinking on EpiQAL-A (0.926 vs. 0.928) but
+drops substantially on B (0.703 vs. 0.818) and C
+(0.666 vs. 0.720), consistent with the finding that a
+lighter model variant retains retrieval performance
+while disproportionately losing reasoning capabil-
+ity (Appendix F.16). The generation model Qwen3-
+30B-A3B ranks ninth on B (0.573), indicating it
+does not systematically outperform others on the
+benchmark it produced.
+Distractor analysis reveals fine-grained failure
+modes. The F1–EM gap exposes systematic over-
+selection: on EpiQAL-B without CoT, Phi-4-mini
+(∆= 0.429) and GPT-4o-mini (∆= 0.428)
+frequently select distractors alongside correct op-
+tions, whereas Mistral-7B shows near-zero gaps
+(∆= 0.019 on B, 0.014 on C), achieving strong
+EM through answer precision rather than broad
+coverage. In epidemiological applications where
+false positives carry costs such as unnecessary in-
+terventions, selective models may outperform those
+that maximize coverage. Per-model deception rates
+confirm that over-selection is driven by vulnera-
+bility to specific distractor categories rather than
+random guessing (Appendix F.3).
+Prompting strategies. CoT yields the largest gains
+on EpiQAL-B, with Llama-3.1-8B improving from
+0.318 to 0.665 EM (+0.347) and GPT-4o-mini
+from 0.222 to 0.531 (+0.309). On EpiQAL-A,
+gains are marginal. On EpiQAL-C, CoT is mixed:
+Llama-3.1-8B benefits (0.190 →0.384) but GPT-
+5-mini degrades (0.599 →0.555), suggesting that
+explicit reasoning chains can amplify errors un-
+der incomplete evidence. One-shot prompting uni-
+formly improves EpiQAL-B, with the largest gains
+exceeding +0.3 (Appendix F.4).
+5
+Conclusion
+We introduced EpiQAL, a benchmark that opera-
+tionalizes evidence-grounded epidemiological rea-
+soning over research articles. Our construction
+framework combines an expert-curated taxonomy,
+subset-specific constraints for evidence grounding,
+multi-model verification, and difficulty screening.
+This yields three complementary subsets targeting
+text-grounded recall, multi-step inference, and con-
+clusion reconstruction. Experiments across fifteen
+models spanning open-source and proprietary sys-
+tems reveal that current LLMs struggle with epi-
+demiological reasoning, with multi-step inference
+posing the greatest challenge. Model rankings shift
+across subsets, and scale alone does not predict suc-
+cess. Chain-of-Thought prompting benefits multi-
+step inference but yields mixed results elsewhere.
+Distractor error analysis identifies fine-grained fail-
+ure modes, with reasoning-level distractors chal-
+lenging models uniformly on multi-step inference
+while semantic near-misses dominate retrieval er-
+rors. A cross-source evaluation on the International
+Journal of Epidemiology indicates the pipeline gen-
+eralizes beyond neglected tropical diseases, and
+we release EpiQAL to facilitate future work on
+evidence-grounded public health reasoning.
+Limitations
+This work has several limitations. First, our con-
+trols do not separate epidemiological reasoning
+from general scientific reading. The input ablations
+(Appendix F.7) show that the specific article mat-
+ters and that options alone are not self-revealing,
+which is weaker than showing that success re-
+quires epidemiology-specific knowledge. Estab-
+lishing that target would require controls we did
+not run: a matched non-epidemiology benchmark
+built by the same pipeline, a comparison between
+epidemiologist and generalist human performance,
+and per-item annotation of which epidemiologi-
+cal principle each question depends on. Relatedly,
+two of the four API models gain little measurable
+accuracy from the correct passage on EpiQAL-
+B, so our evidence-grounding claims hold most
+clearly for EpiQAL-A and EpiQAL-C and only par-
+tially for EpiQAL-B. Cross-subset comparisons are
+also confounded by format. EpiQAL-A averages
+3.21 options and admits multiple correct answers,
+while EpiQAL-B and EpiQAL-C average 4.90 and
+4.73 options and are single-answer, so lower Exact
+Match on B and C may partly reflect option count
+and answer cardinality rather than reasoning diffi-
+culty alone. Second, our source corpus is drawn
+solely from PLOS Neglected Tropical Diseases and
+all content is in English, which may underrepresent
+other epidemiological domains and multilingual
+settings. The cross-source check on the Interna-
+tional Journal of Epidemiology uses the same gen-
+erator and checkers, so it tests pipeline portability
+rather than coverage of epidemiology as a whole.
+Third, we generate approximately 500 instances
+per subset using a single 30B-parameter model.
+A preliminary check with a stronger cross-family
+generator on a 50-article sample per subset largely
+preserves the per-model rankings (Appendix F.14),
+but it uses one alternative generator on a small sam-
+
+ple and does not include a matched comparison of
+distractor deception rates, so a controlled generator
+ablation at full scale remains future work. Fourth,
+despite multi-model verification and targeted hu-
+man review, residual errors may remain. Addition-
+ally, stem refinement can over-expand at later iter-
+ations, partially offsetting the intended difficulty
+increase (Appendix F.1). Our human annotators
+are computer science PhD students with biomedi-
+cal training rather than practicing epidemiologists,
+and our human evaluation covers 120 questions
+(8.4% of the benchmark) scored by three annota-
+tors, with 30 questions scored by a faculty member
+in biostatistics and epidemiology. The rest of the
+benchmark rests on automated verification. Some
+evaluated models also participate in construction
+as checkers or difficulty judges. This overlap is un-
+likely to introduce answer leakage, since checkers
+only perform option-level validity filtering, while
+difficulty judges only identify overly easy items be-
+fore a separate stem-refinement step. More broadly,
+generation, verification, difficulty judging, and the
+post-hoc distractor classification are all performed
+by LLMs. We use models from different fami-
+lies, but these systems can share instruction-tuning
+preferences and blind spots, so item style and dif-
+ficulty remain model-relative to some degree (Ap-
+pendix F.15). Fifth, because all source articles are
+publicly available, models trained after our corpus
+collection date may have encountered these pas-
+sages during pre-training. We mitigate this concern
+through an out-of-distribution evaluation on post-
+release articles (Appendix F.12), which preserves
+model rankings and argues against ranking effects
+driven by memorization. However, we cannot fully
+rule out indirect contamination through derivative
+training data. Finally, EpiQAL remains a proxy
+for real-world public health analysis, which often
+requires integrating multiple documents and incor-
+porating temporal and geographic context beyond
+single-article reasoning.
+Ethical Considerations
+The main benchmark is built from PLOS Neglected
+Tropical Diseases, which is open access under CC
+BY 4.0, and we release EpiQAL under terms con-
+sistent with that license. The cross-source analysis
+in Appendix F.13 uses articles from the Interna-
+tional Journal of Epidemiology, a hybrid journal.
+These instances are not part of the released bench-
+mark and are reported only as an experimental
+check. The benchmark contains no personally iden-
+tifying information, since it is built from published
+research articles rather than clinical records.
+Human annotation was performed by researchers
+involved in this project and by a faculty collabora-
+tor, all of whom participated with full knowledge
+of how their judgments would be used. No crowd-
+workers were recruited and no compensation issues
+arise.
+EpiQAL is intended for evaluating language
+models on epidemiological reasoning over research
+literature.
+It is not a clinical or public health
+decision-making tool, and performance on this
+benchmark should not be read as evidence that a
+model is suitable for guiding real epidemiological
+practice. We note this because strong benchmark
+scores can be misread as domain competence, par-
+ticularly in a health-adjacent setting.
+Acknowledgments
+This research is partially supported by the U.S. Na-
+tional Science Foundation under Award Number
+2504088, and the National Institute of Allergy and
+Infectious Diseases of the NIH under Award Num-
+bers R01AI189829 and R01AI197111. The content
+is the sole responsibility of the authors and does not
+necessarily represent the views of the NIH. This
+project is also partially supported by the NAIRR
+Pilot Program.
+We are grateful for the computing resources pro-
+vided by the iTiger GPU cluster (Sharif et al., 2026),
+supported by the NSF MRI program.
+We thank the anonymous reviewers and the ARR
+action editors and chairs for their thoughtful feed-
+back, which substantially improved this work.
+References
+Yushi Bai, Shangqing Tu, Jiajie Zhang, Hao Peng, Xi-
+aozhi Wang, Xin Lv, Shulin Cao, Jiazheng Xu, Lei
+Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. 2024.
+Longbench v2: Towards deeper understanding and
+reasoning on realistic long-context multitasks. arXiv
+preprint arXiv:2412.15204.
+Max Bartolo, Alastair Roberts, Johannes Welbl, Sebas-
+tian Riedel, and Pontus Stenetorp. 2020. Beat the ai:
+Investigating adversarial human annotation for read-
+ing comprehension. Transactions of the Association
+for Computational Linguistics, 8:662–678.
+Michael Bauer and Daniel Berleant. 2012. Usability
+survey of biomedical question answering systems.
+Human genomics, 6:17.
+
+Asma Ben Abacha and Dina Demner-Fushman. 2019. A
+question-entailment approach to question answering.
+BMC Bioinform., 20(1):511:1–511:23.
+Balu Bhasuran, Qiao Jin, Yuzhang Xie, Carl Yang,
+Karim Hanna, Jennifer Costa, Cindy Shavor, Wen-
+shan Han, Zhiyong Lu, and Zhe He. 2025. Prelim-
+inary analysis of the impact of lab results on large
+language model generated differential diagnoses. npj
+Digital Medicine, 8(1):166.
+Ronan Le Bras, Swabha Swayamdipta, Chandra Bha-
+gavatula, Rowan Zellers, Matthew E. Peters, Ashish
+Sabharwal, and Yejin Choi. 2020. Adversarial filters
+of dataset biases. Preprint, arXiv:2002.04108.
+Ross Brownson, Jonathan Fielding, and Christopher
+Maylahn. 2009. Evidence-based public health: A
+fundamental concept for public health practice. An-
+nual review of public health, 30:175–201.
+DeepSeek-AI. 2026. Deepseek-v4: Towards highly
+efficient million-token context intelligence.
+DeepSeek-AI, Aixin Liu, Aoxue Mei, Bangcai Lin,
+Bing Xue, Bingxuan Wang, Bingzheng Xu, Bochao
+Wu, Bowei Zhang, Chaofan Lin, Chen Dong,
+Chengda Lu, Chenggang Zhao, Chengqi Deng, Chen-
+hao Xu, Chong Ruan, Damai Dai, Daya Guo, Dejian
+Yang, and 245 others. 2025. Deepseek-v3.2: Pushing
+the frontier of open large language models. Preprint,
+arXiv:2512.02556.
+Carlos Diéguez-Campa, Iván Pérez-Neri, Gustavo
+Reyes-Terán, Iliana Flores-Apodaca, Jorge Castillo
+Ledon Pretelini, Omar Mercado-Bautista, Ricardo
+Alvarez Santana, Marco Zenteno, Brigham Bowles,
+and Angel Lee. 2020. The 2020 research pandemic:
+A bibliometric analysis of publications on covid-19
+and their scientific impact during the first months
+la pandemia de investigación del 2020: Un análisis
+bibliométrico de las publicaciones sobre covid-19
+y su impacto científico durante los primeros meses.
+Archivos de cardiología de México, 1.
+Xinya Du, Junru Shao, and Claire Cardie. 2017. Learn-
+ing to ask: Neural question generation for reading
+comprehension. In Proceedings of the 55th Annual
+Meeting of the Association for Computational Lin-
+guistics (Volume 1: Long Papers), pages 1342–1352,
+Vancouver, Canada. Association for Computational
+Linguistics.
+Shicheng Fan, Haochang Hao, Dehai Min, Weihao Liu,
+Philip S. Yu, and Lu Cheng. 2026. Verifiable re-
+wards beyond math and code: Lightweight corpus-
+grounded process supervision for factual question
+answering. Preprint, arXiv:2605.29648.
+Thomas Glass, Steven Goodman, Miguel Hernán, and
+Jonathan Samet. 2013. Causal inference in public
+health. Annual review of public health, 34.
+Travis Goodwin, Dina Demner-Fushman, Kyle Lo, Lucy
+Wang, Hoa Dang, and Ian Soboroff. 2022. Automatic
+question answering for multiple stakeholders, the
+epidemic question answering dataset. Scientific Data,
+9.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri,
+Abhinav Pandey, Abhishek Kadian, Ahmad Al-
+Dahle, Aiesha Letman, Akhil Mathur, Alan Schel-
+ten, Alex Vaughan, Amy Yang, Angela Fan, Anirudh
+Goyal, Anthony Hartshorn, Aobo Yang, Archi Mi-
+tra, Archie Sravankumar, Artem Korenev, Arthur
+Hinsvark, and 542 others. 2024. The llama 3 herd of
+models. Preprint, arXiv:2407.21783.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+2021. Measuring massive multitask language under-
+standing. Preprint, arXiv:2009.03300.
+Daniel Scott Himmelstein, Antoine Lizee, Christine
+Hessler, Leo Brueggeman, Sabrina L Chen, Dexter
+Hadley, Ari Green, Pouya Khankhanian, and Ser-
+gio E Baranzini. 2017. Systematic integration of
+biomedical knowledge prioritizes drugs for repurpos-
+ing. eLife, 6:e26726.
+Gautier Izacard and Edouard Grave. 2021. Leveraging
+passage retrieval with generative models for open do-
+main question answering. In Proceedings of the 16th
+Conference of the European Chapter of the Associ-
+ation for Computational Linguistics: Main Volume,
+pages 874–880, Online. Association for Computa-
+tional Linguistics.
+Albert Q. Jiang, Alexandre Sablayrolles, Arthur Men-
+sch, Chris Bamford, Devendra Singh Chaplot, Diego
+de las Casas, Florian Bressand, Gianna Lengyel, Guil-
+laume Lample, Lucile Saulnier, Lélio Renard Lavaud,
+Marie-Anne Lachaux, Pierre Stock, Teven Le Scao,
+Thibaut Lavril, Thomas Wang, Timothée Lacroix,
+and William El Sayed. 2023. Mistral 7b. Preprint,
+arXiv:2310.06825.
+Di Jin, Eileen Pan, Nassim Oufattole, Wei-Hung Weng,
+Hanyi Fang, and Peter Szolovits. 2021. What disease
+does this patient have? a large-scale open domain
+question answering dataset from medical exams. Ap-
+plied Sciences, 11(14):6421.
+Qiao Jin, Bhuwan Dhingra, Zhengping Liu, William
+Cohen, and Xinghua Lu. 2019.
+PubMedQA: A
+dataset for biomedical research question answering.
+In Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the
+9th International Joint Conference on Natural Lan-
+guage Processing (EMNLP-IJCNLP), pages 2567–
+2577, Hong Kong, China. Association for Computa-
+tional Linguistics.
+Mandar Joshi, Eunsol Choi, Daniel Weld, and Luke
+Zettlemoyer. 2017. TriviaQA: A large scale distantly
+supervised challenge dataset for reading comprehen-
+sion. In Proceedings of the 55th Annual Meeting of
+the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), pages 1601–1611, Vancouver,
+Canada. Association for Computational Linguistics.
+
+Douwe Kiela, Max Bartolo, Yixin Nie, Divyansh
+Kaushik, Atticus Geiger, Zhengxuan Wu, Bertie Vid-
+gen, Grusha Prasad, Amanpreet Singh, Pratik Ring-
+shia, Zhiyi Ma, Tristan Thrush, Sebastian Riedel,
+Zeerak Waseem, Pontus Stenetorp, Robin Jia, Mo-
+hit Bansal, Christopher Potts, and Adina Williams.
+2021. Dynabench: Rethinking benchmarking in nlp.
+Preprint, arXiv:2104.14337.
+Anastasia Krithara, Anastasios Nentidis, Konstantinos
+Bougiatiotis, and Georgios Paliouras. 2023. Bioasq-
+qa: A manually curated corpus for biomedical ques-
+tion answering. Scientific Data, 10.
+Seongyun Lee, Hyunjae Kim, and Jaewoo Kang. 2023.
+Liquid: a framework for list question answering
+dataset generation.
+In Proceedings of the Thirty-
+Seventh AAAI Conference on Artificial Intelligence
+and Thirty-Fifth Conference on Innovative Applica-
+tions of Artificial Intelligence and Thirteenth Sympo-
+sium on Educational Advances in Artificial Intelli-
+gence, AAAI’23/IAAI’23/EAAI’23. AAAI Press.
+Yooseop Lee, Suin Kim, and Yohan Jo. 2025. Gen-
+erating plausible distractors for multiple-choice
+questions via student choice prediction. Preprint,
+arXiv:2501.13125.
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio
+Petroni, Vladimir Karpukhin, Naman Goyal, Hein-
+rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-
+täschel, Sebastian Riedel, and Douwe Kiela. 2020.
+Retrieval-augmented generation for knowledge-
+intensive nlp tasks. In Proceedings of the 34th Inter-
+national Conference on Neural Information Process-
+ing Systems, NIPS ’20, Red Hook, NY, USA. Curran
+Associates Inc.
+Fangyu Liu, Ehsan Shareghi, Zaiqiao Meng, Marco
+Basaldella, and Nigel Collier. 2021. Self-alignment
+pretraining for biomedical entity representations. In
+Proceedings of the 2021 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+pages 4228–4238.
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang,
+Ruochen Xu, and Chenguang Zhu. 2023. G-eval:
+NLG evaluation using gpt-4 with better human align-
+ment. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing,
+pages 2511–2522, Singapore. Association for Com-
+putational Linguistics.
+Chiyu Ma, Enpei Zhang, Yilun Zhao, Wenjun Liu,
+Yaning Jia, Peijun Qing, Lin Shi, Arman Cohan,
+Yujun Yan, and Soroush Vosoughi. 2025.
+Judg-
+ing with many minds: Do more perspectives mean
+less prejudice?
+on bias amplifications and resis-
+tance in multi-agent based llm-as-judge. Preprint,
+arXiv:2505.19477.
+Microsoft, :, Abdelrahman Abouelenin, Atabak Ash-
+faq, Adam Atkinson, Hany Awadalla, Nguyen Bach,
+Jianmin Bao, Alon Benhaim, Martin Cai, Vishrav
+Chaudhary, Congcong Chen, Dong Chen, Dong-
+dong Chen, Junkun Chen, Weizhu Chen, Yen-Chun
+Chen, Yi ling Chen, Qi Dai, and 57 others. 2025.
+Phi-4-mini technical report: Compact yet powerful
+multimodal language models via mixture-of-loras.
+Preprint, arXiv:2503.01743.
+Dehai Min, Zhiyang Xu, Guilin Qi, Lifu Huang, and
+Chenyu You. 2025. UniHGKR: Unified instruction-
+aware heterogeneous knowledge retrievers. In Pro-
+ceedings of the 2025 Conference of the Nations of
+the Americas Chapter of the Association for Com-
+putational Linguistics: Human Language Technolo-
+gies (Volume 1: Long Papers), pages 4577–4594,
+Albuquerque, New Mexico. Association for Compu-
+tational Linguistics.
+Timo Möller, Anthony Reina, Raghavan Jayakumar,
+and Malte Pietsch. 2020. COVID-QA: A question
+answering dataset for COVID-19. In Proceedings of
+the 1st Workshop on NLP for COVID-19 at ACL 2020,
+Online. Association for Computational Linguistics.
+Yixin Nie, Adina Williams, Emily Dinan, Mohit Bansal,
+Jason Weston, and Douwe Kiela. 2020. Adversarial
+NLI: A new benchmark for natural language under-
+standing. In Proceedings of the 58th Annual Meet-
+ing of the Association for Computational Linguistics,
+pages 4885–4901, Online. Association for Computa-
+tional Linguistics.
+OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal,
+Lama Ahmad, Ilge Akkaya, Florencia Leoni Ale-
+man, Diogo Almeida, Janko Altenschmidt, Sam Alt-
+man, Shyamal Anadkat, Red Avila, Igor Babuschkin,
+Suchir Balaji, Valerie Balcom, Paul Baltescu, Haim-
+ing Bao, Mohammad Bavarian, Jeff Belgum, and
+262 others. 2024. Gpt-4 technical report. Preprint,
+arXiv:2303.08774.
+Lois Orton, Ffion Lloyd-Williams, David Taylor-
+Robinson, Martin O’Flaherty, and Simon Capewell.
+2011.
+The use of research evidence in public
+health decision making processes: Systematic review.
+PLOS ONE, 6(7):e21704.
+Ankit Pal, Logesh Kumar Umapathi, and Malaikannan
+Sankarasubbu. 2022. Medmcqa: A large-scale multi-
+subject multi-choice dataset for medical domain ques-
+tion answering. In Proceedings of the Conference
+on Health, Inference, and Learning, volume 174 of
+Proceedings of Machine Learning Research, pages
+248–260. PMLR.
+Anusri Pampari, Preethi Raghavan, Jennifer Liang, and
+Jian Peng. 2018. emrqa: A large corpus for question
+answering on electronic medical records. Preprint,
+arXiv:1809.00732.
+Neil Pearce. 2012. Classification of epidemiological
+study designs. International Journal of Epidemiol-
+ogy, 41(2):393–397.
+Public Library of Science. 2007–. PLOS Neglected
+Tropical Diseases.
+Open-access journal archive,
+https://journals.plos.org/plosntds/.
+ISSN
+1935-2735 (online).
+
+Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and
+Percy Liang. 2016. SQuAD: 100,000+ questions for
+machine comprehension of text. In Proceedings of
+the 2016 Conference on Empirical Methods in Natu-
+ral Language Processing, pages 2383–2392, Austin,
+Texas. Association for Computational Linguistics.
+Shaina Raza, Brian Schwartz, and Laura Rosella. 2022.
+Coquad: a covid-19 question answering dataset sys-
+tem, facilitating research, benchmarking, and prac-
+tice. BMC Bioinformatics, 23.
+Consoli S, Coletti P, Markov P, Orfei L, Biazzo I,
+Schuh L, Stefanovitch N, Bertolini L, Ceresa M,
+and Stilianakis N. 2025. An epidemiological knowl-
+edge graph extracted from the world health organi-
+zation’s disease outbreak news. SCIENTIFIC DATA,
+12(1):970.
+Mayira Sharif, Guangzeng Han, Weisi Liu, and Xiaolei
+Huang. 2026. Cultivating multidisciplinary ai work-
+force development on itiger gpu cluster: Practices
+and challenges. Preprint, arXiv:2504.14786.
+Kazutoshi Shinoda, Saku Sugawara, and Akiko Aizawa.
+2021. Can question generation debias question an-
+swering models? a case study on question–context
+lexical overlap. In Proceedings of the 3rd Workshop
+on Machine Reading for Question Answering, pages
+63–72, Punta Cana, Dominican Republic. Associa-
+tion for Computational Linguistics.
+Aaditya Singh, Adam Fry, Adam Perelman, Adam Tart,
+Adi Ganesh, Ahmed El-Kishky, Aidan McLaughlin,
+Aiden Low, AJ Ostrow, Akhila Ananthram, Akshay
+Nathan, Alan Luo, Alec Helyar, Aleksander Madry,
+Aleksandr Efremov, Aleksandra Spyra, Alex Baker-
+Whitcomb, Alex Beutel, Alex Karpenko, and 465
+others. 2025. Openai gpt-5 system card. Preprint,
+arXiv:2601.03267.
+Chang Su, Yu Hou, Suraj Rajendran, Jacqueline R. M. A.
+Maasch, Zehra Abedi, Haotan Zhang, Zilong Bai, An-
+thony Cuturrufo, Winston Guo, Fayzan F. Chaudhry,
+Gregory Ghahramani, Jian Tang, Feixiong Cheng,
+Yue Li, Rui Zhang, Jiang Bian, and Fei Wang. 2022.
+Biomedical discovery through the integrative biomed-
+ical knowledge hub (ibkh). medRxiv.
+Saku Sugawara, Kentaro Inui, Satoshi Sekine, and
+Akiko Aizawa. 2018. What makes reading compre-
+hension questions easier? In Proceedings of the 2018
+conference on empirical methods in natural language
+processing, pages 4208–4219.
+Yiming Tan, Dehai Min, Yu Li, Wenbo Li, Nan Hu,
+Yongrui Chen, and Guilin Qi. 2023. Can chatgpt
+replace traditional kbqa models? an in-depth analysis
+of the question answering performance of the gpt llm
+family. Preprint, arXiv:2303.07992.
+GLM-4.5 Team, Aohan Zeng, Xin Lv, Qinkai Zheng,
+Zhenyu Hou, Bin Chen, Chengxing Xie, Cunxiang
+Wang, Da Yin, Hao Zeng, Jiajie Zhang, Kedong
+Wang, Lucen Zhong, Mingdao Liu, Rui Lu, Shulin
+Cao, Xiaohan Zhang, Xuancheng Huang, Yao Wei,
+and 152 others. 2025. Glm-4.5: Agentic, reason-
+ing, and coding (arc) foundation models. Preprint,
+arXiv:2508.06471.
+George Tsatsaronis, Georgios Balikas, Prodromos
+Malakasiotis, Ioannis Partalas, Matthias Zschunke,
+Michael Alvers,
+Dirk Weißenborn,
+Anastasia
+Krithara, Sergios Petridis, Dimitris Polychronopou-
+los, Yannis Almirantis, John Pavlopoulos, Nico-
+las Baskiotis, Patrick Gallinari, Thierry Artieres,
+Axel-Cyrille Ngonga Ngomo, Norman Heino, Eric
+Gaussier,
+Liliana Barrio-Alvers,
+and Georgios
+Paliouras. 2015. An overview of the bioasq large-
+scale biomedical semantic indexing and question an-
+swering competition. BMC Bioinformatics, 16:138.
+Byron C. Wallace. 2019. What does the evidence say?
+models to help make sense of the biomedical liter-
+ature. In Proceedings of the Twenty-Eighth Inter-
+national Joint Conference on Artificial Intelligence,
+IJCAI-19, pages 6416–6420. International Joint Con-
+ferences on Artificial Intelligence Organization.
+Panpan Wang and Deqiao Tian. 2021. Bibliometric
+analysis of global scientific research on covid-19.
+Journal of Biosafety and Biosecurity, 3(1):4–9.
+Ruiyu Wang, Yuzhang Xie, Xiao Hu, Carl Yang, and
+Jiaying Lu. 2025. Biomedjimpact: A comprehensive
+dataset and llm pipeline for ai engagement and sci-
+entific impact analysis of biomedical journals. arXiv
+preprint arXiv:2511.12821.
+Guanchen Wu, Yuzhang Xie, Huanwei Wu, Zhe He,
+Hui Shao, Xiao Hu, and Carl Yang. 2025a. Utilizing
+large language models for zero-shot medical ontol-
+ogy extension from clinical notes. arXiv preprint
+arXiv:2511.16548.
+Jialong Wu, Baixuan Li, Runnan Fang, Wenbiao Yin,
+Liwen Zhang, Zhengwei Tao, Dingchu Zhang, Zekun
+Xi, Yong Jiang, Pengjun Xie, Fei Huang, and
+Jingren Zhou. 2025b.
+Webdancer: Towards au-
+tonomous information seeking agency.
+Preprint,
+arXiv:2505.22648.
+Yuzhang Xie, Hejie Cui, Ziyang Zhang, Jiaying Lu, Kai
+Shu, Fadi Nahab, Xiao Hu, and Carl Yang. 2025a.
+Kerap: A knowledge-enhanced reasoning approach
+for accurate zero-shot diagnosis prediction using
+multi-agent llms. Preprint, arXiv:2507.02773.
+Yuzhang Xie, Xu Han, Ran Xu, Xiao Hu, Jiaying
+Lu, and Carl Yang. 2025b. Hypkg: Hypergraph-
+based knowledge graph contextualization for preci-
+sion healthcare. In International Semantic Web Con-
+ference, pages 328–348. Springer.
+Yuzhang Xie, Jiaying Lu, Joyce Ho, Fadi Nahab, Xiao
+Hu, and Carl Yang. 2024. Promptlink: leveraging
+large language models for cross-source biomedical
+concept linking. In Proceedings of the 47th Inter-
+national ACM SIGIR Conference on Research and
+Development in Information Retrieval, pages 2589–
+2593.
+
+Gelei Xu, Xueyang Li, Yixiong Chen, Yuying Duan,
+Shuqing Wu, Alexander Yu, Ching-Hao Chiu, Jun-
+tong Ni, Ningzhi Tang, Toby Li, Alan Yuille, Wei Jin,
+and Yiyu Shi. 2025a. A comprehensive survey of ai
+agents in healthcare.
+Ran Xu, Hui Liu, Sreyashi Nag, Zhenwei Dai, Yaochen
+Xie, Xianfeng Tang, Chen Luo, Yang Li, Joyce C.
+Ho, Carl Yang, and Qi He. 2025b. SimRAG: Self-
+improving retrieval-augmented generation for adapt-
+ing large language models to specialized domains.
+In Proceedings of the 2025 Conference of the Na-
+tions of the Americas Chapter of the Association
+for Computational Linguistics: Human Language
+Technologies (Volume 1: Long Papers), pages 11534–
+11550, Albuquerque, New Mexico. Association for
+Computational Linguistics.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, Chujie Zheng, Day-
+iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao
+Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41
+others. 2025.
+Qwen3 technical report.
+Preprint,
+arXiv:2505.09388.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio,
+William Cohen, Ruslan Salakhutdinov, and Christo-
+pher D. Manning. 2018. HotpotQA: A dataset for
+diverse, explainable multi-hop question answering.
+In Proceedings of the 2018 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+2369–2380, Brussels, Belgium. Association for Com-
+putational Linguistics.
+Urchade Zaratiana, Nadi Tomeh, Pierre Holat, and
+Thierry Charnois. 2024. GLiNER: Generalist model
+for named entity recognition using bidirectional trans-
+former. In Proceedings of the 2024 Conference of
+the North American Chapter of the Association for
+Computational Linguistics: Human Language Tech-
+nologies (Volume 1: Long Papers), pages 5364–5376,
+Mexico City, Mexico. Association for Computational
+Linguistics.
+Ziyang Zhang, Hejie Cui, Ran Xu, Yuzhang Xie,
+Joyce C Ho, and Carl Yang. 2024. Tacco: Task-
+guided co-clustering of clinical concepts and patient
+visits for disease subtyping based on ehr data. In
+Proceedings of the 30th ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining, pages
+6324–6334.
+A
+Additional Related Work
+Machine reading comprehension. Early work
+on machine reading comprehension cast question
+answering as span selection within controlled con-
+texts, enabling precise evaluation of extractive mod-
+els (Rajpurkar et al., 2016; Joshi et al., 2017). With
+the rise of instruction-tuned large language models,
+generation-based QA has become competitive, yet
+multiple choice formats remain attractive because
+they encourage targeted reasoning while preserv-
+ing objective scoring (Nie et al., 2020; Hendrycks
+et al., 2021; Zhang et al., 2024). Scientific arti-
+cles often restate conclusions with considerable
+lexical overlap, meaning that purely extractive se-
+tups can overestimate genuine inference (Sugawara
+et al., 2018; Wang et al., 2025). This observation
+motivates evaluation formats that probe reasoning
+beyond surface matching.
+Additional biomedical QA resources. Beyond
+the benchmarks discussed in the main text, sev-
+eral resources address specific clinical needs. em-
+rQA constructs QA pairs from electronic medi-
+cal records using expert templates (Pampari et al.,
+2018). MedQuAD compiles question-answer pairs
+from trusted medical websites organized by topic
+(Ben Abacha and Demner-Fushman, 2019). These
+datasets primarily target patient-level clinical rea-
+soning rather than population-level epidemiologi-
+cal inference.
+Retrieval augmentation and knowledge re-
+sources. Retrieval-augmented generation grounds
+model outputs in retrieved passages and is often
+used to mitigate hallucination (Lewis et al., 2020;
+Izacard and Grave, 2021; Bhasuran et al., 2025;
+Wu et al., 2025a). Structured resources such as
+Hetionet and iBKH encode biomedical entities and
+relations that can support downstream reasoning
+(Himmelstein et al., 2017; Su et al., 2022). For
+epidemiology-oriented knowledge, eKG-DONs
+compiles outbreak reports from official sources (S
+et al., 2025). Systematic evaluations of LLMs on
+knowledge base question answering have found
+that they still trail specialized models on structured
+reasoning tasks (Tan et al., 2023). Recent work
+studies instruction-aware retrieval across heteroge-
+neous sources (Min et al., 2025) and integration of
+knowledge graphs with multi-agent reasoning (Xie
+et al., 2025a,b; Xu et al., 2025b). In EpiQAL-B
+construction, we operationalize structured relations
+by summarizing knowledge graph triples into natu-
+ral language signals used only during generation;
+these signals are withheld at evaluation time.
+B
+Method Details
+B.1
+Evaluation Metrics
+Let setmodel denote the set of options predicted by
+a model and setref denote the reference option set.
+We compute
+F1 = 2 · |setreference ∩setmodel|
+|setreference| + |setmodel|
+(2)
+
+ExactMatch =
+(
+1,
+if setmodel = setreference
+0,
+otherwise
+(3)
+B.2
+Epidemiology Taxonomy
+This appendix provides the complete taxonomy
+introduced in Section 3.3. Each of the six classes
+contains multiple topics, and each topic includes an
+expert-curated description specifying its semantic
+scope. These descriptions serve as explicit con-
+straints during question generation for EpiQAL-
+A and EpiQAL-B, steering the generation model
+toward the intended epidemiological competency.
+The released instances carry class and topic labels,
+which support topic-level analysis in future work.
+Table 6 lists the six classes with their descrip-
+tions. Tables 7 through 9 provide all 25 topics
+organized by class.
+B.3
+External Knowledge Construction
+This appendix describes how external knowledge E
+is constructed for EpiQAL-B. The procedure con-
+sists of four steps: entity extraction, entity linking,
+triple retrieval, and summarization.
+We first extract disease entities from the source
+document using GLiNER (Zaratiana et al., 2024).
+Extracted mentions are then normalized via en-
+tity linking using SapBERT (Liu et al., 2021),
+which is a SOTA biomedical entity linking method
+(Xie et al., 2024), to encode mentions and re-
+trieve candidate entities. We retrieve related triples
+from two knowledge graphs: eKG-DONs (S et al.,
+2025), which compiles outbreak reports from of-
+ficial sources, and iBKH (Su et al., 2022), which
+encodes broader biomedical relations. Finally, a
+language model summarizes the retrieved triples
+into compact natural language statements used as
+generation signals (Xie et al., 2025a).
+These signals are used only during dataset con-
+struction to steer the generation model toward
+inference-oriented questions. They are not pro-
+vided to models at evaluation time.
+B.4
+Distractor Design
+We design distractors to be plausible under the pro-
+vided study context while remaining incorrect for
+the specific question intent. Across all subsets, we
+enforce semantic type matching with correct op-
+tions, stylistic consistency, and diversity so that
+different distractors reflect different confusable al-
+ternatives rather than near duplicates. We attach
+evidence spans and brief rationales during construc-
+tion to support verification and error analysis. Note
+that the design categories described here reflect
+construction intent. The post-hoc distractor classifi-
+cation used in the error analysis (§4.4) is performed
+independently by GPT-5-mini and uses a different
+category scheme; see Appendix F.2 for definitions.
+EpiQAL-A. Distractors in EpiQAL-A are passage-
+grounded confounders. They are valid entities or
+facts stated in the same document, matching the se-
+mantic category and tone of correct options. They
+are incorrect because they refer to a different role,
+population, setting, time window, or study context
+than what the question requires. This design dis-
+courages guessing by surface cues while preserving
+a retrieval-based task in which all options are lo-
+cally supported by explicit spans.
+EpiQAL-B.
+Distractors
+in
+EpiQAL-B
+are
+reasoning-level adversaries.
+They share the
+grammatical structure and semantic category of
+correct options but express misleading implications
+that require a reasoning process. We introduce
+subtle flaws using three main categories:
+• Entity or attribution shift: a conclusion that
+holds for another entity in the passage is incor-
+rectly applied to the target entity.
+• Causal direction reversal: the direction of an
+implied effect is flipped while keeping entities
+and study context fixed.
+• Principle mismatch: a correct passage fact is
+combined with an incorrect epidemiological prin-
+ciple to yield a plausible but wrong implication.
+Construction-time external signals may validate the
+flawed reasoning chain but are not embedded as
+explicit hints in the distractor text.
+EpiQAL-C. Distractors in EpiQAL-C are masked-
+input traps tailored to the Discussion masking setup.
+We draw candidates from either the non-Discussion
+sections or the Discussion, then refine them into
+self-contained sentences that are plausible but in-
+correct when only the non-Discussion sections are
+available. We use five primary trap categories:
+• Limitations or future work: unproven hypothe-
+ses that are not established as conclusions.
+• External literature dependence: claims sup-
+ported only by cited outside work in the Discus-
+sion.
+• Background restatement: common knowledge
+rather than study-specific findings.
+• Incorrect conclusion: same entity but wrong
+conclusion under the question.
+
+Table 6: Epidemiology taxonomy classes.
+Cls
+Class
+Description
+1
+Surveillance and Descriptive
+Epidemiology
+Describes population occurrence from routine data, including rates, time place
+person patterns, aberration signals, and basic system performance, without causal
+analysis or forecasting.
+2
+Outbreak Investigation and Field
+Response
+Handles outbreak specific confirmation, field case definitions, line lists, attack
+rates and curves, chain and source hypotheses, and immediate control with
+situation reports.
+3
+Determinants and Exposures
+Explains how exposure arises across settings, covering behavioral, environmen-
+tal, occupational, and social determinants, delineates canonical transmission
+routes and contact structures, interprets exposure response with attention to
+measurement methods, units, detection limits, and thresholds, and situates risks
+within One Health interfaces involving reservoirs and vectors.
+4
+Susceptibility and Immunity
+Describes who is susceptible and why, links serologic measures to correlates
+of protection, evaluates effectiveness after vaccination or prior infection and
+its waning with reinfection, hybrid immunity, and variant escape, including the
+effects of vaccine dose number and intervals, and assesses severity risk using
+clinical and contextual prognostic factors.
+5
+Modeling, Methods, and
+Evaluation
+Provides analytical methods for transmission modeling and inference, real time
+debiasing of surveillance data, study design and causal effects, measurement and
+bias handling, and program performance and burden evaluation.
+6
+Projections and Forecasts
+Produces forward looking forecasts and scenarios, evaluates and combines
+models, and supports decision making, it does not reconstruct recent under
+reported data.
+• Causal reversal: reversed causal direction under
+the study context.
+For each distractor, we attach evidence revealing
+why it is not a valid answer under the masked-input
+setting.
+B.5
+Stem Refinement Procedure & Example
+Stem refinement is a retrieval-based rewriting step
+applied during dataset construction. We adapt the
+recursive retrieval approach from Wu et al. (2025b)
+by iteratively replacing entities with their descrip-
+tions.
+The procedure works as follows.
+First, we
+prompt a model to extract a core entity from the
+question stem as a replacement candidate. Second,
+we construct a synthetic query to search for the
+entity’s definition and characteristics, retrieving the
+top Kr relevant snippets from the web. Third, a
+model summarizes these snippets into a concise
+description that replaces the original entity in the
+stem. This process repeats until the DiffScore ex-
+ceeds threshold θd or reaches the maximum number
+of iterations Tr. No retrieved text is provided to
+models at evaluation time; only the rewritten stem
+is used.
+Table 10 shows a representative instance before
+and after refinement. Refinement replaces salient
+entities with descriptive phrases that preserve an-
+swerability but remove direct lexical anchors. This
+requires models to map descriptions back to the
+correct concepts and integrate evidence from the
+passage.
+In Table 10, underlined text marks the entity
+selected for replacement at each iteration, and
+bold text indicates the retrieved description that
+replaces the original surface form.
+In Itera-
+tion 1, cutaneous leishmaniasis is replaced with
+a descriptive paraphrase.
+Iteration 2 expands
+Leishmania parasites into a higher-level descrip-
+tion while preserving question intent. In Iteration 3,
+neglected tropical diseases is replaced, further re-
+ducing lexical overlap between the stem and source
+evidence. To answer correctly, models must iden-
+tify which epidemiological entity the description
+refers to and use passage evidence to select the cor-
+rect options, rather than relying on surface-form
+matching.
+B.6
+Difficulty Control Analysis
+Threshold selection. We set α = 0.3 to weight
+EM more heavily than F1, reflecting our emphasis
+on exact set recovery over partial overlap. To se-
+lect a threshold, we first apply all three refinement
+iterations to every instance regardless of difficulty,
+producing four complete DiffScore distributions
+(Original through Iter 3). Figure 2 shows how
+the version selection distribution changes across
+thresholds under this setup. A sharp transition oc-
+curs between θd = 0.20 and 0.25: the fraction of
+easy instances in EpiQAL-B jumps from 33.7% to
+
+Table 7: Epidemiology taxonomy topics (Classes 1 and 2).
+Cls
+Class
+Top
+Topic
+Description
+1
+Surveillance and
+Descriptive Epidemiology
+1
+Frequency measures and
+standardization
+Defines prevalence, incidence, person time, and
+applies standardization to make rates compara-
+ble.
+2
+Time Place Person patterns,
+seasonality and clustering
+Describes temporal trends, spatial distribution,
+and demographic profiles using routine popula-
+tion surveillance.
+3
+Aberration and outbreak
+detection
+Builds statistical baselines and thresholds to flag
+unusual increases in counts, rates, or positivity,
+focuses on signal detection rather than source
+attribution.
+4
+System performance,
+deduplication and record
+linkage
+Assesses sensitivity, timeliness, and complete-
+ness, manages deduplication and linkage across
+multiple data sources.
+2
+Outbreak Investigation and
+Field Response
+1
+Diagnostic verification,
+field case definitions and
+line lists
+Confirms the pathogen, applies field case defini-
+tions, and builds and cleans line lists.
+2
+Event specific attack rates
+and epidemic curves
+Quantifies spread in defined groups and inter-
+prets epidemic curves for the event.
+3
+Outbreak hypothesis
+mapping and source
+attribution
+Links cases by time, place, and shared expo-
+sures to identify likely sources and transmission
+chains, integrating line lists, environmental sam-
+pling, traceback, and genomic evidence.
+4
+Immediate control and
+situation reporting
+Implements urgent measures and documents
+current status with concise situation reports.
+61.9%, and in EpiQAL-C from 30.9% to 47.2%,
+because the median DiffScore falls in this range.
+We therefore set θd = 0.2, which aligns with a
+natural difficulty boundary and avoids excessive re-
+finement. In the final pipeline, for each instance we
+select the first refinement iteration where DiffScore
+≥θd; if no iteration meets the threshold, the final
+iteration (Iter 3) is used as fallback.
+DiffScore distribution. To characterize how refine-
+ment affects difficulty, Figure 3 shows the DiffS-
+core distribution at each iteration when all instances
+are uniformly refined (i.e., without applying θd se-
+lection). This isolates the effect of stem rewriting
+from the selection process. Refinement produces a
+modest but consistent upward shift. For EpiQAL-B,
+the mean DiffScore increases from 0.275 (Origi-
+nal) to 0.298 (Iter 3), and the proportion of easy
+instances (DiffScore < θd) drops from 33.7% to
+28.9%. For EpiQAL-C, the mean increases from
+0.336 to 0.354, with easy instances decreasing from
+30.9% to 29.4%. The diminishing marginal gains
+across iterations motivate the choice of Tr = 3.
+Final selection.
+After applying the θd = 0.2
+threshold, the pipeline selects the earliest itera-
+tion meeting the criterion for each instance. For
+EpiQAL-B, 317 instances use the original stem
+(already non-trivial), 28 use Iter 1, 12 use Iter 2,
+and 121 use Iter 3 (of which 112 are fallback cases
+where no iteration met θd). For EpiQAL-C, the
+corresponding counts are 331, 31, 12, and 105
+(of which 101 are fallback). The majority of in-
+stances already exceed the difficulty threshold be-
+fore refinement, supporting the interpretation that
+the pipeline primarily targets genuinely easy items
+rather than rewriting indiscriminately.
+B.7
+Construction Pipeline Pseudocode
+Algorithm 1 summarizes the EpiQAL construction
+pipeline. Subset-specific steps are marked with
+their applicable subsets.
+C
+Experimental Details
+C.1
+Compute and Inference Settings
+Experiments run on NVIDIA H100 and H200
+GPUs. Llama-3.3-70B-Instruct and GLM-4.5-Air
+use four-bit inference, and all other models use
+default precision settings.
+C.2
+Preprocessing
+We extract structured sections when available and
+normalize raw text by removing reference lists and
+non-content artifacts. Documents are assembled in
+a fixed section order to reduce variance across in-
+stances. We drop papers with missing main text or
+abnormal formatting that prevents reliable section
+parsing.
+
+Table 8: Epidemiology taxonomy topics (Classes 3 and 4).
+Cls
+Class
+Top
+Topic
+Description
+3
+Determinants and
+Exposures
+1
+Contextual determinants of
+exposure
+Integrates individual behaviors with environ-
+mental, occupational, and social and structural
+conditions that shape exposure probability and
+inequities.
+2
+Transmission modes and
+contact patterns
+Describes general routes of spread and popula-
+tion contact structures across settings.
+3
+Exposure response
+interpretation
+Specifies the exposure metric, determines
+whether values are above or below assay limits
+and thresholds, and interprets exposure to in-
+fection, severity, or transmissibility patterns as
+reported in the passage.
+4
+Zoonotic and One Health
+interfaces, reservoirs and
+vectors
+Identifies animal reservoirs, vectors, and human
+animal environment interfaces where spillover
+can occur.
+4
+Susceptibility and
+Immunity
+1
+Susceptibility stratification
+and special populations
+Identifies groups more susceptible to infection
+based on demographic and clinical traits and
+setting specific contexts.
+2
+Serology and correlates of
+protection
+Estimates seroprevalence and relates immune
+markers to protection thresholds and population
+level immunity.
+3
+Protection effectiveness,
+waning, reinfection and
+immune escape
+Describes protection after vaccination or prior
+infection, its change over time, risks of rein-
+fection, hybrid immunity, and variant related
+escape, considers how vaccine dose number and
+dose intervals influence vaccine effectiveness
+and its waning over time.
+4
+Severity risk and prognostic
+factors
+Assesses risk of severe outcomes conditional on
+infection and stratifies prognosis by host factors.
+C.3
+Model Configuration
+Generation model. We use Qwen3-30B-A3B-
+Instruct-2507 as the generation model. For disease
+entity extraction, we use GLiNER (Zaratiana et al.,
+2024). For entity linking in EpiQAL-B construc-
+tion, we use SapBERT (Liu et al., 2021) to encode
+mentions and retrieve candidate disease entities
+from knowledge graphs. To summarize knowledge
+graph triples into natural language signals, we also
+use Qwen3-30B-A3B-Instruct-2507. Generation
+temperature is set to 0 for reproducibility.
+Checking model group. We verify generated op-
+tions using three instruction-tuned models from
+different families: GPT-5-mini, DeepSeek-V3.2-
+Thinking, and GLM-4.5-Air. Each checker runs 3
+times with temperature 1.0, yielding 9 total votes
+per option, and decisions are aggregated into the
+vote ratio v defined in Section 3.4. We set the
+acceptance threshold θh = 6/9 and the rejection
+threshold θc = 5/9: options with v ≥θh are ac-
+cepted automatically, options with v < θc are re-
+jected, and options with θc ≤v < θh are flagged
+for human review.
+Difficulty judging pool. To estimate difficulty as
+described in Section 3.5, we evaluate a pool of four
+models spanning different capability tiers: GPT-5-
+mini, DeepSeek-V3.2-Thinking, Qwen3-32B, and
+Phi-4-mini-instruct. We compute DiffScore with
+α = 0.3 and average across models. The diffi-
+culty threshold is θd = 0.2, maximum refinement
+iterations Tr = 3, and retrieval budget Kr = 6
+snippets.
+D
+Dataset Analysis
+This appendix provides additional analysis of
+dataset composition for EpiQAL-A and EpiQAL-B,
+which use taxonomy-guided generation. EpiQAL-
+C derives supervision from paper structure rather
+than taxonomy and is not included in this analysis.
+D.1
+Class and Topic Distribution
+Figure 4 shows the distribution of instances across
+the six taxonomy classes.
+Coverage is uneven
+across classes.
+Modeling, Methods and Evalu-
+ation is the most frequent class in EpiQAL-A
+(213 instances) and Determinants and Exposures
+in EpiQAL-B (222), while Outbreak Investigation
+and Field Response and Projections and Forecasts
+together account for fewer than 10 instances in ei-
+
+Table 9: Epidemiology taxonomy topics (Classes 5 and 6)
+Cls
+Class
+Top
+Topic
+Description
+5
+Modeling, Methods, and
+Evaluation
+1
+Transmission modeling and
+inference
+Uses mechanistic or statistical models to esti-
+mate transmission parameters and infer trans-
+mission patterns.
+2
+Real time debiasing and
+delay adjustment
+Reconstructs recent incidence by adjusting for
+reporting delays, right truncation, and under
+ascertainment.
+3
+Study design and causal
+effects
+Selects designs and identification strategies and
+defines effect measures for causal estimation.
+4
+Measurement and bias
+handling
+Addresses measurement validity, misclassifica-
+tion and measurement error, confounding and
+selection, generalizability, survey weighting,
+and sample size.
+5
+Program performance and
+impact evaluation
+Assesses coverage and implementation fidelity,
+audits routine data quality, evaluates real world
+effectiveness, and estimates disease burden.
+6
+Projections and Forecasts
+1
+Near term forecasting
+Produces short horizon probabilistic forecasts
+for upcoming values and quantifies forecast un-
+certainty.
+2
+Scenario projections
+Projects future trajectories under stated assump-
+tions about policy, behavior, or immunity.
+3
+Forecast evaluation and
+model combination
+Assesses forecast quality using proper scoring
+rules, calibration, and sharpness diagnostics,
+and develops or applies methods to combine
+multiple forecasting models to improve predic-
+tive accuracy, stability, and robustness across
+contexts.
+4
+Decision oriented
+forecasting and risk
+communication
+Maps forecast probabilities to operational
+thresholds or cost loss trade offs and communi-
+cates uncertainty for decision making.
+ther subset. This distribution reflects the prevalence
+of these topics in the source corpus of neglected
+tropical disease research.
+Figure 5 shows the most frequent topics, with
+the remainder grouped as Other. Zoonotic and
+One Health interfaces is the single most frequent
+topic in both subsets (17.7% and 22.8%), followed
+by measurement, modeling, and severity-related
+topics.
+D.2
+Verification Example
+Table 11 illustrates the checker’s decision process
+on an instance flagged by a reviewer during the
+initial submission. The question asks “Which two
+Acanthamoeba species were used in the study to
+evaluate their interaction with Leishmania pro-
+mastigotes?” with three candidate options.
+The third option reverses the order of the two
+species but is factually equivalent to the correct an-
+swer. All nine checker votes unanimously reject it
+as an invalid distractor, with rationales identifying
+that reordering does not constitute a substantive
+error. This case demonstrates that the upgraded
+checking group reliably detects semantic equiv-
+alence between superficially distinct options, ad-
+dressing a limitation identified during initial review.
+E
+Human Evaluation Details
+Protocol. To assess the quality of the finalized
+benchmark, three computer science PhD students
+with biomedical training independently score a
+stratified sample of 120 questions (40 per subset).
+The 120-question sample represents 8.4% of the
+benchmark, stratified to cover the full difficulty
+range. This evaluation is conducted after bench-
+mark construction is complete and does not influ-
+ence dataset content. Annotators may use LLMs
+to aid comprehension of domain-specific text, but
+all scoring is performed by human judgment. For
+EpiQAL-B and EpiQAL-C, we stratify by diffi-
+culty: 12 Easy (DiffScore = 0), 14 Medium (0 <
+DiffScore ≤0.4), and 14 Hard (DiffScore > 0.4).
+For EpiQAL-A, we use random sampling since dif-
+ficulty screening is not applied. Annotators rate
+each question on subset-specific dimensions using
+a 1–3 scale (1 = poor, 2 = acceptable, 3 = good).
+We report Exact Agreement (percentage of items
+where all annotators assign the same score), Binary
+
+Table 10: An example of stem refinement. The options are unchanged, and only the question stem is rewritten.
+Version
+Question stem
+Original
+Which of the following best captures the primary implication of integrating patient-reported experiences
+and preferences into the early-stage development of medicinal products for neglected tropical diseases,
+based on the qualitative findings from a multi-country study on cutaneous leishmaniasis?
+Iteration 1
+Which of the following best captures the primary implication of integrating patient-reported experiences
+and preferences into the early-stage development of medicinal products for neglected tropical diseases,
+based on the qualitative findings from a multi-country study on a vector-borne skin disorder caused
+by Leishmania parasites, characterized by painless, chronic ulcers or nodules on exposed body parts,
+primarily resulting from sandfly bites and affecting millions globally?
+Iteration 2
+Which of the following best captures the primary implication of integrating patient-reported experiences
+and preferences into the early-stage development of medicinal products for neglected tropical diseases,
+based on the qualitative findings from a multi-country study on a vector-borne skin disorder caused by
+protozoan parasites from over 20 species transmitted to humans via bites of infected phlebotomine
+sandflies, primarily causing chronic skin lesions through vector-borne transmission, affecting millions
+globally?
+Iteration 3
+Which of the following best captures the primary implication of integrating patient-reported experiences
+and preferences into the early-stage development of medicinal products for a diverse group of communi-
+cable diseases caused by parasitic, bacterial, fungal, viral, and protozoan pathogens, predominantly
+affecting impoverished populations in tropical and subtropical regions and perpetuating cycles of
+poor health, social marginalization, and economic hardship, based on the qualitative findings from a
+multi-country study on a vector-borne skin disorder caused by protozoan parasites from over 20 species
+transmitted to humans via bites of infected phlebotomine sandflies, primarily causing chronic skin lesions
+through vector-borne transmission, affecting millions globally?
+Table 11: Checker example. The third option is a re-
+ordering of the correct answer; all nine votes reject it as
+an invalid distractor.
+Option
+Label
+Vote
+Dec.
+A. castellanii & A. polyphaga
+Corr.
+9/9
+Acc.
+A. castellanii & A. spp.
+Dist.
+9/9
+Acc.
+A. polyphaga & A. castellanii
+Dist.
+0/9
+Rej.
+Agreement (collapsing to acceptable vs. poor), and
+Severe Disagreement (items where both 1 and 3
+appear) for inter-annotator reliability.
+Dimension-level Analysis. Answer Correctness
+scores highest across all subsets (≥2.81), with
+EpiQAL-C at 2.92, indicating that generated an-
+swers reliably match the source passages. Evi-
+dence Sufficiency is also strong: EpiQAL-A scores
+2.93 since its questions are grounded in single pas-
+sages, while EpiQAL-B and C score 2.75 and 2.77
+due to more complex evidence chains. Distractor
+Quality is comparable across subsets (2.52–2.56),
+suggesting that generating plausible yet incorrect
+alternatives is the hardest part of automated bench-
+mark construction regardless of subset type. Ques-
+tion Clarity decreases from EpiQAL-A (2.77) to
+EpiQAL-C (2.51), as expected given the increas-
+ing complexity of question phrasing from retrieval
+to conclusion reconstruction. Reasoning Depth
+is 2.45 for both EpiQAL-B and C, indicating that
+most questions do require non-trivial inference. An-
+swerability for EpiQAL-C (2.78) confirms that con-
+clusion reconstruction questions are solvable from
+the provided evidence.
+Inter-Annotator Agreement. Exact Agreement
+on the 3-point scale is 68.8% for EpiQAL-A,
+47.5% for EpiQAL-B, and 55.4% for EpiQAL-C.
+EpiQAL-B has the lowest agreement, which is ex-
+pected given the subjectivity in judging reasoning
+depth and distractor plausibility for multi-step in-
+ference questions. However, these numbers reflect
+the narrow scoring range more than genuine dis-
+agreement: Binary Agreement exceeds 91% on all
+subsets (A: 95.0%, B: 91.5%, C: 91.7%), and Se-
+vere Disagreement is low (A: 3.1%, B: 7.5%, C:
+5.0%). Across subsets, 82–88% of disagreements
+are between adjacent scores (2 vs. 3), meaning an-
+notators largely agree on whether questions are
+acceptable and only differ on the degree of quality.
+Expert Validation. To validate annotator reliabil-
+ity, a faculty member in biostatistics and epidemi-
+ology scored 30 questions (10 per subset) using the
+same dimensions and scale. This is the same fac-
+ulty member who co-designed the taxonomy and
+is an author of this paper. Scoring was performed
+after benchmark construction was complete and
+blind to the annotators’ scores, so the validation
+is independent of the annotation pass rather than
+of the project. We compare the expert’s scores
+
+Algorithm 1 EpiQAL Construction Pipeline
+Require: Generator Mg, checkers {Cj}3
+j=1, difficulty pool {Pj}k
+j=1, thresholds θh, θc, θd, max refinement iterations Tr
+1: for each document D in corpus do
+2:
+Input Processing. [A, B] Classify question type for D; choose taxonomy topic τ. [B] Extract disease entities via NER;
+link to KG; summarize triples →E. [C] Separate D into body ˜D and Discussion Dd. Set E ←∅unless populated by B.
+3:
+QA Generation.
+[A, B] Generate Q from (D, τ, E), then Oc from (D, Q, E), then Od from (D, Q, Oc, E). [C]
+Extract Oc from D (sourced from Dd), generate Q from (D, Oc), then Od from (D, Q, Oc).
+4:
+Multi-model Verification. For each o ∈Oc ∪Od: each checker Cj votes 3 times (temp 1.0), yielding v = votes/9.
+Accept if v ≥θh; reject if v < θc; flag for human review otherwise. Discard instance if all Oc rejected.
+5:
+Difficulty Control [B, C]. Evaluate {Pj} on ( ˜D, Q, O); compute DiffScore = 1 −1
+k
+P
+j(α · F (j)
+1
++ (1−α) · EM(j)).
+While DiffScore < θd and t ≤Tr: extract salient entity from Q, retrieve description, replace in Q, recompute DiffScore.
+6:
+Output ( ˜D, Q, Oc, Od)
+7: end for
+Table 12: Exact Match accuracy on EpiQAL-C across
+stem refinement iterations (w/o CoT). Models are the
+difficulty judging pool. Bold = highest, underline =
+lowest per row. Ties are both marked.
+Diff. Judging Model
+Orig.
+Iter 1
+Iter 2
+Iter 3
+GPT-5-mini
+0.595
+0.599
+0.595
+0.601
+DeepSeek-V3.2
+0.727
+0.701
+0.697
+0.704
+Qwen3-32B
+0.686
+0.662
+0.635
+0.630
+Phi-4-mini
+0.446
+0.411
+0.415
+0.425
+Average
+0.613
+0.593
+0.586
+0.590
+against the PhD annotators’ majority vote on each
+dimension-item pair. Binary Agreement is 97.5%
+(A, 40 pairs), 96.0% (B, 50 pairs), and 98.3% (C,
+60 pairs). Severe Disagreement is 2.5% (A), 2.0%
+(B), and 0.0% (C). Per-dimension breakdowns are
+not reported due to the small per-subset sample
+size (10 items), but no dimension shows Binary
+Agreement below 90% on any subset.
+F
+Additional Results
+F.1
+Stem Refinement Effect on Model
+Performance
+To isolate the effect of refinement, we construct
+controlled variants of EpiQAL-C by applying 0 to
+Tr refinement iterations to the same base instances,
+regardless of whether they would be refined in
+the final pipeline. We evaluate each model in the
+difficulty judging pool without Chain-of-Thought
+prompting at temperature 0. Results are shown in
+Table 12.
+As shown in Table 12, average EM decreases
+from 0.613 (Original) to 0.586 (Iter 2), confirming
+that stem refinement increases difficulty. The maxi-
+mum decline across iterations is most pronounced
+for Qwen3-32B (-0.056, at Iter 3) and Phi-4-mini
+(-0.035, at Iter 1), while GPT-5-mini shows mini-
+mal sensitivity. Interestingly, Iter 3 slightly recov-
+ers compared to Iter 2 for three of four models.
+We attribute this to over-expansion: by the third
+iteration, entity descriptions become sufficiently
+detailed (see Table 10) that they inadvertently sup-
+ply domain knowledge, partially compensating for
+the loss of direct lexical anchors. Considering the
+trade-off between generation efficiency and diffi-
+culty gain, we set Tr = 3.
+F.2
+Distractor Analysis Details
+Category definitions. For EpiQAL-A: Wrong en-
+tity/role (correct fact applied to a different entity
+or misattributed role), Wrong context (correct fact
+from a different group, location, time, or condi-
+tion), Wrong metric (correct fact but different mea-
+surement or statistic), Semantic near-miss (similar
+wording but differs in a critical detail).
+For EpiQAL-B: Methodological mismatch (in-
+compatible analysis method or study design),
+Causal/logical error (reversed causation or broken
+reasoning chain), Variable confusion (target vari-
+able confused with a related concept), Assumption
+violation (correct terminology but violated under-
+lying assumption).
+For EpiQAL-C: External dependency (requires
+information not in the Passage Body), Specula-
+tion/limitation (untested hypothesis or methodolog-
+ical caveat), Background only (general knowledge
+without study-specific interpretation), Causal rever-
+sal (misinterpreted cause-effect from the Passage
+Body).
+
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.50
+Threshold 
+d
+0
+100
+200
+300
+400
+500
+Number of instances
+d=0.2
+Original
+Iter 1
+Iter 2
+Iter 3
+Fallback (Iter 3)
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.50
+Threshold 
+d
+0
+100
+200
+300
+400
+500
+Number of instances
+d=0.2
+Original
+Iter 1
+Iter 2
+Iter 3
+Fallback (Iter 3)
+Figure 2: Version selection distribution across difficulty
+thresholds for EpiQAL-B (top) and EpiQAL-C (bottom).
+Each bar shows, for a given θd, how many instances first
+meet the threshold at each iteration. The dashed line
+marks θd = 0.2; raising it to 0.25 sharply increases the
+number of instances requiring refinement.
+Deception rate. Let Cc denote the set of distrac-
+tors in category c, M the set of evaluated mod-
+els (|M| = 14; DeepSeek-V4-Flash-Thinking was
+not yet available when this analysis was run), and
+em,d = 1 if model m misselects distractor d. The
+deception rate is:
+Deception Rate(c) =
+P
+m∈M
+P
+d∈Cc em,d
+|Cc| × |M|
+Distractor distribution. Table 13 reports the cate-
+gory distribution for each subset.
+F.3
+Per-Model Deception Rate
+Table 14 reports per-model overall deception rates
+on each subset under zero-shot no-CoT, along with
+the most vulnerable distractor category for each
+model. Models are sorted by average deception rate
+across subsets (ascending). Full per-category break-
+downs are available in the released code repository.
+†Background only (8 distractors) is excluded from the top-
+category comparison for EpiQAL-C.
+Table 13: Distractor category distribution by subset.
+Category
+Count
+%
+EpiQAL-A (n=960)
+Wrong entity/role
+403
+42.0%
+Semantic near-miss
+242
+25.2%
+Wrong context
+203
+21.1%
+Wrong metric
+112
+11.7%
+EpiQAL-B (n=1,866)
+Causal/logical error
+982
+52.6%
+Variable confusion
+689
+36.9%
+Assumption violation
+138
+7.4%
+Methodological mismatch
+57
+3.1%
+EpiQAL-C (n=1,787)
+Speculation/limitation
+1,109
+62.1%
+External dependency
+379
+21.2%
+Causal reversal
+291
+16.3%
+Background only
+8
+0.4%
+On EpiQAL-A, Semantic near-miss is the top
+vulnerability for 13 of 14 models, confirming it
+as the dominant failure mode regardless of model
+capability. On EpiQAL-B, Variable confusion is
+the most common top category (8 of 14 models),
+followed by Causal/logical error (3 models). On
+EpiQAL-C, Speculation/limitation dominates for
+all models except Mistral-7B, whose top category
+is External dependency, consistent with its flat de-
+ception profile noted in §4.5.
+F.4
+One-Shot Results
+Table 15 reports Exact Match and F1 under one-
+shot no-CoT and CoT settings for 14 models using
+a single in-domain demonstration (excluded from
+evaluation).
+Compared with zero-shot results (Table 4), one-
+shot prompting yields the most consistent gains on
+EpiQAL-B: the 14 models improve in EM without
+CoT, with Llama-3.2-3B showing the largest gain
+(+0.394) and Llama-3.1-8B improving by +0.298.
+On EpiQAL-A and EpiQAL-C, one-shot effects
+are smaller and less uniform. Notably, one-shot
+combined with CoT degrades Llama-3.3-70B on
+EpiQAL-A (0.789 →0.679), likely due to the addi-
+tional context length from the demonstration com-
+pounding with the full-article input.
+F.5
+Role and Limitations of Retrieved
+Knowledge in EpiQAL-B
+EpiQAL-B incorporates retrieval-augmented gen-
+eration during benchmark construction: external
+triples from two biomedical knowledge graphs
+(eKG-DONs and iBKH) are provided as optional
+signals to encourage inference-oriented question
+
+Table 14: Per-model overall deception rate (%) and most vulnerable distractor category on each subset (zero-shot,
+no-CoT). Models are sorted by average rate across subsets.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C†
+Model
+Rate
+Top Cat.
+Rate
+Top Cat.
+Rate
+Top Cat.
+Avg.
+DeepSeek-V3.2-Thinking
+4.7
+Sem. n-m
+6.1
+Var. conf.
+5.8
+Spec./lim.
+5.5
+Mistral-7B
+8.4
+Sem. n-m
+5.9
+Causal/log.
+5.5
+Ext. dep.
+6.6
+Mistral-Large
+6.1
+Sem. n-m
+12.0
+Var. conf.
+9.3
+Spec./lim.
+9.1
+GLM-4.5-Air
+6.8
+Sem. n-m
+12.2
+Var. conf.
+12.5
+Spec./lim.
+10.5
+GPT-4.1-nano
+7.8
+Sem. n-m
+10.7
+Assump. viol.
+14.2
+Spec./lim.
+10.9
+Qwen3-32B
+7.5
+Sem. n-m
+10.2
+Assump. viol.
+18.7
+Spec./lim.
+12.1
+GPT-5-mini
+6.8
+Sem. n-m
+18.5
+Var. conf.
+11.7
+Spec./lim.
+12.3
+Qwen3-30B-A3B
+6.9
+Sem. n-m
+17.3
+Var. conf.
+15.4
+Spec./lim.
+13.2
+Llama-3.3-70B
+10.8
+Sem. n-m
+14.2
+Var. conf.
+16.1
+Spec./lim.
+13.7
+Qwen3-8B
+11.6
+Sem. n-m
+22.3
+Var. conf.
+25.9
+Spec./lim.
+19.9
+Phi-4-mini
+23.8
+Sem. n-m
+27.1
+Meth. mism.
+18.6
+Spec./lim.
+23.2
+GPT-4o-mini
+13.3
+Sem. n-m
+34.4
+Var. conf.
+31.7
+Spec./lim.
+26.5
+Llama-3.2-3B
+21.7
+Wrng. ctxt
+31.0
+Causal/log.
+28.9
+Spec./lim.
+27.2
+Llama-3.1-8B
+11.7
+Sem. n-m
+32.0
+Causal/log.
+40.9
+Spec./lim.
+28.2
+Sem. n-m = Semantic near-miss, Var. conf. = Variable confusion, Causal/log. = Causal/logical error, Meth. mism. =
+Methodological mismatch, Assump. viol. = Assumption violation, Spec./lim. = Speculation/limitation, Ext. dep. = External
+dependency, Wrng. ctxt = Wrong context.
+Table 15: One-shot Exact Match|F1 Score for each model across subsets, with and without Chain-of-Thought
+prompting. Bold = best, underline = second best per column. Ties share the same mark.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Model
+w/o CoT
+CoT
+w/o CoT
+CoT
+w/o CoT
+CoT
+OpenAI
+GPT-5-mini
+0.905|0.966
+0.916|0.963
+0.553|0.802
+0.654|0.836
+0.579|0.787
+0.577|0.774
+GPT-4o-mini
+0.773|0.910
+0.802|0.915
+0.488|0.762
+0.501|0.772
+0.289|0.695
+0.297|0.695
+GPT-4.1-nano
+0.779|0.862
+0.804|0.888
+0.753|0.826
+0.776|0.820
+0.703|0.842
+0.703|0.842
+DeepSeek
+DeepSeek-V3.2-Thinking
+0.928|0.970
+0.926|0.970
+0.841|0.903
+0.895|0.914
+0.757|0.842
+0.789|0.854
+Microsoft
+Phi-4-mini-instruct
+0.583|0.811
+0.730|0.857
+0.342|0.720
+0.532|0.763
+0.513|0.774
+0.506|0.776
+Meta-Llama
+Llama-3.2-3B-Instruct
+0.366|0.553
+0.690|0.782
+0.551|0.690
+0.621|0.649
+0.366|0.571
+0.473|0.586
+Llama-3.1-8B-Instruct
+0.798|0.911
+0.827|0.905
+0.616|0.804
+0.828|0.869
+0.232|0.641
+0.418|0.730
+Llama-3.3-70B-Instruct
+0.779|0.884
+0.679|0.763
+0.832|0.884
+0.876|0.894
+0.686|0.841
+0.759|0.865
+Mistral AI
+Mistral-7B-Instruct-v0.3
+0.722|0.809
+0.745|0.828
+0.790|0.812
+0.830|0.830
+0.808|0.830
+0.828|0.831
+Mistral-Large-Instruct-2411
+0.901|0.956
+0.922|0.961
+0.686|0.849
+0.730|0.859
+0.692|0.856
+0.678|0.854
+Qwen
+Qwen3-8B
+0.811|0.921
+0.863|0.940
+0.585|0.809
+0.690|0.843
+0.611|0.814
+0.657|0.830
+Qwen3-30B-A3B-Instruct-2507
+0.882|0.956
+0.911|0.965
+0.767|0.878
+0.864|0.906
+0.665|0.838
+0.734|0.862
+Qwen3-32B
+0.872|0.949
+0.895|0.961
+0.841|0.903
+0.853|0.903
+0.707|0.856
+0.692|0.846
+Zhipu AI
+GLM-4.5-Air
+0.874|0.947
+0.903|0.962
+0.751|0.884
+0.780|0.886
+0.669|0.849
+0.686|0.854
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+DiffScore
+Mean
+d = 0.2
+Original
+Iter 1
+Iter 2
+Iter 3
+0.250
+0.275
+0.300
+0.325
+0.350
+Mean DiffScore
+0.275
+(33.7% easy)
+0.286
+(31.6% easy)
+0.290
+(30.5% easy)
+0.298
+(28.9% easy)
+Mean ± SE
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+DiffScore
+Mean
+d = 0.2
+Original
+Iter 1
+Iter 2
+Iter 3
+0.300
+0.325
+0.350
+0.375
+0.400
+Mean DiffScore
+0.336
+(30.9% easy)
+0.349
+(30.1% easy)
+0.359
+(28.6% easy)
+0.354
+(29.4% easy)
+Mean ± SE
+Figure 3: DiffScore distribution across stem refinement iterations for EpiQAL-B (left) and EpiQAL-C (right),
+computed by applying all iterations to every instance. Diamonds indicate means; the dashed line marks θd = 0.2.
+The lower panels zoom into the mean trend with standard error bars.
+0
+50
+100
+150
+200
+Number
+Determinants & Exposures
+Modeling, Methods & Evaluation
+Susceptibility & Immunity
+Surveillance & Descriptive Epidemiology
+Outbreak Investigation & Field Response
+Projections & Forecasts
+Class Name
+161
+213
+33
+60
+7
+1
+222
+92
+148
+12
+4
+0
+Dataset A
+Dataset B
+Figure 4: Class distribution for EpiQAL-A and EpiQAL-B.
+17.7%
+14.7%
+14.9%
+10.5%
+12.0%
+8.6%
+3.2%
+5.7%
+4.6%
+Topic Distribution for Dataset A
+22.8%
+7.9%
+3.6%
+7.3%
+12.6%
+13.4%
+4.4%
+6.9%
+6.7%
+4.4%5.4%
+Topic Distribution for Dataset B
+Zoonotic/One Health interfaces, reservoirs & vectors
+Measurement & bias handling
+Transmission modeling & inference
+Exposure-response interpretation
+Severity risk & prognostic factors
+Time-Place-Person patterns, seasonality & clustering
+Protection effectiveness, waning, reinfection & immune escape
+Program performance & impact evaluation
+Transmission modes & contact patterns
+Contextual determinants of exposure
+Study design & causal effects
+Serology & correlates of protection
+Other
+Figure 5: Topic distribution for EpiQAL-A and EpiQAL-B.
+
+Table 16: Representative example of retrieved knowl-
+edge in EpiQAL-B. Although external knowledge was
+formally incorporated during construction, it provides
+only surface-level context and does not contribute to the
+reasoning chain.
+Question: In a region where multiple vector-borne dis-
+eases are endemic, how might the spatial clustering of one
+disease inform the likely transmission dynamics of another,
+particularly when both are associated with human activity
+near international seaports?
+Passage evidence: (1) The risk of murine typhus was
+negatively associated with rainfall and temperature, after
+controlling for distance to in-use international seaports. (2)
+Kaohsiung is a hotspot for murine typhus, dengue, and
+scrub typhus, all vector-borne diseases common in this port
+city. (3) International seaports have long been hotspots for
+disease invasion due to expanding trade and international
+networks.
+External knowledge: Dengue Fever has been documented
+in numerous outbreaks across Asia, Africa, South America,
+and the Caribbean, with major events in Malaysia, India,
+Brazil, Pakistan, and Bangladesh.
+Analysis: The three passage evidence pieces already estab-
+lish the full reasoning chain. Seaports facilitate pathogen
+introduction (Evidence 3), Kaohsiung is a port city where
+multiple vector-borne diseases co-occur despite involving
+different vectors (Evidence 2), and local climate modulates
+but does not override the port proximity effect (Evidence
+1). The external knowledge that dengue has a broad global
+distribution adds no inferential step to this chain. The pas-
+sage already states that dengue is prevalent in Kaohsiung;
+knowing that it also occurs in Brazil or Pakistan does not
+alter the reasoning about shared transmission dynamics
+in port environments. Removing the external knowledge
+leaves the question, the correct answer, and the underlying
+reasoning fully intact.
+design. We conducted a post-hoc analysis of all 478
+finalized EpiQAL-B instances to assess whether
+and how retrieved knowledge contributed to the
+final questions.
+Of the 478 instances, 27 (5.6%) incorporated
+retrieved knowledge into the question or option
+design; the remaining instances relied solely on
+passage evidence. We manually inspected all 27
+instances and found that in every case (27/27), the
+external knowledge provided only surface-level in-
+formation that could not be integrated into the rea-
+soning chain. Specifically, the retrieved triples re-
+stated facts already covered by the source passage
+or offered generic epidemiological context such
+as global disease distribution, without contribut-
+ing any reasoning step that the passage evidence
+alone could not support. In no instance did exter-
+nal knowledge introduce a novel inferential link
+required to arrive at the correct answer. Table 16
+illustrates a representative case.
+We attribute this outcome to a granularity mis-
+match between the knowledge graphs and the
+source documents, which manifests in two ways.
+High information density of source documents.
+Full-text research papers in PLOS Neglected Trop-
+ical Diseases contain detailed methodology, cross-
+referenced findings, and extensive background sec-
+tions. This level of information density leaves min-
+imal gaps for external knowledge to fill. Unlike
+short clinical queries or sparse patient notes, where
+external triples can supply missing context, long-
+form domain articles already embed sufficient evi-
+dence for multi-step inference.
+Coarse granularity of general-purpose knowl-
+edge graphs. The triples in eKG-DONs and iBKH
+represent entity-level facts such as “Dengue Fever,
+reported in, Asia, Brazil, Pakistan,” which oper-
+ate at a fundamentally different level of specificity
+than the study-level evidence in a research paper,
+where controlled variables, cohort characteristics,
+and measured effect sizes are situated within a spe-
+cific geographic setting. This structural mismatch
+causes retrieved triples to remain at the surface
+level, unable to participate in the logical chains that
+connect study-specific observations to inferential
+conclusions.
+Implications. These findings suggest that the util-
+ity of knowledge graph augmentation in benchmark
+construction is inversely related to the information
+density of the source document. When source texts
+are information-rich, general-purpose knowledge
+graphs degrade from an augmentation signal into
+a corroboration signal that confirms what the pas-
+sage already states rather than extending the reason-
+ing scope. Future work on knowledge-augmented
+QA construction may benefit from either domain-
+specialized knowledge resources with study-level
+granularity or source documents with sparser infor-
+mational content such as clinical notes or public
+health bulletins, where external knowledge can ad-
+dress genuine evidence gaps.
+F.6
+Question-Only Baseline
+To test whether models can answer EpiQAL
+questions without document evidence, we run a
+question-only baseline where all passage input is
+removed. Table 17 reports Exact Match under zero-
+shot no-CoT.
+On EpiQAL-A, average EM drops from 0.78
+‡DeepSeek-V4-Flash-Thinking replaces V3.2-Thinking as
+the latter is no longer available via API.
+
+Table 17: Question-only baseline: Exact Match with full document input vs. question-and-options only (zero-shot,
+no-CoT).
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Model
+Full
+Q-Only
+Full
+Q-Only
+Full
+Q-Only
+DeepSeek-V4-Flash-Thinking‡
+0.926
+0.023
+0.703
+0.538
+0.666
+0.035
+GPT-5-mini
+0.905
+0.015
+0.533
+0.477
+0.599
+0.288
+GPT-4o-mini
+0.766
+0.074
+0.222
+0.176
+0.213
+0.102
+GPT-4.1-nano
+0.768
+0.131
+0.678
+0.431
+0.559
+0.466
+Phi-4-mini-instruct
+0.583
+0.408
+0.249
+0.297
+0.426
+0.432
+Llama-3.2-3B-Instruct
+0.366
+0.088
+0.157
+0.073
+0.088
+0.027
+Llama-3.1-8B-Instruct
+0.798
+0.211
+0.318
+0.299
+0.190
+0.299
+Llama-3.3-70B-Instruct
+0.779
+0.276
+0.651
+0.358
+0.580
+0.438
+Mistral-7B-Instruct-v0.3
+0.722
+0.297
+0.789
+0.418
+0.808
+0.559
+Mistral-Large-Instruct-2411
+0.901
+0.040
+0.644
+0.347
+0.685
+0.056
+Qwen3-8B
+0.811
+0.038
+0.508
+0.368
+0.484
+0.278
+Qwen3-30B-A3B-Instruct-2507
+0.882
+0.076
+0.573
+0.500
+0.585
+0.175
+Qwen3-32B
+0.872
+0.000
+0.743
+0.481
+0.547
+0.069
+GLM-4.5-Air
+0.874
+0.021
+0.657
+0.364
+0.580
+0.104
+to 0.12, with several strong models (Qwen3-32B,
+GPT-5-mini, GLM-4.5-Air) falling to near zero,
+indicating that factual recall questions require doc-
+ument evidence. On EpiQAL-B and EpiQAL-C,
+residual question-only performance is higher be-
+cause multi-choice options inherently carry par-
+tial information. To verify that stem refinement
+does not inflate question-only performance through
+descriptive entity replacements, we re-run the
+question-only setting on original (pre-refinement)
+stems for 13 models (excluding DeepSeek due to
+the version change). Average question-only EM is
+comparable with and without refinement (EpiQAL-
+B: 0.353 vs. 0.356; EpiQAL-C: 0.253 vs. 0.246),
+indicating that residual performance is not an ar-
+tifact of refinement. Two models score no higher
+with the full document than without it on EpiQAL-
+C: Phi-4-mini (0.426 vs. 0.432) and Llama-3.1-8B
+(0.190 vs. 0.299). Both show large F1–EM gaps
+on that subset in Table 4 (0.329 and 0.402), so
+this pattern is consistent with over-selection under
+long-context input penalizing Exact Match, rather
+than with these models ignoring the document. We
+note it as a case where Exact Match alone under-
+states the contribution of the passage. Appendix F.7
+examines what this residual performance reflects.
+F.7
+Input Ablation Controls
+To test how much of model performance depends
+on the source article, we compare four input con-
+ditions for the four API models. Full provides
+the correct article; Shuffled substitutes a randomly
+drawn article from the same subset; Q-only pro-
+vides the question and options with no article (Ta-
+ble 17); Option-only provides the options alone.
+Chance is the empirical Exact Match of select-
+ing one option at random. For EpiQAL-A this is
+a loose single-pick reference rather than a strict
+chance level, since EpiQAL-A admits multiple cor-
+rect options and Exact Match requires recovering
+the full set.
+Table 18: Input ablation: Exact Match ranges over the
+four API models (zero-shot, no-CoT).
+Subset
+Full
+Shuf.
+Q-only
+Opt.
+Chance
+A
+.77–.91
+∼0
+.02–.13
+∼0
+.31
+B
+.23–.73
+.13–.45
+.18–.54
+.00–.17
+.21
+C
+.20–.66
+.00–.13
+.04–.47
+.00–.07
+.22
+On EpiQAL-A and EpiQAL-C, substituting a
+wrong article drops accuracy to near zero, and 82–
+100% of answers are returned empty rather than
+incorrect. Shuffled also falls below Q-only, so a
+wrong passage is more harmful than no passage,
+which is consistent with models conditioning on
+the article. Option-only does not exceed the ran-
+dom single-option reference on any subset, so the
+options alone are not self-revealing; this does not
+rule out question-conditioned option elimination,
+which uses the question and options together and
+which these controls cannot isolate.
+EpiQAL-B is the mixed case. Table 19 breaks it
+out per model.
+DeepSeek-V4-Flash-Thinking and GPT-4.1-
+nano gain 0.196 and 0.240 EM from the correct
+passage relative to Q-only, whereas GPT-5-mini
+and GPT-4o-mini show little measurable benefit.
+Residual question-only performance is consistent
+with question-option informativeness, parametric
+
+Table 19: EpiQAL-B input ablation, per model (Exact
+Match, zero-shot, no-CoT).
+Model
+Full
+Shuf.
+Q-only
+∆
+GPT-5-mini
+0.502
+0.454
+0.477
++0.025
+DeepSeek-V4-Flash
+0.734
+0.264
+0.538
++0.196
+GPT-4o-mini
+0.230
+0.130
+0.176
++0.054
+GPT-4.1-nano
+0.671
+0.347
+0.431
++0.240
+knowledge, or a combination; the present controls
+do not separate these explanations, and we treat
+this as a remaining limitation rather than evidence
+for any single mechanism. The accuracies reported
+here come from re-running the API models and
+differ slightly from Table 4, which we attribute to
+stochasticity and API variation.
+F.8
+Temperature Sensitivity
+To verify that our choice of temperature 0.3 does
+not affect benchmark conclusions, we re-run all
+evaluations at temperature 0 for the 12 models
+whose APIs support deterministic decoding (GPT-
+5-mini, DeepSeek-V3.2-Thinking, and DeepSeek-
+V4-Flash-Thinking are excluded). Table 20 reports
+Exact Match under zero-shot no-CoT.
+Table 20: Temperature sensitivity: Exact Match at
+T=0.3 vs. T=0 (zero-shot, no-CoT).
+EpiQAL-A EpiQAL-B EpiQAL-C
+Model
+.3
+0
+.3
+0
+.3
+0
+GPT-4o-mini
+.766
+.771
+.222
+.228
+.213
+.213
+GPT-4.1-nano
+.768
+.775
+.678
+.661
+.559
+.553
+Phi-4-mini
+.583
+.583
+.249
+.234
+.426
+.418
+Llama-3.2-3B
+.366
+.383
+.157
+.146
+.088
+.088
+Llama-3.1-8B
+.798
+.798
+.318
+.322
+.190
+.209
+Llama-3.3-70B
+.779
+.777
+.651
+.653
+.580
+.578
+Mistral-7B
+.722
+.726
+.789
+.808
+.808
+.810
+Mistral-Large
+.901
+.899
+.644
+.626
+.685
+.681
+Qwen3-8B
+.811
+.802
+.508
+.515
+.484
+.509
+Qwen3-30B-A3B .882
+.878
+.573
+.573
+.585
+.587
+Qwen3-32B
+.872
+.872
+.743
+.734
+.547
+.532
+GLM-4.5-Air
+.874
+.880
+.657
+.655
+.580
+.587
+Mean per-model EM deviation is below 1% on
+every subset. Spearman rank correlation between
+T=0.3 and T=0 rankings exceeds 0.99 on all subsets
+(A: 0.993, B: 1.000, C: 0.995), confirming that
+the choice of temperature does not affect model
+rankings or benchmark conclusions.
+F.9
+Multi-Run Stability
+To verify result stability, we conduct three runs at
+the same settings for the 14 models. Table 21 re-
+ports mean and standard deviation of Exact Match
+under zero-shot no-CoT and CoT. Results are
+highly stable: the mean no-CoT standard devia-
+tion is below 1% on each subset, while CoT shows
+slightly more variation but model rankings remain
+unchanged across runs.
+F.10
+Reasoning Budget Sweep
+Reasoning models expose a control over how much
+internal reasoning they perform before answering.
+To check whether this lever changes benchmark
+conclusions, we sweep each provider’s control over
+its low, medium, and high settings on EpiQAL-
+B and EpiQAL-C, using the reasoning_effort
+parameter for the OpenAI models and the closest
+provider-specific control available for DeepSeek.
+Table 22 reports the two extremes in Exact Match
+and average reasoning tokens. DeepSeek-V4-Pro
+is outside the benchmark model set and is included
+only as an exploratory comparison. The accuracies
+here come from re-running the API models and
+differ slightly from Table 4, which we attribute to
+stochasticity and API variation.
+The effect is small and model-dependent. GPT-
+5-mini’s reasoning budget responds strongly to the
+setting, expanding roughly tenfold from low to
+high, while the DeepSeek models barely change
+their budget at all. This indicates that provider-
+specific reasoning controls are not directly compa-
+rable across families, so the sweep should not be
+read as a controlled comparison of reasoning depth.
+Accuracy changes are small on EpiQAL-B for all
+three models. GPT-5-mini shows a suggestive 0.08
+increase on EpiQAL-C from low to high, which we
+do not interpret as a firm effect without a paired
+confidence interval. This lever is also distinct from
+Chain-of-Thought prompting, which unlocks ex-
+plicit reasoning in models that do not reason by
+default, whereas the models swept here already do.
+F.11
+Token Usage
+We logged per-question output and reasoning to-
+kens for the four API models. Table 23 averages
+over EpiQAL-A, B, and C; per-subset figures are
+cited in the text where relevant. Input length is
+approximately 7k tokens for every model, since all
+receive the same article, so differences arise on the
+output side. The rerun accuracies are close to those
+in Table 4, with small deviations that we attribute
+to stochasticity and API variation.
+The
+most
+direct
+comparison
+is
+between
+DeepSeek-V4-Flash-Thinking and GPT-5-mini.
+DeepSeek reaches a higher mean Exact Match,
+
+Table 21: Multi-run stability: mean±std of Exact Match (EM) across runs.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Model
+w/o CoT
+CoT
+w/o CoT
+CoT
+w/o CoT
+CoT
+DeepSeek-V4‡
+0.929±0.007
+0.931±0.006
+0.705±0.016
+0.802±0.009
+0.666±0.007
+0.683±0.012
+GPT-5-mini
+0.898±0.005
+0.927±0.002
+0.531±0.002
+0.632±0.022
+0.596±0.003
+0.564±0.012
+GPT-4o-mini
+0.769±0.004
+0.795±0.001
+0.225±0.003
+0.511±0.018
+0.207±0.005
+0.234±0.003
+GPT-4.1-nano
+0.779±0.008
+0.785±0.010
+0.672±0.005
+0.627±0.018
+0.562±0.003
+0.556±0.004
+Phi-4-mini
+0.587±0.005
+0.658±0.001
+0.248±0.004
+0.404±0.003
+0.421±0.006
+0.387±0.001
+Llama-3.2-3B
+0.385±0.014
+0.335±0.012
+0.151±0.004
+0.100±0.003
+0.093±0.004
+0.108±0.008
+Llama-3.1-8B
+0.799±0.004
+0.833±0.001
+0.333±0.010
+0.667±0.012
+0.203±0.009
+0.383±0.001
+Llama-3.3-70B
+0.777±0.002
+0.788±0.005
+0.656±0.004
+0.733±0.002
+0.582±0.002
+0.628±0.003
+Mistral-7B
+0.718±0.006
+0.713±0.006
+0.793±0.003
+0.806±0.006
+0.810±0.003
+0.813±0.001
+Mistral-Large
+0.902±0.001
+0.911±0.007
+0.635±0.006
+0.692±0.005
+0.681±0.004
+0.698±0.001
+Qwen3-8B
+0.801±0.008
+0.841±0.001
+0.508±0.002
+0.624±0.006
+0.488±0.010
+0.514±0.000
+Qwen3-30B-A3B
+0.884±0.002
+0.899±0.000
+0.573±0.000
+0.742±0.006
+0.583±0.002
+0.624±0.003
+Qwen3-32B
+0.876±0.003
+0.862±0.007
+0.730±0.009
+0.728±0.007
+0.545±0.002
+0.558±0.001
+GLM-4.5-Air
+0.879±0.004
+0.885±0.003
+0.660±0.007
+0.662±0.006
+0.575±0.004
+0.567±0.007
+Table 22: Reasoning budget sweep, low to high setting
+(zero-shot, no-CoT). EM is Exact Match; tok is average
+reasoning tokens per question, in thousands.
+Model
+B EM
+B tok
+C EM
+C tok
+GPT-5-mini
+.55–.56
+0.2–2.1
+.56–.64
+0.3–2.5
+DeepSeek-V4-Flash
+.70–.73
+1.0–1.1
+.66–.66
+1.2–1.2
+DeepSeek-V4-Pro
+.79–.80
+1.6–1.6
+.67–.66
+2.1–2.1
+Table 23: Average token usage per question and mean
+Exact Match across the three subsets (zero-shot, no-
+CoT).
+Model
+Out. tok
+Reason. tok
+Mean EM
+DeepSeek-V4
+870
+861
+0.769
+GPT-5-mini
+632
+615
+0.667
+GPT-4o-mini
+13
+0
+0.402
+GPT-4.1-nano
+10
+0
+0.673
+0.769 against 0.667, while using roughly 1.4 times
+as many reasoning tokens on average and roughly
+1.5 times as many on EpiQAL-B, so its accuracy ad-
+vantage comes with a larger reasoning budget. Sep-
+arately, the non-reasoning models emit far fewer
+output tokens, and GPT-4.1-nano reaches a mean
+Exact Match close to GPT-5-mini while produc-
+ing around ten output tokens per question. We
+report these figures descriptively rather than as
+a cost-efficiency comparison, since input, output,
+and reasoning tokens are priced differently across
+providers and averaging over the three subsets
+hides substantial differences in per-subset rankings.
+F.12
+Out-of-Distribution Evaluation
+To assess potential data contamination, we collect
+96 research articles from PLOS Neglected Tropical
+Diseases published in March 2026, after the release
+dates of all evaluated models except DeepSeek-V4-
+Flash-Thinking. We run the full EpiQAL construc-
+tion pipeline with identical settings and evaluate
+the 14 models under zero-shot no-CoT. DeepSeek-
+V4-Flash-Thinking is retained because it replaced
+DeepSeek-V3.2-Thinking in the API during ap-
+pendix experiments. Table 24 reports Exact Match
+on the original and OOD sets.
+Spearman rank correlation between original and
+OOD model rankings is 0.94 (EpiQAL-A), 0.95
+(EpiQAL-B), and 0.96 (EpiQAL-C), indicating
+that model performance generalizes to unseen doc-
+uments and is not driven by memorization of
+training-set passages.
+F.13
+Cross-Source Generalization
+To test whether the pipeline generalizes beyond
+PLOS NTD, we apply it to 82 articles from the In-
+ternational Journal of Epidemiology (Oxford Uni-
+versity Press), which covers broader epidemiolog-
+ical topics including chronic and environmental
+epidemiology. We use the same generation model
+(Qwen3-30B-A3B) and construction settings, yield-
+ing 82, 79, and 78 instances for A, B, and C respec-
+tively. Table 25 reports Exact Match for the 14
+models under zero-shot no-CoT.
+Performance patterns are consistent across
+sources: EpiQAL-A remains the easiest subset,
+while B and C pose greater challenges. Key find-
+ings from the PLOS experiments replicate on IJE:
+Mistral-7B leads on EpiQAL-C (0.808), Llama-
+3.2-3B collapses on reasoning-intensive subsets,
+and scale does not predict success. These results
+suggest that the construction pipeline ports to epi-
+demiological literature beyond neglected tropical
+
+Table 24: Out-of-distribution evaluation: Exact Match on original vs. post-release articles (zero-shot, no-CoT). Bold
+= best, underline = second best per column. Ties share the same mark.
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+Model
+Original
+OOD
+Original
+OOD
+Original
+OOD
+DeepSeek-V4-Flash-Thinking‡
+0.926
+0.920
+0.703
+0.782
+0.666
+0.688
+GPT-5-mini
+0.905
+0.898
+0.533
+0.552
+0.599
+0.581
+GPT-4o-mini
+0.766
+0.795
+0.222
+0.345
+0.213
+0.226
+GPT-4.1-nano
+0.768
+0.795
+0.678
+0.678
+0.559
+0.516
+Phi-4-mini-instruct
+0.583
+0.591
+0.249
+0.276
+0.426
+0.430
+Llama-3.2-3B-Instruct
+0.366
+0.455
+0.157
+0.195
+0.088
+0.118
+Llama-3.1-8B-Instruct
+0.798
+0.807
+0.318
+0.230
+0.190
+0.280
+Llama-3.3-70B-Instruct
+0.779
+0.705
+0.651
+0.632
+0.580
+0.591
+Mistral-7B-Instruct-v0.3
+0.722
+0.670
+0.789
+0.782
+0.808
+0.806
+Mistral-Large-Instruct-2411
+0.901
+0.875
+0.644
+0.586
+0.685
+0.720
+Qwen3-8B
+0.811
+0.864
+0.508
+0.471
+0.484
+0.430
+Qwen3-30B-A3B-Instruct-2507
+0.882
+0.875
+0.573
+0.667
+0.585
+0.538
+Qwen3-32B
+0.872
+0.852
+0.743
+0.724
+0.547
+0.484
+GLM-4.5-Air
+0.874
+0.909
+0.657
+0.724
+0.580
+0.559
+Table 25: Cross-source evaluation: Exact Match on IJE articles (zero-shot, no-CoT). PLOS results are in Table 4.
+Bold = best, underline = second best per column. Ties share the same mark.
+Model
+EpiQAL-A
+EpiQAL-B
+EpiQAL-C
+DeepSeek-V4-Flash-Thinking‡
+0.939
+0.886
+0.744
+GPT-5-mini
+0.902
+0.658
+0.551
+GPT-4o-mini
+0.780
+0.582
+0.295
+GPT-4.1-nano
+0.805
+0.646
+0.526
+Phi-4-mini-instruct
+0.622
+0.557
+0.500
+Llama-3.2-3B-Instruct
+0.402
+0.038
+0.103
+Llama-3.1-8B-Instruct
+0.866
+0.722
+0.321
+Llama-3.3-70B-Instruct
+0.866
+0.785
+0.731
+Mistral-7B-Instruct-v0.3
+0.756
+0.810
+0.808
+Mistral-Large-Instruct-2411
+0.927
+0.734
+0.603
+Qwen3-8B
+0.854
+0.671
+0.526
+Qwen3-30B-A3B-Instruct-2507
+0.902
+0.759
+0.603
+Qwen3-32B
+0.927
+0.759
+0.538
+GLM-4.5-Air
+0.902
+0.684
+0.628
+
+diseases. Since we use the same generator and
+checkers with no separate expert pass, this is a
+portability check rather than evidence that the tax-
+onomy covers epidemiology as a whole.
+F.14
+Cross-Generator Robustness
+All main-experiment instances are produced by
+a single generator, which raises the question of
+whether the observed model rankings and the near-
+saturation of EpiQAL-A are specific to that gen-
+erator. To probe this, we regenerated a 50-article
+sample of each subset from the same PLOS NTD
+corpus using DeepSeek-V4-Pro, a stronger model
+from a different family than Qwen3-30B-A3B, and
+re-evaluated the models under zero-shot no-CoT.
+Table 26 compares mean Exact Match against Ta-
+ble 4, which covers the full benchmark, and reports
+the per-model rank correlation over the 13 models
+that have a one-to-one counterpart in Table 4.
+Table 26: Cross-generator comparison. Mean Exact
+Match over models and per-model Spearman rank corre-
+lation between the two generators (zero-shot, no-CoT).
+Subset
+Qwen mean
+DeepSeek mean
+Spearman
+A
+0.77
+0.88
+0.86
+B
+0.52
+0.40
+0.81
+C
+0.49
+0.37
+0.74
+Per-model ordering is largely preserved across
+generators. The 13 models compared already ex-
+clude the DeepSeek family, and dropping the Qwen
+family as well leaves the correlations at 0.92, 0.76,
+and 1.00 on A, B, and C, so the agreement is not an
+artifact of same-family models tracking their own
+generator. EpiQAL-A stays near saturation under
+the stronger generator, with mean Exact Match if
+anything higher, which is consistent with the sat-
+uration reflecting the recall-oriented nature of the
+task rather than a property of the original gener-
+ator. EpiQAL-B and EpiQAL-C remain far from
+saturated and are somewhat harder under the new
+generator.
+This analysis uses one alternative generator on a
+50-article sample per subset, whereas Table 4 eval-
+uates the full benchmark, and it does not include a
+matched comparison of distractor deception rates.
+It is therefore a preliminary robustness check rather
+than a controlled generator ablation, and we draw
+no conclusions beyond what the sample supports.
+F.15
+Construction and Evaluation Roles
+Several evaluated models also take part in bench-
+mark construction. Table 27 lists each role so the
+overlap can be checked directly.
+Table 27: Model roles in construction and evaluation. ∗
+marks models whose provider family also appears in the
+evaluation set under a different checkpoint. GPT-5-mini
+additionally performs the post-hoc distractor classifica-
+tion in §4.4, which is an analysis step rather than part
+of construction.
+Model
+Construction role
+Evaluated
+Qwen3-30B-A3B∗
+generator
+yes
+GPT-5-mini∗
+checker, diff judge
+yes
+DeepSeek-V3.2∗
+checker, diff judge
+yes
+GLM-4.5-Air
+checker
+yes
+Qwen3-32B∗
+diff judge
+yes
+Phi-4-mini
+diff judge
+yes
+the other nine models
+none
+yes
+No model generates the items it is later evalu-
+ated on beyond the generator itself, which ranks
+ninth on EpiQAL-B. Rank alone, however, does not
+test for generator-style bias. Beyond exact-model
+overlap, several evaluated models share a provider
+family with construction models even where the
+checkpoints differ, so the checker and difficulty-
+judge pool may share blind spots with part of the
+evaluation set. A fully held-out generator and judge
+split would be cleaner and remains a direction for
+future work.
+F.16
+Model Version Comparison
+DeepSeek-V4-Flash-Thinking, a lighter variant
+that replaced V3.2-Thinking via API update, pro-
+vides a natural comparison point. On EpiQAL-
+A, V4-Flash-Thinking performs nearly identically
+to V3.2-Thinking (0.926 vs. 0.928 EM without
+CoT). However, on the reasoning-intensive sub-
+sets, V4-Flash-Thinking drops substantially: 0.703
+vs. 0.818 on EpiQAL-B and 0.666 vs. 0.720 on
+EpiQAL-C. This pattern is consistent with partially
+distinct model behaviors across retrieval and multi-
+step reasoning, and suggests that the lighter vari-
+ant disproportionately loses reasoning performance
+while largely retaining retrieval accuracy.
+F.17
+Detailed Discussion
+This section provides supplementary analysis be-
+yond the main discussion in §4.5.
+Per-model distractor vulnerability. On EpiQAL-
+A, DeepSeek-V3.2-Thinking achieves the lowest
+overall deception rate (4.7%), while Phi-4-mini
+
+(23.8%) and Llama-3.2-3B (21.7%) show uni-
+formly high rates. Across all models, Semantic
+near-miss is consistently the most deceptive cate-
+gory, with mid-tier models such as GPT-4o-mini
+(21.5% on this category) and Qwen3-8B (19.0%)
+showing rates roughly double their averages on
+other categories.
+On
+EpiQAL-B,
+Mistral-7B
+(5.9%)
+and
+DeepSeek-V3.2-Thinking (6.1%) lead,
+while
+GPT-4o-mini (34.4%) surpasses even Llama-
+3.2-3B (31.0%), indicating that reasoning-level
+distractors expose weaknesses in models that
+perform adequately on retrieval.
+On EpiQAL-C, Llama-3.1-8B shows the high-
+est vulnerability (40.9%), driven by Specula-
+tion/limitation distractors (43.4%), while Mistral-
+7B maintains the lowest rate (5.5%) with a flat
+profile across categories.
+Residual weaknesses of top models.
+Even
+top models show category-specific residual weak-
+nesses. DeepSeek-V3.2-Thinking reduces most
+EpiQAL-A categories to ≤2.7% deception, yet Se-
+mantic near-miss remains at 13.6%. On EpiQAL-
+C, DeepSeek-V3.2-Thinking achieves near-zero
+Causal reversal deception (0.7%), suggesting that
+dedicated reasoning capabilities specifically aid
+causal chain validation under incomplete evidence.
+GPT-5-mini ranking anomaly. GPT-5-mini ranks
+third on EpiQAL-A (EM 0.905) but drops to mid-
+tier on EpiQAL-B (0.634 with CoT) and EpiQAL-
+C (0.555 with CoT). Per-model deception analy-
+sis offers a partial explanation: its vulnerability
+profile is uneven across distractor categories on
+inference-heavy subsets, suggesting strong retrieval
+but weaker multi-step reasoning under domain-
+specific constraints.
+Additional Chain-of-Thought effects. Beyond
+the models highlighted in the main text, CoT ben-
+efits on EpiQAL-B are widespread: Qwen3-30B-
+A3B improves from 0.573 to 0.747 (+0.174) and
+Llama-3.3-70B from 0.651 to 0.732 (+0.081). On
+EpiQAL-C, the mixed pattern extends further: Phi-
+4-mini degrades (0.426 →0.388), while Llama-
+3.3-70B improves modestly (0.580 →0.626). This
+suggests that CoT amplification of errors under
+partial evidence is not model-specific but a more
+general phenomenon affecting models that rely on
+explicit reasoning chains when the evidence base
+is incomplete.
+G
+Prompts
+Tables 28–31 present abbreviated generation, veri-
+fication, and evaluation prompts. Full prompts are
+in the released code.
+
+Table 28: Prompts used for EpiQAL-A generation and verification (abbreviated; full prompts in supplementary
+code).
+Question Generation:
+Your task is to generate a retrieval-based question using the provided passage.
+The question should be an-
+swerable by directly locating information in the passage, without requiring inference or external knowledge.
+[... ...]
+Target specific factual content such as numbers, dates, definitions, or clearly stated facts. The question stem should
+not copy phrases from the passage that would make the answer obvious, and should not be answerable by general
+knowledge alone. Use the topic to constrain scope but do not ask about the topic name directly.
+Correct Option Generation:
+Correct options should be answers that can be directly found in the passage.
+[... ...]
+Each option must be directly supported by explicit text. Use concise wording without copying entire evidence sen-
+tences. If generating multiple options, ensure each represents a distinct correct answer from different parts of the passage.
+Distractor Generation:
+Distractors should be plausible-sounding answers that appear in the passage but do not correctly answer the
+specific question asked.
+[... ...]
+Good distractors belong to the same semantic category as the correct option, are factually accurate within the passage
+context, but relate to a different entity, time, place, or context. Each distractor must be a valid passage fact but incorrect
+for this specific question. Match the style, length, and specificity of correct options.
+Verification (Checker):
+Verify whether options are valid as {answer_type} based on the passage, question, evidence, and rationale.
+Evaluate based on the option’s role relative to the question, not on external factual accuracy.
+[... ...]
+Verify evidence is an exact verbatim quote from the passage. [Correct Option]: Verify the option directly and
+accurately answers the question. [Distractor]: Focus on meaning, not surface form—reordering or rephrasing
+does not make an option incorrect; only a substantive factual difference counts. If any check fails, Coherence must be No.
+
+Table 29: Prompts used for EpiQAL-B generation and verification (abbreviated; full prompts in supplementary
+code).
+Question Generation:
+Your task is to generate a multiple-choice style question that requires multi-step reasoning.
+The question
+should be grounded in the passage, guided by the topic, and optionally informed by external domain knowledge.
+[... ...]
+Select at least two pieces of evidence from different parts of the passage that must be combined. Establish a reasoning
+chain requiring an epidemiological principle, comparison, or implication not stated in any single evidence piece. Verify
+that the question cannot be answered from one evidence piece alone, and that the passage does not directly provide the
+answer. Keep the stem concise; do not embed numbers, percentages, or descriptive phrases pointing to key evidence.
+Correct Option Generation:
+Options should be derived conclusions from integrating the provided evidence, not facts directly retrievable
+from the passage.
+[... ...]
+Each option must require integrating at least two evidence pieces, must not be a paraphrase of any single sentence, and
+must require applying an epidemiological principle. Do not embed external knowledge as explicit facts in the option
+text. If generating multiple options, ensure they are genuinely distinct.
+Distractor Generation:
+Distractors must look structurally identical to correct options but contain a subtle logical flaw detectable only
+through careful reasoning.
+[... ...]
+Each distractor should target a distinct error type: confusing related concepts, applying a valid method to an
+incompatible study design, mixing up the target variable, using correct terminology while violating assumptions, or
+drawing conclusions requiring unavailable data. Verify each distractor requires domain expertise to eliminate and is
+definitively wrong.
+Verification (Checker):
+Check whether options are valid as {answer_type}.
+Verify evidence is traceable to provided materials; flag
+fabricated claims. Check options do not embed external-knowledge-only information and are not direct retrievals from
+the passage.
+[... ...]
+[Correct Option]: Can the option be logically derived by integrating multiple evidence pieces and applying
+epidemiological principles? The conclusion must not be reachable from any single piece alone. [Distractor]: Could
+the conclusion be reached through valid reasoning? If yes, Coherence = No. The flaw must be substantive, not just a
+difference in wording.
+
+Table 30: Prompts used for EpiQAL-C generation and verification (abbreviated; full prompts in supplementary
+code).
+Correct Option Extraction:
+Extract one conclusion from the Discussion section that will serve as the Correct Option.
+Readers will see
+only the Passage Body and must identify which conclusion can be derived from it.
+[... ...]
+The conclusion must not be explicitly stated in the Passage Body, must be logically derivable from Passage Body
+evidence by applying general epidemiological principles, and must not require results from other studies, external
+facts, or comparisons to benchmarks not in the Passage Body. Reject direct numerical summaries from Results, study
+limitations, speculative statements, and generic observations. Prefer conclusions requiring integration of multiple
+evidence pieces.
+Question Generation:
+Generate a question stem answerable only by the extracted Correct Option, which is a conclusion derived
+from the Passage Body through epidemiological reasoning.
+[... ...]
+The question must require integrating multiple evidence pieces and applying epidemiological principles. The stem must
+not use words appearing in the Option field, must not hint at the conclusion through synonyms or paraphrases, and must
+not reveal which evidence pieces are relevant. Verify the question is passage-specific and not answerable by general
+knowledge alone.
+Distractor Generation:
+Distractors should be plausible-sounding conclusions that cannot actually be derived from the Passage Body
+alone.
+[... ...]
+Candidate categories: external dependency (requires information from cited studies not in Passage Body), speculation
+(future directions or untested hypotheses), limitations (methodological caveats), background only (general knowledge
+without study-specific interpretation), and causal reversal (misinterpreting cause-effect relationships from the evidence).
+Verify each candidate cannot answer the question through valid Passage Body reasoning. Aim for 3–4 diverse distractors.
+Verification (Checker):
+Check whether options are valid as {answer_type} based on Passage Body, Discussion, evidence, and ratio-
+nale. The Passage Body contains all sections except the Discussion.
+[... ...]
+Check Discussion_Source traceability and that evidence is not fabricated. Verify the option is not a direct retrieval from
+the Passage Body. [Correct Option]: Can the conclusion be logically derived from the Passage Body by integrating
+evidence and applying epidemiological principles? Base this on what the Passage Body contains, not on what the
+generator cited. [Distractor]: Could this conclusion be correctly derived from the Passage Body alone? If yes,
+Coherence = No. Valid flaws include causal reversal, overgeneralization, requiring external information, misinterpreting
+findings, or presenting speculation as established conclusions.
+
+Table 31: Evaluation prompts across all three subsets.
+EpiQAL-A (zero-shot, without CoT):
+You are an expert in epidemiology.
+Answer the retrieval-based question using the provided passage.
+There
+may be one correct answer, multiple correct answers, or no correct answer. Select all options whose answers can be
+directly found in the passage.
+EpiQAL-A (zero-shot, with CoT):
+You are an expert in epidemiology.
+Answer the question using the provided passage.
+You must evaluate
+each option independently. For each option, locate information in the passage that is relevant to the option. Determine
+whether the option matches information explicitly stated in the passage and correctly answers the specific question asked.
+EpiQAL-B (zero-shot, without CoT):
+You are an expert in epidemiology.
+Answer the question based on the provided passage and your epidemio-
+logical knowledge. There may be one correct answer, multiple correct answers, or no correct answer. Select all correct
+answers. Some options may require combining passage evidence with epidemiological principles.
+EpiQAL-B (zero-shot, with CoT):
+You are an expert in epidemiology.
+Answer the question based on the provided passage and your epidemio-
+logical knowledge. You must evaluate each option independently. Some options require multi-step reasoning that
+combines evidence from the passage with epidemiological principles. A correct option must be supported by passage
+evidence and represent valid epidemiological reasoning. An incorrect option may contain methodological errors,
+misinterpret the evidence, or require information not available in the passage.
+EpiQAL-C (zero-shot, without CoT):
+You are an expert in epidemiology.
+Answer the question using the provided Passage Body, which contains
+all sections of the paper except the Discussion. There may be one correct answer, multiple correct answers, or no correct
+answer. Select all conclusions that can be logically derived from the Passage Body.
+EpiQAL-C (zero-shot, with CoT):
+You are an expert in epidemiology.
+Answer the question using the provided Passage Body, which contains
+all sections of the paper except the Discussion. You must evaluate each option independently. For each option,
+determine whether it can be logically derived from Passage Body evidence by applying general epidemiological
+principles. A correct option must be derivable from the Passage Body but should not be explicitly stated there verbatim.
+An incorrect option either requires external information not in the Passage Body, makes unsupported speculative claims,
+or misinterprets the evidence.
+All prompts instruct the model to output a JSON object with key “results” containing a list of index strings
+for correct options, or an empty list if none.

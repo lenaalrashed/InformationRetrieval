@@ -1,0 +1,2136 @@
+TreeRare: Syntax Tree-Guided Retrieval and Reasoning
+for Knowledge-Intensive Question Answering
+Boyi Zhang
+University of Rochester
+bzhang44@u.rochester.edu
+Zhuo Liu
+University of Rochester
+zliu106@ur.rochester.edu
+Hangfeng He
+University of Rochester
+hangfeng.he@rochester.edu
+Abstract
+In real practice, questions are typically complex
+and knowledge-intensive, requiring Large Lan-
+guage Models (LLMs) to recognize the multi-
+faceted nature of the question and reason across
+multiple information sources.
+Iterative and
+adaptive retrieval, where LLMs decide when
+and what to retrieve based on their reasoning,
+has been shown to be a promising approach
+to resolve complex, knowledge-intensive ques-
+tions. However, the performance of such re-
+trieval frameworks is limited by the accumu-
+lation of reasoning errors and misaligned re-
+trieval results. To overcome these limitations,
+we propose TreeRare (Syntax Tree-Guided
+Retrieval and Reasoning), a framework that uti-
+lizes syntax trees to guide information retrieval
+and reasoning for question answering. Follow-
+ing the principle of compositionality, TreeRare
+traverses the syntax tree in a bottom-up fashion,
+and in each node, it generates subcomponent-
+based queries and retrieves relevant passages
+to resolve localized uncertainty. A subcom-
+ponent question answering module then syn-
+thesizes these passages into concise, context-
+aware evidence. Finally, TreeRare aggregates
+the evidence across the tree to form a final an-
+swer. Experiments across five question answer-
+ing datasets involving ambiguous or multi-hop
+reasoning demonstrate that TreeRare achieves
+substantial improvements over existing state-
+of-the-art methods.1
+1
+Introduction
+Large Language Models (LLMs) (Chowdhery et al.,
+2023; Achiam et al., 2023) have demonstrated re-
+markable capabilities across a wide range of natu-
+ral language processing (NLP) tasks, including text
+generation and question answering, often achieving
+strong performance in few-shot or even zero-shot
+settings without task-specific fine-tuning (Brown
+1Our
+code
+is
+publicly
+available
+at
+https://github.com/billycrapediem/TreeRare.
+𝑄: What coastal area does the medieval 
+fortress in … on the south side?
+TreeRare
+Dirleton, East 
+Lothian, Scotland
+ReAct
+The coastal is known as Yellowcraigs
+Search[Dirleton coastal 
+area]
+Obs: Could not find 
+Dirleton coastal area
+Search[North Berwick]
+Obs:… located on the 
+south shore of the Firth 
+of Forth
+Firth of Forth
+✅
+❌
+The coastal area 
+located to the south 
+of …. Known as 
+Yellowcraigs
+What geographical 
+features East 
+Lothian?
+A medieval 
+fortress
+What is the location 
+of Dirleton in relation 
+to the coast of East 
+Lothian?
+Dirleton is located 
+in East Lothian, 
+Nearby coastal 
+areas include 
+Yellowcraigs
+𝑄
+Thought: Dirleton is near 
+North Berwick
+Figure 1: Comparison of TreeRare and ReAct(Yao et al.,
+2022) on a multihop question. TreeRare decomposes
+the question into structured sub-questions and retrieves
+focused evidence. In contrast, ReAct fails to generate
+useful query and misidentifies the region.
+et al., 2020). Despite their impressive performance,
+LLMs generate plausible but factually incorrect
+statements due to over-reliance on their paramet-
+ric knowledge when tackling knowledge-intensive
+tasks that demand factual accuracy and external
+grounding (Roberts et al., 2020; Maynez et al.,
+2020; Chen et al., 2022). To address this issue,
+existing work has shown that retrieval-augmented
+generation (RAG) can largely reduce factual hal-
+lucination by incorporating LLMs with external
+knowledge sources (Lewis et al., 2020; Guu et al.,
+2020).
+RAG enhances LLMs by integrating external
+knowledge retrieval into the generation process.
+Traditional RAG systems follow a “retrieve-then-
+read” paradigm, where a retriever selects top-k
+documents based on similarity metrics, and the
+LLM generates responses conditioned on retrieved
+arXiv:2506.00331v2 [cs.CL] 4 Dec 2025
+
+documents (Lewis et al., 2020). While effective
+for well-posed queries, this paradigm often strug-
+gles to answer ambiguous or multihop questions,
+as similarity-based retrieval may miss relevant ev-
+idence. To address this limitation, many works
+enhance retrieval quality via retrieval judgment,
+adaptive search mechanisms, or question decompo-
+sition to improve retrieval quality and performance
+of complex knowledge-intensive tasks. (Li et al.,
+2025; Asai et al., 2024; Tan et al., 2024; Yao et al.,
+2022) However, as illustrated in Figure 1, these
+methods often rely on internal reasoning in LLMs,
+which can cause errors to accumulate across steps.
+Mistakes made during reasoning or retrieval can
+result in information that is misaligned with the
+original intent of the question, leading to noisy
+inputs and incorrect final answers (Li et al., 2024).
+Inspired by the principle of compositionality
+—the meanings of complex expressions are con-
+structed from the meanings of the less complex
+expressions that are their constituents (Fodor and
+Lepore, 2002)— we then ask: Can the syntactic
+structure of complex, knowledge-intensive ques-
+tions guide effective retrieval and inference toward
+correct answers? We leverage syntax trees as a
+basis for question decomposition, since parsing
+tree has been shown to be effective in capturing
+the syntactic relations between each phrase in a
+sentence (Li et al., 2015). Then, we propose a
+bottom-up traversal of the syntax tree, where each
+child node is processed first, and its output is used
+to guide the processing of its parent node. Addi-
+tionally, observing that LLMs frequently fail to
+detect ambiguity or knowledge gaps present within
+sub-phrases (Piryani et al., 2024; Kim et al., 2024),
+we provide LLMs at each node with information
+from the child nodes to formulate queries that re-
+solve the associated sub-phrase uncertainty. Fur-
+thermore, recognizing that LLM performance de-
+grades when conditioned on long or noisy inputs
+(Liu et al., 2024b; Xu et al., 2024), we introduce a
+subcomponent question answering that synthesize
+the retrieved context into concise, phrase-relevant
+evidence.
+Combining these modules, we propose syntax
+tree-guided retrieval and reasoning (TreeRare).
+TreeRare incrementally retrieves and resolves sub-
+components of a question in accordance with its
+syntax structure. As illustrated in Figure 2, TreeR-
+are traverses the syntax tree in a bottom-up man-
+ner, resolving the uncertainty at each node through
+a two-stage process, starting with subcomponent-
+based retrieval, followed by subcomponent ques-
+tion answering. Upon completing the traversal,
+TreeRare constructs targeted, comprehensive evi-
+dence for each sub-phrase in the parsing tree and
+aggregates these evidence across nodes to generate
+a final answer.
+Our contributions are as follows: (1) We propose
+TreeRare to handle complex, knowledge-intensive
+questions, which enhances LLMs’ performance
+by interleaving retrieval with reasoning over the
+syntax tree. (2) We introduce retrieval-only coun-
+terpart, Tree-Retrieval, effectively improving the
+retrieval quality without involving any LLM reason-
+ing. (3) We perform experiments across multiple
+multihop and ambiguous question answering (QA)
+benchmarks for three LLM backbones. On multi-
+hop QA benchmarks, TreeRare achieves an average
+relative improvement up to 17.8%. For ambiguous
+QA, TreeRare yields an average improvement of
+23.7% across various evaluation metrics.
+2
+Related Work
+2.1
+LLMs for Reasoning
+Significant efforts have been dedicated to enhance
+the reasoning capabilities of LLMs during the infer-
+ence phase. Chain-of-prompting (CoT) (Wei et al.,
+2022) prompting introduces intermediate reason-
+ing steps between the initial query and the final
+answer, thereby improving performance on com-
+plex tasks. Building upon this, self-consistency
+(SC) (Wang et al., 2022) generates multiple reason-
+ing paths and employ majority voting to select the
+final answer; self-verification (Shinn et al., 2023)
+prompts LLMs to reflect on their outputs and itera-
+tively refine them through feedback. Additionally,
+Tree-of-Thought (ToT) and Reasoning via Plan-
+ning (RAP) prompting (Yao et al., 2023; Hao et al.,
+2023) extend the CoT approach. These methods
+further enhance LLMs’ reasoning abilities by ex-
+ploring multiple reasoning paths with different tree
+search algorithm. Above approaches rely solely
+on the internal reasoning traces of LLMs and lack
+structural guidance, such as syntax tree included in
+TreeRare.
+2.2
+Retrieval Augmented Generation
+Common RAG systems proceed in a retriever-then-
+read paradigm, where it first retrieves relevant docu-
+ments based on the user’s query using either sparse
+or dense retrieval and then takes the retrieved infor-
+mation in addition to the question as input to gener-
+
+Question
+Syntax Tree based
+Decomposition (Section 3.1)
+ 𝑛!
+ 𝑛"
+ 𝑛#
+LLMs
+Final Answer
+Children Evidence 𝑛!, 𝑛"
+Subcomponent 𝑛#
+Retrieved Documents
+Evidence of 𝑛#
+Final Answer 
+Generation (Section 3.4)
+Subcomponent based
+Information Retrieval (Section 3.2)
+Subcomponent based Question Answering 
+(Section 3.3)
+Figure 2: Overview of the TreeRare framework. Given a knowledge-intensive question, TreeRare first decomposes
+it into a syntax tree. It then traverses the tree in a bottom-up manner. At each node, the framework generates
+subcomponent-based queries conditioned on evidence from its child nodes and the current phrase. These queries
+guide document retrieval, and a subcomponent question answering module extracts evidence related to the generated
+queries. Finally, all node-level evidence is aggregated to produce the final answer.
+ate final answer (Khandelwal et al., 2020; Shi et al.,
+2024; Borgeaud et al., 2022). This paradigm outper-
+forms regular LLMs, especially for the knowledge-
+intensive single-hop questions. In order to answer
+these single-hop questions, the needed information
+is evident from the question itself, such that a one-
+time retrieval can find the documents that contain
+the answer (Trivedi et al., 2022).
+However, this paradigm is inadequate for com-
+plex, knowledge-intensive questions, such as mul-
+tihop or ambiguous questions. Standard RAG sys-
+tems retrieve documents based solely on the orig-
+inal query, without accounting for the evolving
+information needs of further reasoning steps (Tal-
+mor and Berant, 2018; Amouyal et al., 2023). In
+the case of ambiguous questions, such approaches
+run the risk of making an early commitment to a
+single interpretation and potentially overlooking
+alternative meanings necessary for accurate com-
+prehension. (Lee et al., 2024; Gao et al., 2021). No-
+tably, LLMs have demonstrated their strong ability
+in decomposing complex tasks into different sub
+queries to facilitate its performance on complex,
+knowledge-intensive tasks (Drozdov et al., 2022;
+Khot et al., 2023; Dua et al., 2022). Several ap-
+proaches incorporate LLMs’ generating contents,
+including intermediate reasoning steps or heuristic
+answers, to guide retrieval (He et al., 2022; Trivedi
+et al., 2023; Tan et al., 2024). Similar to how hu-
+mans iteratively resolve complex questions by iden-
+tifying salient information gaps, querying on search
+engine, and progressively narrowing uncertainty
+until reaching a final answer, further work has ap-
+plied LLM agents for information retrieval by lever-
+aging LLMs’ reasoning capabilities to dynamically
+determine both when and what to retrieve (Jiang
+et al., 2023; Li et al., 2025; Yao et al., 2022). While
+these adaptive RAGs depend on reasoning traces
+or heuristic decision-making, TreeRare utilizes the
+syntactic structure of the question to guide the re-
+trieval and reasoning.
+3
+TreeRare: Syntax Tree-Guided
+Retrieval and Reasoning
+In this section, we give a detailed explanation of
+TreeRare. Our approach is built on three key intu-
+itions: (1) answering complex reasoning questions
+requires addressing uncertainty within each phrase
+of a question; (2) the uncertainty associated with
+a phrase depends on clarifying its constituent sub-
+phrases, as understanding the parts is necessary to
+resolve the whole; and (3) effective retrieval should
+
+target diverse and fine-grained evidence that aligns
+with the phrase.
+3.1
+Syntax Tree-Based Decomposition
+Given an input question Q, TreeRare converts it
+into its corresponding syntax tree. The resulting
+tree comprises a set of nodes N, where each node
+n ∈N corresponds to a sub-phrase sn and is asso-
+ciated with a set of child nodes Cn. Specifically, sn
+spans all tokens dominated by node n in the parse
+tree. These syntax structures make explicit the
+constituency-based or dependency-based relation-
+ships between phrases, displaying how meaning is
+composed from sub-units of the question. TreeR-
+are interprets each sub-phrase as a constraint of
+the question and reasons over them incrementally.
+Following principles of compositional semantics
+(Fodor and Lepore, 2002), the reasoning process
+proceeds in a bottom-up tree traversal, ensuring
+that node n is processed only after resolving all its
+children Cn. Such ordering provides a basis for
+constructing a stepwise reasoning path grounded
+in syntax decomposition.
+3.2
+Subcomponent-Based Information
+Retrieval
+At each node n in the syntax tree, TreeRare gen-
+erates a set of subcomponent-based queries to ad-
+dress the latent knowledge gaps associated with
+its sub-phrase sn. Complicated uncertainty often
+emerges not at the level of individual sub-phrases,
+but from their interaction. For instance, through
+the composition of sub-phrases, novel entities may
+emerge, and modifiers can introduce ambiguity or
+context-sensitive reinterpretations. Therefore, even
+if each child node contributes reliable evidence,
+Ec, this evidence alone may be insufficient to re-
+solve the uncertainty within sn. To bridge these
+gaps, TreeRare prompts the LLM to generate mul-
+tiple subcomponent-based queries that are condi-
+tioned on global question, local sub-phrase and
+evidence from its children. Formally, the query set
+is constructed as: Qn = QG(Q, sn, {Ec|c ∈Cn}),
+where QG is a function that prompts LLMs to gen-
+erate a set of simple queries. This formulation
+ensures two key properties of generated queries:
+• Compositional Grounding:
+Queries are
+crafted to resolve the information gap that
+emerges from interactions between sub-
+phrases or from novel information introduced
+through their composition.
+• Explicit Reasoning: Queries function as an
+intermediate reasoning step to resolve sn,
+which eventually leads to coherent inference
+toward the full question.
+Following the generation of subcomponent queries,
+TreeRare initiates a targeted retrieval procedure
+aimed at acquiring external textual documents that
+directly resolve the subcomponent-based queries,
+Qn. Each query q ∈Qn guides the retriever over
+a large corpus to obtain a set of top-ranked doc-
+uments dn,q. The complete retrieved context for
+node n is then defined as Dn = S
+q∈Qn dn,q.
+3.3
+Subcomponent Question Answering
+Naively combining all retrieved documents leads to
+excessive input length and noise, especially harm-
+ful under the "Lost-in-the-Middle" effect in LLMs
+(Liu et al., 2024b). To mitigate this effect, TreeR-
+are introduces subcomponent question answering
+module. It processes the retrieved content to retain
+information that is salient to sub-phrase sn. At
+the same time, it tries to address remaining reason-
+ing gaps that arise when integrating evidence from
+the subcomponents. These may include contra-
+dictions, underspecified relationships, or missing
+inferences needed to represent the full meaning of
+sn from its children. Formally, given generated
+queries Qn and retrieved documents Dn, the LLM
+is instructed to produce a concise set of answers.
+En = SAG(Qn, Dn), where SAG is a subcompo-
+nent answer generation function that resolves Qn
+based on retrieved documents Dn.
+3.4
+Final Answer Generation
+Once each node n in the syntax tree has resolved its
+local uncertainty with a set of evidence En, TreeR-
+are advances to the final synthesis stage. To pro-
+duce the final answer A, we prompt the LLM with
+the full set of node-level evidence {En|n ∈N}
+and original question Q. The model is guided to
+synthesize these into a unified response that ad-
+dresses uncertainties across all sub-phrases: A =
+FAG {Q, {En|n ∈N}}, where FAG is a final
+answer generation prompting function. This phase
+is responsible for aggregating the distributed, fine-
+grained inferences across the entire tree into a co-
+herent answer to the original question Q. It enables
+the detection and reconciliation of inconsistencies
+or conflicting signals that may arise between differ-
+ent pieces of evidence. These inconsistencies can
+lead to multiple, potentially conflicting answers.
+
+Additionally, it ensures logical coherence across
+the whole tree, validating that intermediate infer-
+ences collectively support a consistent global rea-
+soning path.
+4
+Experiments
+4.1
+Experiment Setup
+Datasets.
+We
+assess
+our
+method
+on
+five
+knowledge-intensive question answering bench-
+marks that challenge LLMs with multi-step
+reasoning and ambiguities.
+For each dataset,
+we run experiment on 500 randomly sampled
+questions. We analyze three multihop question
+answering datasets: (1) HotpotQA (Yang et al.,
+2018), which contains questions requiring rea-
+soning over multiple supporting paragraphs; (2)
+2WikiMultiHopQA (2WikiMQA) (Ho et al.,
+2020), which consists of entity-centric questions
+that necessitate combining information from two or
+more distinct Wikipedia articles; and (3) MuSiQue
+(Trivedi et al., 2022), which features complex
+questions composed from simple single-hop
+questions.
+We also evaluate performance on
+ambiguous question answering using two datasets:
+(1) AmbigDocQA (Lee et al., 2024), which
+contains questions involving ambiguous mentions
+that may refer to multiple distinct entities, each
+associated with a different valid answer; and (2)
+ASQA (Stelmakh et al., 2022), which contains
+questions characterized by various types of
+multifacetedness.
+Evaluation
+Metrics.
+We
+employ
+COVER-
+EM (Rosset et al., 2021), which assesses whether
+the generated answer includes the ground truth
+answer to evaluate multihop questions and
+ASQA datasets.
+Following (Stelmakh et al.,
+2022), we also use Disambig-F1 (Dis-F1) to
+evaluate performance on the ASQA dataset. For
+AmbigDocQA, we follow the standard evaluation
+framework introduced by Lee et al. (2024), using
+Answer Recall (AR) and Entity Recall (ER) as
+performance metrics.
+Baselines.
+We evaluate TreeRare against a
+comprehensive suite of baselines that represent key
+prompting and planning paradigms under a unified
+retriever backbone (BM25 (Robertson et al.,
+2009)). (1) Zero-shot and few-shot prompting
+is introduced by Brown et al. (2020).
+These
+serve as foundational setups without any inter-
+mediate reasoning steps. (2) Chain-of-Thought
+prompting (CoT) (Wei et al., 2022) encourages
+step-by-step reasoning by appending an instruction
+such as “Let’s think step by step” to the input. (3)
+Self-Consistency (SC) (Wang et al., 2022) samples
+multiple reasoning paths and selects the final
+answer via majority voting. (4) Tree-of-Thoughts
+(ToT) (Yao et al., 2023) explores multiple struc-
+tured reasoning trajectories using tree-based
+search and pruning strategies. (5) ReAct (Yao
+et al., 2022) interleaves reasoning and retrieval by
+prompting the model to decide dynamically when
+and what to retrieve. We adapt ReAct to use BM25
+instead of web-based tools, denoted as ReAct*. (6)
+Topology-of-Question-Decomposition (ToQD)
+(Li et al., 2025) constructs a topology graph of
+sub-questions and uses self-verify inference to
+selectively activate retrieval only when necessary.
+Details of baselines implementations are included
+in Appendix B.
+Implementation
+details.
+We
+conduct
+ex-
+periments on three backbone LLMs: GPT-4o-mini
+(OpenAI, 2024), LLaMA3.3-70B (AI, 2024), and
+DeepSeek-V3 (Liu et al., 2024a). We implement
+two variants of TreeRare by adopting two different
+syntactic formalisms:
+TreeRare (DT), which
+leverages dependency trees (Culotta and Sorensen,
+2004) to capture head-dependent relations, and
+TreeRare (CT), which utilizes constituency trees
+(LANGACKER, 1997) to reflect hierarchical
+phrase structures. We use the Stanza (Qi et al.,
+2020) toolkit’s dependency and constituency
+parsers to obtain the required syntactic representa-
+tions for our framework. For each term-specific
+query, we employ BM25 (Robertson et al., 2009)
+to retrieve the top fifteen relevant paragraphs.
+More specific details of TreeRare are included in
+Appendix A.
+4.2
+Results
+Table 1 presents the evaluation results of TreeR-
+are against competitive baselines across three LLM
+backbones. In general, TreeRare leads or closely
+matches top-performing baselines in both multi-
+hop and ambiguous QA tasks, demonstrating the
+effectiveness of TreeRare in handling complex,
+knowledge-intensive QA.
+In multihop QA, TreeRare achieves the best or
+near-best scores in most cases. TreeRare (CT)
+under DeepSeek-V3 achieves the strongest per-
+formance, with an average COVER-EM of 0.515
+
+Model
+Method
+HotpotQA
+MuSiQue
+2WikiMQA
+AVG
+AmbigDoc
+ASQA
+COV-EM
+COV-EM
+COV-EM
+AR
+ER
+Dis-F1
+COV-EM
+GPT4o-mini
+zero-shot
+0.459
+0.146
+0.493
+0.366
+0.472
+0.601
+0.319
+0.370
+few-shot
+0.473
+0.151
+0.520
+0.381
+0.409
+0.539
+0.328
+0.423
+COT (zero-shot)
+0.466
+0.124
+0.432
+0.340
+0.349
+0.447
+0.327
+0.386
+COT (few-shot)
+0.482
+0.144
+0.454
+0.360
+0.373
+0.497
+0.328
+0.425
+SC (zero-shot)
+0.502
+0.141
+0.546
+0.396
+0.375
+0.486
+0.282
+0.349
+SC (few-shot)
+0.484
+0.144
+0.437
+0.355
+0.407
+0.542
+0.314
+0.391
+ReAct
+0.454
+0.208
+0.574
+0.412
+0.359
+0.496
+0.286
+0.331
+ReAct*
+0.461
+0.196
+0.550
+0.402
+0.359
+0.496
+0.293
+0.335
+TOT
+0.491
+0.205
+0.612
+0.436
+0.187
+0.535
+0.255
+0.265
+ToQD
+0.518
+0.188
+0.546
+0.417
+0.165
+0.182
+0.264
+0.398
+TreeRare (DT)
+0.544
+0.240
+0.583
+0.457
+0.592
+0.722
+0.381
+0.547
+TreeRare (CT)
+0.542
+0.264
+0.600
+0.468
+0.545
+0.642
+0.369
+0.565
+Rel. Impr.
+0.083
+0.269
+-0.019
+0.073
+0.254
+0.201
+0.165
+0.329
+Llama3.3-70B
+zero-shot
+0.516
+0.134
+0.521
+0.390
+0.476
+0.558
+0.344
+0.478
+few-shot
+0.502
+0.142
+0.575
+0.406
+0.522
+0.603
+0.331
+0.407
+COT (zero-shot)
+0.468
+0.152
+0.352
+0.324
+0.404
+0.512
+0.303
+0.364
+COT (few-shot)
+0.508
+0.164
+0.478
+0.383
+0.419
+0.635
+0.336
+0.410
+SC (zero-shot)
+0.530
+0.172
+0.548
+0.417
+0.417
+0.538
+0.345
+0.459
+SC (few-shot)
+0.532
+0.168
+0.563
+0.421
+0.411
+0.586
+0.331
+0.384
+ReAct
+0.460
+0.200
+0.570
+0.410
+0.231
+0.305
+0.269
+0.329
+ReAct*
+0.440
+0.190
+0.540
+0.390
+0.258
+0.405
+0.296
+0.385
+TOT
+0.404
+0.195
+0.603
+0.401
+0.185
+0.530
+0.283
+0.423
+ToQD
+0.415
+0.202
+0.459
+0.358
+0.189
+0.229
+0.296
+0.355
+TreeRare (DT)
+0.568
+0.286
+0.634
+0.496
+0.587
+0.686
+0.341
+0.518
+TreeRare (CT)
+0.540
+0.244
+0.584
+0.456
+0.568
+0.704
+0.357
+0.517
+Rel. Impr.
+0.068
+0.430
+0.051
+0.178
+0.125
+0.165
+0.038
+0.084
+Deepseek-V3
+zero-shot
+0.512
+0.146
+0.547
+0.401
+0.521
+0.632
+0.348
+0.451
+few-shot
+0.526
+0.154
+0.550
+0.410
+0.545
+0.661
+0.358
+0.411
+COT (zero-shot)
+0.498
+0.142
+0.426
+0.355
+0.405
+0.527
+0.347
+0.416
+COT (few-shot)
+0.533
+0.163
+0.526
+0.395
+0.426
+0.599
+0.358
+0.419
+SC (zero-shot)
+0.513
+0.146
+0.574
+0.411
+0.446
+0.631
+0.362
+0.465
+SC (few-shot)
+0.524
+0.152
+0.574
+0.417
+0.421
+0.578
+0.352
+0.448
+ReAct
+0.503
+0.252
+0.673
+0.476
+0.266
+0.352
+0.283
+0.308
+ReAct*
+0.479
+0.264
+0.630
+0.458
+0.284
+0.371
+0.308
+0.477
+TOT
+0.505
+0.273
+0.551
+0.443
+0.174
+0.513
+0.214
+0.308
+ToQD
+0.448
+0.216
+0.451
+0.371
+0.215
+0.275
+0.327
+0.408
+TreeRare (DT)
+0.572
+0.280
+0.650
+0.501
+0.567
+0.667
+0.406
+0.558
+TreeRare (CT)
+0.594
+0.278
+0.674
+0.515
+0.589
+0.721
+0.391
+0.566
+Rel. Impr.
+0.114
+0.026
+0.001
+0.082
+0.131
+0.091
+0.122
+0.187
+Table 1: Performance of TreeRare (CT) TreeRare(DT), Chain-of-Thought (CoT), Self-Consistency (CoT-SC),
+ReAct, ReAct*, Tree-of-Thoughts (ToT) and Topology-of-Question-Decomposition (ToQD) across five different
+QA datasets. AVG indicates the average COV-EM on the three multihop datasets. ReAct* denotes a BM25-based
+variant of ReAct. Bold marks the best performance, and underline denotes the second-best under teh same setting.
+Rel. Impr. stands for relative improvement over the best baseline in the same setting.
+on multihop QA and a relative improvement of
+0.082 over the best-performing baseline. Simi-
+lar trends are observed under LLaMA3.3-70B and
+GPT4o-mini. The only exception is 2WikiMQA un-
+der GPT4o-mini, where TOT slightly outperforms
+TreeRare, likely because the extended evidence
+derived from the tree structure exceeds GPT4o-
+mini’s limited reasoning capacity. ReAct performs
+well with stronger backbones but degrades under
+smaller models, reflecting its reliance on effective
+prompt-based reasoning. In contrast, TreeRare
+demonstrates robust performance across different
+model scales.
+TreeRare shows remarkable gains on Ambig-
+Doc and ASQA across all backbones. In particu-
+lar, under DeepSeek-V3, TreeRare (DT) achieves
+the highest Dis-F1 score of 0.406 and the largest
+relative improvement in COVER-EM in ASQA.
+These results demonstrate that grounding retrieval
+in each sub-phrase and subsequently aggregating
+the collected information helps uncover signals of
+different plausible interpretations. Notably, on Am-
+bigDoc, TreeRare (CT) also achieves the highest
+AR score of 0.592, outperforming the best baseline
+by a substantial margin. This highlights TreeRare’s
+strength in disambiguating entities that share the
+same name.
+5
+Analysis
+5.1
+Tree-Retrieval
+To demonstrate the contribution of syntactic de-
+composition to retrieval quality, we devise Tree-
+
+Retriever
+HotpotQA
+MuSiQue
+2WikiMQA
+AVG
+AmbigDoc
+ASQA
+COV-EM
+COV-EM
+COV-EM
+AR
+ER
+Dis-F1
+COV-EM
+BM25
+0.473
+0.151
+0.520
+0.381
+0.409
+0.539
+0.328
+0.423
+DPR
+0.392
+0.132
+0.318
+0.281
+0.343
+0.449
+0.343
+0.438
+BM25+DPR
+0.456
+0.146
+0.380
+0.327
+0.322
+0.404
+0.351
+0.480
+IRCoT
+0.486
+0.148
+0.504
+0.379
+0.314
+0.394
+0.335
+0.488
+Tree-Retrieval (DT)
+0.528
+0.138
+0.562
+0.409
+0.427
+0.581
+0.361
+0.514
+Tree-Retrieval (CT)
+0.510
+0.156
+0.538
+0.401
+0.558
+0.681
+0.335
+0.533
+Table 2: Performance comparison of Tree-Retrieval and standard retrievers on multihop (HotpotQA, MuSiQue,
+2WikiMQA) and ambiguous QA datasets (AmbigDoc, ASQA). The AVG column represents the mean COV-EM
+across multihop datasets.
+Retrieval that mirrors TreeRare while eliminat-
+ing all the module that require LLM’s reasoning.
+Specifically, we discard the subcomponent-based
+query generation module and instead directly uti-
+lize the corresponding sub-phrases to retrieve rele-
+vant documents from the corpus. Then we employ
+a reranking model to select the top 15 passages
+across the sub tree rooted at each node. These
+top passages serve as a substitute for the evidence
+generated by subcomponent question answering in
+TreeRare. Reranking model evaluates the initially
+retrieved documents using more sophisticated mod-
+els to better assess their relevance to the subcom-
+ponent (Kratzwald et al., 2019). Implementation
+details and experiments on other backbone models
+are provided at Appendix D.
+As shown in Table 2, Tree-Retrieval consistently
+surpasses classical retrieval approaches such as
+BM25, DPR(Karpukhin et al., 2020), and LLM
+based question decomposition approaches like IR-
+CoT (Trivedi et al., 2023) across all QA datasets.
+The performance gain shows that incorporating syn-
+tactic structure into the retrieval process enhances
+the relevance of retrieved documents. Addition-
+ally, these results suggest that the effectiveness of
+TreeRare cannot be solely attributed to enhanced
+downstream reasoning by the LLMs. Rather, a sig-
+nificant portion of its advantage stems from its re-
+trieval stage, which is structurally guided to extract
+more fine-grained, contextually aligned documents.
+5.2
+Ablation studies
+We conduct a series of systematic ablation exper-
+iments to evaluate the importance of each single
+module in TreeRare. Specifically, we evaluate the
+impact of (1) subcomponent-based query genera-
+tion (QG), (2) information retrieval (IR), and (3)
+subcomponent question answering (SAG). In each
+setting, we selectively disable one module, and
+we additionally assess configurations where only a
+single module is retained. Implementation details
+of these ablation experiments are provided in the
+Appendix C.
+Table 3 shows that removing any core module
+from TreeRare leads to a significant performance
+drop, confirming their complementary importance.
+First, the largest decreases are observed in removal
+of information retrieval, indicating that information
+retrieval is the most essential component for gen-
+erating the correct answer. Second, the absence
+of question generation causes moderate perfor-
+mance drop (average COVER-EM down to 0.419).
+Therefore, subcomponent-based queries enhance
+retrieval relevance and correctness of each reason-
+ing step. Third, removing subcomponent question
+answering results in substantial degradation, with
+average COVER-EM decreasing to 0.318. This
+finding aligns with the “Lost-in-the-Middle” (Liu
+et al., 2024b) phenomenon. Interestingly, its re-
+moval subtly improves performance on AmbigDoc,
+suggesting that entity-specific cues might be lost
+during LLM-based filtering.
+Among the single-module configurations, the
+IR-only setting achieves the highest overall per-
+formance, confirming the dominant role of infor-
+mation retrieval in knowledge-intensive QA. In
+contrast, QG-only and COT-only variants perform
+poorly. As QG-only generates target queries, it
+outperforms COT-only on ambiguous QA.
+5.3
+Error Analysis
+To better understand the performance differences
+between ReAct and TreeRare, we conduct a human
+evaluation comparing their outputs on randomly
+sampled multihop questions. Each output is manu-
+ally categorized into one of five distinct outcome
+types: Success, Retrieval Error, Reasoning Error,
+Partial Answer, and Label Ambiguity. The detailed
+definitions and illustrative examples of each error
+
+Ablation
+HotpotQA
+MuSiQue
+2WikiMQA
+AVG
+AmbigDoc
+ASQA
+COV-EM
+COV-EM
+COV-EM
+AR
+ER
+COV-EM
+Dis-F1
+TreeRare (DT) w/o QG
+0.514
+0.214
+0.537
+0.422
+0.624
+0.797
+0.337
+0.454
+TreeRare (DT) w/o SAG
+0.514
+0.155
+0.472
+0.380
+0.589
+0.766
+0.360
+0.485
+TreeRare (DT) w/o IR
+0.431
+0.156
+0.366
+0.318
+0.244
+0.262
+0.285
+0.403
+IR Only
+0.450
+0.146
+0.490
+0.362
+0.472
+0.601
+0.319
+0.371
+QG Only
+0.352
+0.124
+0.448
+0.308
+0.183
+0.197
+0.248
+0.350
+COT Only
+0.373
+0.146
+0.334
+0.284
+0.172
+0.186
+0.284
+0.333
+Table 3: Ablation study on TreeRare based on Dependency Tree where the backbone model is GPT4o-mini.
+"QG","SAG","IR" refer to the subcomponent queries generation, subcomponent answer generation and information
+retrieval.
+Figure 3: Distribution of outcome types for ReAct and
+TreeRare on randomly sampled multihop QA.
+type are presented in Appendix G.
+As shown in Table 3, TreeRare achievees a
+higher success rate compared to ReAct(Yao et al.,
+2022), indicating TreeRare’s effectiveness in en-
+hancing the LLM’s ability to produce correct an-
+swers. ReAct exhibits a high rate of retrieval er-
+rors, suggesting a lack of effective guidance in
+query generation. This is primarily due to its heavy
+reliance on few-shot prompting and the model’s
+reasoning abilities. In contrast, TreeRare offers
+explicit structural guidance through syntax tree,
+which results in more effective queries to guide
+retrieval and a large decrease in the retrieval error
+rate. Additionally, TreeRare reduces the rate of
+partial answer by 2% and reasoning errors by 8%,
+suggesting that its structured guidance mechanism
+better supports the reasoning alignment. Mean-
+while, TreeRare has a higher proportion of label
+ambiguity. While reflecting a higher incidence of
+mismatch with labeled answers, TreeRare may in
+fact produce correct responses that differ from an-
+notated references.
+5.4
+Cost Analysis
+To assess the computational efficiency of TreeRare,
+we measure the total number of input and output to-
+kens generated during inference on 500 randomly
+Figure 4: Total GPT-4o-mini API cost for TreeRare
+(CT), TreeRare (DT), TOT, ReAct, SC, and COT across
+HotpotQA, MuSiQue, 2WikiMQA, AmbigDoc, and
+ASQA
+sampled examples per dataset. The token usage
+is translated into cost according to the GPT-4o-
+mini pricing scheme published by OpenAI. Fig-
+ure 4 illustrates the cost breakdown across different
+methods. We observe that TreeRare (CT) incurs
+higher inference cost compared to TreeRare (DT).
+This difference can be attributed to the structural
+characteristics of constituency trees, which repre-
+sent nested phrase structures and thus tend to in-
+clude more nodes and sub-phrases than dependency
+trees. Since TreeRare performs query generation
+and retrieval at each node, deeper trees with more
+branches lead to increased token usage. Further-
+more, since methods such as ToT and SC involve
+extensive sampling of reasoning trajectories, they
+inflate both input and output token counts and ex-
+hibit significantly high computational costs. TreeR-
+are (DT) offers a favorable trade-off, achieving
+better performance with moderate computational
+demands.
+
+6
+Conclusion
+In conclusion, we propose TreeRare for knowledge-
+intensive question answering, utilizing syntax trees
+to guide information retrieval and structural rea-
+soning.
+When traversing the syntax tree, our
+method performs subcomponent-based information
+retrieval and question answering. This structured
+approach enhances retrieval quality and models’
+ability to resolve information gaps at each node.
+Experimental results across knowledge-intensive
+benchmarks demonstrate that our method achieve
+significant performance improvements over state-
+of-the-art baselines.
+Limitation
+While TreeRare demonstrates strong performance
+across multihop and ambiguous question answering
+datasets, several limitations remain.
+First, TreeRare relies on the quality and granu-
+larity of syntax parsers. Errors in dependency or
+constituency parsing may propagate through the
+bottom-up reasoning pipeline, leading to subopti-
+mal subcomponent decomposition and misaligned
+query formulation.
+Second, TreeRare incurs additional computa-
+tional overhead due to its multi-stage decomposi-
+tion, retrieval, and filtering pipeline. This overhead
+is particularly pronounced for the constituency tree
+variant, which typically produces deeper and more
+richly branched trees, resulting in increased token
+usage. Such cost implications may hinder TreeR-
+are’s scalability in latency- or budget-constrained
+deployment settings.
+Third, TreeRare has been evaluated exclusively
+on factoid-style questions, where each query maps
+to discrete factual answers. Its performance on
+open-domain dialogue or generative settings—such
+as those requiring opinion modeling, pragmatic
+reasoning, or user intent tracking—remains unex-
+plored.
+References
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama
+Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altensch1midt, Sam Altman,
+Shyamal Anadkat, et al. 2023. Gpt-4 technical report.
+arXiv preprint arXiv:2303.08774.
+Meta
+AI.
+2024.
+Llama
+3.3
+70b.
+https:
+//huggingface.co/meta-llama/Llama-3.
+3-70B-Instruct.
+Instruction-tuned
+multilin-
+gual large language model.
+Samuel Amouyal, Tomer Wolfson, Ohad Rubin, Ori
+Yoran, Jonathan Herzig, and Jonathan Berant. 2023.
+QAMPARI: A benchmark for open-domain questions
+with many answers. In Proceedings of the Third
+Workshop on Natural Language Generation, Evalua-
+tion, and Metrics (GEM), pages 97–110, Singapore.
+Association for Computational Linguistics.
+Reinald Kim Amplayo, Kellie Webster, Michael Collins,
+Dipanjan Das, and Shashi Narayan. 2023. Query
+refinement prompts for closed-book long-form QA.
+In Proceedings of the 61st Annual Meeting of the
+Association for Computational Linguistics (Volume
+1: Long Papers), pages 7997–8012, Toronto, Canada.
+Association for Computational Linguistics.
+Akari Asai, Zeqiu Wu, Yizhong Wang, Avirup Sil, and
+Hannaneh Hajishirzi. 2024. Self-RAG: Learning to
+retrieve, generate, and critique through self-reflection.
+In The Twelfth International Conference on Learning
+Representations.
+Sebastian Borgeaud, Arthur Mensch, Jordan Hoff-
+mann, Trevor Cai, Eliza Rutherford, Katie Milli-
+can, George Bm Van Den Driessche, Jean-Baptiste
+Lespiau, Bogdan Damoc, Aidan Clark, et al. 2022.
+Improving language models by retrieving from tril-
+lions of tokens. In International conference on ma-
+chine learning, pages 2206–2240. PMLR.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, Sandhini Agarwal, Ariel Herbert-Voss,
+Gretchen Krueger, Tom Henighan, Rewon Child,
+Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens
+Winter, Chris Hesse, Mark Chen, Eric Sigler, Ma-
+teusz Litwin, Scott Gray, Benjamin Chess, Jack
+Clark, Christopher Berner, Sam McCandlish, Alec
+Radford, Ilya Sutskever, and Dario Amodei. 2020.
+Language models are few-shot learners.
+In Ad-
+vances in Neural Information Processing Systems,
+volume 33, pages 1877–1901. Curran Associates,
+Inc.
+Xinyun Chen, Renat Aksitov, Uri Alon, Jie Ren, Kefan
+Xiao, Pengcheng Yin, Sushant Prakash, Charles Sut-
+ton, Xuezhi Wang, and Denny Zhou. 2024. Universal
+self-consistency for large language models. In ICML
+2024 Workshop on In-Context Learning.
+Xiuying Chen, Mingzhe Li, Xin Gao, and Xiangliang
+Zhang. 2022.
+Towards improving faithfulness in
+abstractive summarization. In Advances in Neural
+Information Processing Systems.
+Aakanksha Chowdhery, Sharan Narang, Jacob Devlin,
+Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul
+Barham, Hyung Won Chung, Charles Sutton, Sebas-
+tian Gehrmann, et al. 2023. Palm: Scaling language
+modeling with pathways. Journal of Machine Learn-
+ing Research, 24(240):1–113.
+Aron Culotta and Jeffrey Sorensen. 2004. Dependency
+tree kernels for relation extraction. In Proceedings
+
+of the 42nd Annual Meeting of the Association for
+Computational Linguistics (ACL-04), pages 423–429,
+Barcelona, Spain.
+Andrew Drozdov, Nathanael Schärli, Ekin Akyürek,
+Nathan Scales, Xinying Song, Xinyun Chen, Olivier
+Bousquet, and Denny Zhou. 2022. Compositional
+semantic parsing with large language models. arXiv
+e-prints, pages arXiv–2209.
+Dheeru Dua, Shivanshu Gupta, Sameer Singh, and Matt
+Gardner. 2022. Successive prompting for decom-
+posing complex questions. In Proceedings of the
+2022 Conference on Empirical Methods in Natu-
+ral Language Processing, pages 1251–1265, Abu
+Dhabi, United Arab Emirates. Association for Com-
+putational Linguistics.
+Jerry A Fodor and Ernest Lepore. 2002. The composi-
+tionality papers. Oxford University Press.
+Yifan Gao,
+Henghui Zhu,
+Patrick Ng,
+Cicero
+Nogueira dos Santos, Zhiguo Wang, Feng Nan, De-
+jiao Zhang, Ramesh Nallapati, Andrew O. Arnold,
+and Bing Xiang. 2021. Answering ambiguous ques-
+tions through generative evidence fusion and round-
+trip prediction. In Proceedings of the 59th Annual
+Meeting of the Association for Computational Lin-
+guistics and the 11th International Joint Conference
+on Natural Language Processing (Volume 1: Long
+Papers), pages 3263–3276, Online. Association for
+Computational Linguistics.
+Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasu-
+pat, and Mingwei Chang. 2020. Retrieval augmented
+language model pre-training. In International confer-
+ence on machine learning, pages 3929–3938. PMLR.
+Shibo Hao, Yi Gu, Haodi Ma, Joshua Jiahua Hong,
+Zhen Wang, Daisy Zhe Wang, and Zhiting Hu. 2023.
+Reasoning with language model is planning with
+world model. In The 2023 Conference on Empirical
+Methods in Natural Language Processing.
+Hangfeng He, Hongming Zhang, and Dan Roth. 2022.
+Rethinking with retrieval: Faithful large language
+model inference. arXiv preprint arXiv:2301.00303.
+Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara,
+and Akiko Aizawa. 2020.
+Constructing a multi-
+hop QA dataset for comprehensive evaluation of
+reasoning steps. In Proceedings of the 28th Inter-
+national Conference on Computational Linguistics,
+pages 6609–6625, Barcelona, Spain (Online). Inter-
+national Committee on Computational Linguistics.
+Zhengbao Jiang, Frank Xu, Luyu Gao, Zhiqing Sun,
+Qian Liu, Jane Dwivedi-Yu, Yiming Yang, Jamie
+Callan, and Graham Neubig. 2023. Active retrieval
+augmented generation. In Proceedings of the 2023
+Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 7969–7992, Singapore. As-
+sociation for Computational Linguistics.
+Vladimir Karpukhin, Barlas Oguz, Sewon Min, Patrick
+Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, and
+Wen-tau Yih. 2020. Dense passage retrieval for open-
+domain question answering. In Proceedings of the
+2020 Conference on Empirical Methods in Natural
+Language Processing (EMNLP), pages 6769–6781,
+Online. Association for Computational Linguistics.
+Urvashi Khandelwal, Omer Levy, Dan Jurafsky, Luke
+Zettlemoyer, and Mike Lewis. 2020. Generalization
+through memorization: Nearest neighbor language
+models. In International Conference on Learning
+Representations.
+Tushar Khot, Harsh Trivedi, Matthew Finlayson, Yao
+Fu, Kyle Richardson, Peter Clark, and Ashish Sab-
+harwal. 2023. Decomposed prompting: A modular
+approach for solving complex tasks. In The Eleventh
+International Conference on Learning Representa-
+tions.
+Hyuhng Joon Kim, Youna Kim, Cheonbok Park, Jun-
+yeob Kim, Choonghyun Park, Kang Min Yoo, Sang-
+goo Lee, and Taeuk Kim. 2024. Aligning language
+models to explicitly handle ambiguity. In Proceed-
+ings of the 2024 Conference on Empirical Methods
+in Natural Language Processing, pages 1989–2007,
+Miami, Florida, USA. Association for Computational
+Linguistics.
+Bernhard Kratzwald, Anna Eigenmann, and Stefan
+Feuerriegel. 2019. RankQA: Neural question an-
+swering with answer re-ranking. In Proceedings of
+the 57th Annual Meeting of the Association for Com-
+putational Linguistics, pages 6076–6085, Florence,
+Italy. Association for Computational Linguistics.
+RONALD W LANGACKER. 1997. Constituency, de-
+pendency, and conceptual grouping. Cognitive Lin-
+guistics, 8(1):1–32.
+Yoonsang Lee, Xi Ye, and Eunsol Choi. 2024. Am-
+bigdocs: Reasoning across documents on different
+entities under the same name. In First Conference on
+Language Modeling.
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio
+Petroni, Vladimir Karpukhin, Naman Goyal, Hein-
+rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-
+täschel, et al. 2020. Retrieval-augmented generation
+for knowledge-intensive nlp tasks. Advances in neu-
+ral information processing systems, 33:9459–9474.
+Jiwei Li, Thang Luong, Dan Jurafsky, and Eduard Hovy.
+2015. When are tree structures necessary for deep
+learning of representations? In Proceedings of the
+2015 Conference on Empirical Methods in Natural
+Language Processing, pages 2304–2314, Lisbon, Por-
+tugal. Association for Computational Linguistics.
+Weijie Li, Jin Wang, Liang-Chih Yu, and Xuejie Zhang.
+2025.
+Topology-of-question-decomposition: En-
+hancing large language models with information re-
+trieval for knowledge-intensive tasks. In Proceed-
+ings of the 31st International Conference on Compu-
+tational Linguistics, pages 2814–2833, Abu Dhabi,
+UAE. Association for Computational Linguistics.
+
+Xingxuan Li, Ruochen Zhao, Yew Ken Chia, Bosheng
+Ding, Shafiq Joty, Soujanya Poria, and Lidong Bing.
+2024. Chain-of-knowledge: Grounding large lan-
+guage models via dynamic knowledge adapting over
+heterogeneous sources. In The Twelfth International
+Conference on Learning Representations.
+Jimmy Lin, Xueguang Ma, Sheng-Chieh Lin, Jheng-
+Hong Yang, Ronak Pradeep, and Rodrigo Nogueira.
+2021. Pyserini: A Python toolkit for reproducible
+information retrieval research with sparse and dense
+representations. In Proceedings of the 44th Annual
+International ACM SIGIR Conference on Research
+and Development in Information Retrieval (SIGIR
+2021), pages 2356–2362.
+Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang,
+Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi
+Deng, Chenyu Zhang, Chong Ruan, et al. 2024a.
+Deepseek-v3 technical report.
+arXiv preprint
+arXiv:2412.19437.
+Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paran-
+jape, Michele Bevilacqua, Fabio Petroni, and Percy
+Liang. 2024b. Lost in the middle: How language
+models use long contexts. Transactions of the Asso-
+ciation for Computational Linguistics, 12:157–173.
+Joshua Maynez, Shashi Narayan, Bernd Bohnet, and
+Ryan McDonald. 2020. On faithfulness and factu-
+ality in abstractive summarization. In Proceedings
+of the 58th Annual Meeting of the Association for
+Computational Linguistics, pages 1906–1919, On-
+line. Association for Computational Linguistics.
+OpenAI. 2024.
+Gpt-4o mini.
+https://platform.
+openai.com/docs/models/gpt-4o-mini.
+Large
+language model.
+Bhawna Piryani, Abdelrahman Abdallah, Jamshid
+Mozafari, and Adam Jatowt. 2024. Detecting tempo-
+ral ambiguity in questions. In Findings of the Associ-
+ation for Computational Linguistics: EMNLP 2024,
+pages 9620–9634, Miami, Florida, USA. Association
+for Computational Linguistics.
+Peng Qi, Yuhao Zhang, Yuhui Zhang, Jason Bolton, and
+Christopher D. Manning. 2020. Stanza: A Python
+natural language processing toolkit for many human
+languages. In Proceedings of the 58th Annual Meet-
+ing of the Association for Computational Linguistics:
+System Demonstrations.
+Adam Roberts, Colin Raffel, and Noam Shazeer. 2020.
+How much knowledge can you pack into the param-
+eters of a language model? In Proceedings of the
+2020 Conference on Empirical Methods in Natural
+Language Processing (EMNLP), pages 5418–5426,
+Online. Association for Computational Linguistics.
+Stephen Robertson, Hugo Zaragoza, et al. 2009. The
+probabilistic relevance framework: Bm25 and be-
+yond. Foundations and Trends® in Information Re-
+trieval, 3(4):333–389.
+Corbin L Rosset, Chenyan Xiong, Minh Phan, Xia Song,
+Paul N. Bennett, and saurabh tiwary. 2021. Pretrain
+knowledge-aware language models.
+Weijia Shi, Sewon Min, Michihiro Yasunaga, Min-
+joon Seo, Richard James, Mike Lewis, Luke Zettle-
+moyer, and Wen-tau Yih. 2024. REPLUG: Retrieval-
+augmented black-box language models. In Proceed-
+ings of the 2024 Conference of the North American
+Chapter of the Association for Computational Lin-
+guistics: Human Language Technologies (Volume
+1: Long Papers), pages 8371–8384, Mexico City,
+Mexico. Association for Computational Linguistics.
+Noah Shinn, Federico Cassano, Ashwin Gopinath,
+Karthik R Narasimhan, and Shunyu Yao. 2023. Re-
+flexion: language agents with verbal reinforcement
+learning. In Thirty-seventh Conference on Neural
+Information Processing Systems.
+Ivan Stelmakh, Yi Luan, Bhuwan Dhingra, and Ming-
+Wei Chang. 2022. ASQA: Factoid questions meet
+long-form answers. In Proceedings of the 2022 Con-
+ference on Empirical Methods in Natural Language
+Processing, pages 8273–8288, Abu Dhabi, United
+Arab Emirates. Association for Computational Lin-
+guistics.
+Alon Talmor and Jonathan Berant. 2018. The web as
+a knowledge-base for answering complex questions.
+In Proceedings of the 2018 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+Volume 1 (Long Papers), pages 641–651, New Or-
+leans, Louisiana. Association for Computational Lin-
+guistics.
+Jiejun Tan, Zhicheng Dou, Yutao Zhu, Peidong Guo,
+Kun Fang, and Ji-Rong Wen. 2024. Small models,
+big insights: Leveraging slim proxy models to decide
+when and what to retrieve for LLMs. In Proceedings
+of the 62nd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 4420–4436, Bangkok, Thailand. Association
+for Computational Linguistics.
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot,
+and Ashish Sabharwal. 2022. ✪MuSiQue: Multi-
+hop questions via single-hop question composition.
+Transactions of the Association for Computational
+Linguistics, 10:539–554.
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot,
+and Ashish Sabharwal. 2023. Interleaving retrieval
+with chain-of-thought reasoning for knowledge-
+intensive multi-step questions. In Proceedings of
+the 61st Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers),
+pages 10014–10037, Toronto, Canada. Association
+for Computational Linguistics.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le,
+Ed Chi, Sharan Narang, Aakanksha Chowdhery, and
+Denny Zhou. 2022. Self-consistency improves chain
+of thought reasoning in language models.
+arXiv
+preprint arXiv:2203.11171.
+
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+et al. 2022. Chain-of-thought prompting elicits rea-
+soning in large language models. Advances in neural
+information processing systems, 35:24824–24837.
+Peng Xu, Wei Ping, Xianchao Wu, Lawrence McAfee,
+Chen Zhu, Zihan Liu, Sandeep Subramanian, Evelina
+Bakhturina, Mohammad Shoeybi, and Bryan Catan-
+zaro. 2024. Retrieval meets long context large lan-
+guage models. In The Twelfth International Confer-
+ence on Learning Representations.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Ben-
+gio, William W Cohen, Ruslan Salakhutdinov, and
+Christopher D Manning. 2018. Hotpotqa: A dataset
+for diverse, explainable multi-hop question answer-
+ing. arXiv preprint arXiv:1809.09600.
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran,
+Thomas L. Griffiths,
+Yuan Cao,
+and Karthik
+Narasimhan. 2023.
+Tree of Thoughts: Deliber-
+ate problem solving with large language models.
+Preprint, arXiv:2305.10601.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak
+Shafran, Karthik Narasimhan, and Yuan Cao. 2022.
+React: Synergizing reasoning and acting in language
+models. arXiv preprint arXiv:2210.03629.
+Andy Zhou, Kai Yan, Michal Shlapentokh-Rothman,
+Haohan Wang, and Yu-Xiong Wang. 2024.
+Lan-
+guage agent tree search unifies reasoning, acting, and
+planning in language models. In Proceedings of the
+41st International Conference on Machine Learning,
+volume 235 of Proceedings of Machine Learning
+Research, pages 62138–62160. PMLR.
+
+A
+TreeRare Implementation Details
+Parsing Module. To construct the syntax trees
+required by TreeRare, we utilize the dependency
+parser and constituency parser from Stanza(Qi
+et al., 2020). For each input question, we parse it
+into both dependency and constituency structures.
+We implement a unified interface to map parsed
+trees into a bottom-up traversal format, ensuring
+that each node contains: (i) its corresponding sub-
+phrase span, (ii) its child nodes. (iii) syntactic type
+(e.g., NP, VP for constituency, or head-dependent
+relation for dependency).
+Traversing Details In the experiment, TreeRare
+conducts a pre-order traversal.
+Each node is
+processed only after all its child nodes are resolved.
+We maintain a processing queue initialized with
+leaf nodes. When processing a node: If it has no
+children, we directly use its text span to generate
+quries.
+If it has children, we first aggregate
+evidence from its children before proceeding to
+subcomponent-specific query generation. If it has
+no children, we directly use its text span as the ini-
+tial evidence. To improve computational efficiency,
+we implement a pruning mechanism that skips
+nodes based on two criteria: Nodes with syntactic
+types typically considered non-informative (e.g.,
+punctuation, determiners, conjunctions). Nodes
+whose associated sub-phrases are minimum phrase
+length (Lmin).
+We sets Lmin = 3 for all the
+experiments in the paper. In
+Subcomponent Query Generation.
+At each
+non-leaf node, we generate queries to resolve
+syntactic uncertainty associated with its sub-phrase.
+We prompt the LLM using templates detailed
+in Figure10, Figure12, Figure13, Figure14. We
+generate up to five candidate queries and select
+the top three queries according to heuristic rules
+prioritizing coverage and specificity.
+Retrieval Module.
+We use BM25 via Py-
+serini (Lin et al., 2021) as the retrieval backend.
+For each generated query, we retrieve the top-15
+paragraphs from Wikipedia dump in (Karpukhin
+et al., 2020). If multiple queries exist for a node,
+their retrieved documents are merged. In Table 4,
+we present the comparison of the performance
+between BM25 and DPR(Karpukhin et al., 2020)
+on TreeRare. We observe that BM25 outperforms
+DPR under five benchmark, and thus we implement
+TreeRare with BM25 as the backbone retriever.
+B
+Baseline Implementation Details
+To ensure a fair comparison with TreeRare, we im-
+plemented all baseline prompting methods within a
+direct RAG setup using a shared retrieval backbone.
+Specifically, we employ BM25 (Robertson et al.,
+2009) as the sparse retriever and retrieve the top-20
+most relevant passages from a Wikipedia corpus
+for each query. We directly use the implementation
+from Pyserini (Lin et al., 2021). The retrieved con-
+texts are concatenated with the input prompt and
+passed to the large language model, leveraging its
+extended context window.
+Few-shot Prompting. For few-shot prompting,
+we prepend three in-context examples drawn from
+the same dataset as the test instance
+Chain-of-Thought Prompting. We follow the
+original CoT formulation (Wei et al., 2022), ap-
+pending reasoning demonstrations to the prompt to
+elicit step-by-step inference. In the few-shot CoT
+setting, each demonstration consists of a question,
+a multi-step rationale, and the final answer. In zero-
+shot CoT, the test query is prefixed by the phrase
+“Let’s think step by step.”
+Self-Consistency. For multihop question, we
+generate 10 independent reasoning trajectories us-
+ing the few-shot CoT prompt.
+The model’s fi-
+nal answer is selected by majority vote among
+the answers extracted from each reasoning trace.
+However, SC is not suitable for long-form answer
+generation.
+In AmbigDoc and ASQA, we fol-
+low the USC(Chen et al., 2024) protocol for self-
+consistency.
+React. We closely follow the original ReAct
+framework as proposed by (Yao et al., 2022). The
+maximum number of steps is set to eight. If the
+model fails to reach a conclusive answer within this
+limit, we default to using Self-Consistency prompt-
+ing to generate the final response. For ambiguous
+questions, we adopt the query refinement prompts
+introduced by (Amplayo et al., 2023) abd incorpo-
+rate few-shot exemplars directly into the prompt.
+Tree-of-Thoughts.
+The original Tree-of-
+Thought paper does not provide a pipeline tai-
+lored for multihop or ambiguous question answer-
+ing. Therefore, we implement ToT following the
+setup in (Zhou et al., 2024). Instead of sampling
+multiple reasoning paths as in the original version,
+our implementation adopts the React framework
+
+Retriever
+HotpotQA
+MuSiQue
+2WikiMQA
+AVG
+AmbigDoc
+ASQA
+COV-EM
+COV-EM
+COV-EM
+AR
+ER
+COV-EM
+Dis-F1
+Tree-Retrieval (DT) w BM25
+0.528
+0.138
+0.562
+0.409
+0.427
+0.581
+0.514
+0.361
+Tree-Retrieval (DT) w DPR
+0.482
+0.16
+0.504
+0.382
+0.409
+0.479
+0.399
+0.332
+Table 4: Comparison of Tree-Retrieval (DT) with BM25 and DPR as retriever backbone.
+Figure 5: Total GPT-4o-mini API cost (input + output tokens) for TreeRare(CT), TreeRare(DT), TOT, ReAct, SC,
+and COT across HotpotQA, MuSiQue, 2WikiMQA, AmbigDoc, and ASQA based on OpenAI pricing.
+to sample diverse plan-and-action paths, enabling
+interaction with Wikipedia and equipping ToT with
+enhanced capabilities for open-domain QA.
+Topology-of-Question-Decomposition. We fol-
+low the implementation of the ToQD paper. To
+make sure every method uses the same retriever,
+we modify the retrieval module of ToQD into the
+same as the retrieval module in TreeRare.
+C
+Ablation Study Details
+We do not include a setting with only subcompo-
+nent question answering in our ablation study. This
+is because it is not feasible to generate fine-grained
+answers without first performing query generation
+and retrieval.
+TreeRare(DT) w/o CQ.
+To assess the im-
+pact of subcomponent-based query generation, we
+replace the TreeRare query generation module
+with a naive retrieval. Specifically, for each node
+in the syntactic tree, we bypass the LLM-generated
+term-specific queries and instead directly use the
+surface form of the corresponding sub-phrase as
+the retrieval query. In the downstream subcompo-
+nent answering stage, we prompt LLMs to directly
+answer the question with the retrieved documents.
+TreeRare(DT)
+w/o
+QA.
+In
+this
+variant,
+we eliminate the intermediate reasoning step that
+resolves each node’s syntactic uncertainty. Instead
+of prompting the LLM to process the retrieved
+evidence at each node, we directly aggregate all
+retrieved documents across sub-nodes and forward
+the combined evidence to their parent node without
+further interpretation.
+D
+Tree Retrieval
+For each node in the syntax tree, we directly use
+sub-phrase pn without any LLM-based reformula-
+tion. This phrase is used as a query to the retrieval
+systems.
+We retrieve the top10 passages from
+Wikipedia corpus using BM25. The retrieved pas-
+sages across all nodes within a sub-tree are merged.
+To suppress noise and prioritize passages most rele-
+
+Lmin
+HotpotQA
+MuSiQue
+2WikiMQA
+AVG
+AmbigDoc
+ASQA
+COV-EM
+COV-EM
+COV-EM
+AR
+ER
+COV-EM
+Dis-F1
+3
+0.544
+0.240
+0.583
+0.457
+0.592
+0.722
+0.381
+0.547
+6
+0.531
+0.224
+0.547
+0.434
+0.542
+0.703
+0.333
+0.441
+10
+0.512
+0.198
+0.492
+0.318
+0.504
+0.600
+0.328
+0.448
+Table 5: Impact of minimum phrase length (Lmin) on TreeRare (DT) performance across across HotpotQA,
+MuSiQue, 2WikiMQA, AmbigDoc, and ASQA based on OpenAI pricing.
+vant to the sub-tree’s syntactic content, we apply a
+cross-encoder reranker MS-Marco-MiniLM-L-12-
+v2. In Table 4, we compared Tree-Retrieval with
+different both BM25 and DPR(Karpukhin et al.,
+2020).
+E
+Further Cost Analysis
+As shown in Figure5, we measure the API cost
+of GPT-4o-mini by summing the number of in-
+put and output tokens processed for each method
+across five datasets: HotpotQA, MuSiQue, 2Wiki-
+MultihopQA, AmbigDoc, and ASQA. For each
+dataset, 500 examples were randomly sampled and
+processed with each method. The input and out-
+put tokens were multiplied by OpenAI’s published
+pricing for GPT-4o-mini (as of April 2025).
+F
+Further Analysis of Minimum Phrase
+Length
+To analysis the impact of minimum phrase length
+of TreeRare, we performs additional experiment
+by setting Lmin to 6 and 10. As shown in 5, Table-
+TreeRare demonstrates consistently superior per-
+formance with Lmin = 3 across most evaluation
+metrics. The performance degradation with in-
+creased Lmin values suggests that finer-grained
+syntactic analysis enables more precise identifi-
+cation of knowledge gaps and uncertainty points
+within complex questions. Figure 6 reveals the
+computational trade-offs associated with different
+Lmin. Lmin values result in higher API costs due
+to increased node processing. This cost increase
+stems from processing more nodes in the syntax
+tree, each requiring query generation, retrieval, and
+subcomponent question answering.
+G
+Case Study
+Here is the definition for different categories:
+• Success: Model produces a correct and com-
+plete answer aligned with the reference.
+• Retrieve Error: Retrieved documents are ir-
+relevant or do not aid answer resolution.
+• Reasoning Error: Model performs faulty rea-
+soning despite relevant evidence being avail-
+able.
+• Partial Answer: Answer is generally correct
+but lacks necessary specificity.
+• Label Ambiguity: Prediction is plausible but
+does not exactly match the labeled answer.
+we randomly sampled 50 multihop questions
+from the HotpotQA development set. For each
+sample, a human annotator examined the reason-
+ing trace produced by both ReAct and TreeRare,
+along with the final answer and supporting docu-
+ments. We present one representative example for
+each failure category. Additionally, we provide a
+single case study of concrete output TreeRare on
+one single question at Figure15 and Figure16.
+
+Figure 6: Total GPT-4o-mini API cost (input + output tokens) for TreeRare(CT) on different minimum phrase
+lengths (3,6,10) across HotpotQA, MuSiQue, 2WikiMQA, AmbigDoc, and ASQA based on OpenAI pricing.
+Label Ambiguity
+TreeRare:
+Question: Roger O. Egeberg was Assistant Secretary for Health and Scientific Affairs during the
+administration of a president that served during what years?
+.......
+Final answer: Roger O. Egeberg was Assistant Secretary for Health and Scientific Affairs during
+the Nixon administration, which lasted from January 20, 1969, to August 9, 1974. (Label: 1969
+until 1974)
+ReAct:
+Question: Which other Mexican Formula One race car driver has held the podium besides the
+Force India driver born in 1990?
+.......
+Final answer: Pedro Rodríguez de la Vega (Label: Pedro Rodríguez)
+Figure 7: Examples of Label Ambiguity. The ambiguous span is highlighted in red.
+
+Partial Answer
+TreeRare:
+Question: What is the name of the fight song of the university whose main campus is in Lawrence,
+Kansas and whose branch campuses are in the Kansas City metropolitan area?
+.......
+Final answer: The fight song of the University of Kansas is "I’m a Jayhawk."(Label: Kansas
+Song)
+ReAct:
+Question: The director of the romantic comedy "Big Stone Gap" is based in what New York city?
+.......
+Final answer: New York City
+Figure 8: Examples of Partial Answer. The partial answer is highlighted in red.
+
+Search Error
+TreeRare:
+Question: What type of forum did a former Soviet statesman initiate? Generate Question: What
+is the name of the former Soviet statesman who initiated the forum? ... answer: The name of the
+former Soviet statesman who initiated a notable forum is Yegor Gaidar....
+Generate Question: What was the name of the former Soviet statesman? ... answer: The name of
+the former Soviet statesman is Mikhail Suslov .... question: What was the role of Mikhail Suslov
+in the Soviet Union? ....
+answer: Mikhail Suslov served as the Second Secretary .....
+Generate Question: What topics are typically discussed in the forum organized by the former
+Soviet statesman? .... answer: The document does not contain specific information about a
+political forum initiated by a former Soviet statesman ...
+Fianl answer: former Soviet statesman, Yegor Gaidar, initiated the Gaidar Forum, which focuses
+on discussions among Russia’s political and business elite regarding economic reforms and political
+strategies. ReAct:
+Question: This singer of A Rather Blustery Day also voiced what hedgehog?
+Search[A Rather Blustery Day] Thought 1: I need to search for the song "A Rather Blustery Day"...
+Action 1: Search[A Rather Blustery Day] Observation 1: Winnie the Pooh and the Blustery Day is
+a 1968 American animated musical fantasy short ...
+Lookup[singer of A Rather Blustery Day] Thought 2: The search didn’t give me the specific singer
+...
+Action 2: Lookup[singer of A Rather Blustery Day] Observation 2: No more results.
+Search[A Rather Blustery Day singer] Thought 3: The search did not yield any direct information
+Action 3: Search[A Rather Blustery Day singer] Observation 3: Could not find A Rather Blustery
+Day singer
+Search[hedgehog character voiced by a singer from Winnie the Pooh] Thought 4: The search did
+not provide specific details
+Action 4: Search[hedgehog character voiced by a singer from Winnie the Pooh] Observation 4:
+Could not find hedgehog character
+Search[hedgehog character in animated films] Thought 5: The search has not provided concrete
+information
+Action 5: Search[hedgehog character in animated films] Observation 5: Could not find hedgehog
+character
+Search[singer of Sonic the Hedgehog] Thought 6: It seems that I’m stuck
+Action 6: Search[singer of Sonic the Hedgehog] Observation 6: Could not find singer of Sonic the
+Figure 9: Examples of Search Error. The search result or incorrect query is highlighted in red.
+
+Incorrect reasoning
+TreeRare:
+Question: question: Brown State Fishing Lake is in a country that has a population of how many
+inhabitants ?
+Generate Question: What country is Brown State Fishing Lake located in?; answer: Brown State
+Fishing Lake is located in the United States ....
+Generate Question: What is the population of the United States as of 2023? answer:The
+population of the United States as of 2023 is approximately 333 million people. ....
+Final answer: The population of the United States, where Brown State Fishing Lake is located, is
+approximately 333 million as of 2023. (label: 9,984)
+ReAct:
+Question: Which performance act has a higher instrument to person ratio, Badly Drawn Boy or
+Wolf Alice? Search[Badly Drawn Boy] Thought 1: I need to search both Badly Drawn Boy and
+Wolf Alice ..... Action 1: Search[Badly Drawn Boy] Observation 1: Damon Michael Gough (born
+2 October 1969), ..... and multi-instrumentalist.
+Lookup[Badly Drawn Boy performances] Thought 2: .... I need to search for more explicit
+information about his performances.
+Action 2: Search[Wolf Alice] Observation 2: Wolf Alice are an English rock band fr.... acoustic
+duo comprising singer Ellie Rowsell and guitarist Joff Oddie, Wolf Alice have also featured bassist
+Theo Ellis and drummer Joel Amey since 2012 .... Lookup[Wolf Alice instruments] Thought 4:
+Wolf Alice consists of four members: Ellie Rowsell (vocals), Joff Oddie (guitar), Theo Ellis (bass),
+and Joel Amey (drums). .....
+Action 3: Lookup[Wolf Alice instruments] Observation 3: No more results.
+Finish[Wolf Alice] Thought 4: I know they reportedly consist of four members and typically
+feature guitar, bass, drums, and vocals whwereas Badly Drawn Boy only have one member . (label:
+Badly Drawn Boy)
+Figure 10: Examples of Reasoning Error. The incorrect part is highlighted in red.
+Answer the following question: {{questions}} ,
+with following documents: {{documents}}.
+Your response should strictly follow the format:
+Explanations :[give your step by step Analysis here ]
+FINAL:(BE CONCISE, ONLY a FEW phrases)
+let’s think step by step
+Figure 11: Final answer generation prompt for multi hop QA
+
+You’re a disambiguation expert analyzing "{{phrase}}" in: {{self.question}} Instruction:
+1. Analyze the question by considering these potential ambiguities:
+- Temporal: Check for unclear time references, periods, or temporal scope
+- Entity: Identify names, references, or terms that could refer to multiple entities
+- Semantic: Look for words with multiple meanings (polysemy/homonymy)
+- Scope: Consider possible boundaries and levels of detail
+- Intent: Examine possible purposes and expected answer types
+- Cultural: Consider cultural-dependent interpretations
+- Quantitative: Check for unclear measurements or numerical references
+- Linguistic: Analyze syntax and referential clarity
+- Categorical: Consider possible classification schemes
+- Contextual: Examine required background knowledge and relationships
+2. Analyze the question word by word. Return disambiguated question and its interperatation for
+each different meaning
+Here is what we currently know Documents:{{context}}
+pick top 5 questions that are best in disambiguating the question.
+(covers different mean-
+ings of the questions) and strictly FOLLOW the format: response: question1; question2;....
+Figure 12: Subcomponent Question generation prompt for Ambiguous QA
+The question may be ambiguous and have multiple correct answers, and in that case, you have to
+provide a long-form answer including all correct answers.
+1. Carefully go through all the given documents.
+2.The using your and context, provide answer.
+Your response should strictly follow the format:
+Explanations (Step 2):[give your step by step Analysis here ]
+FINAL(Step 2):
+Please ONLY reply according to this format
+Question: {{questions}} Document: {{documents}} let’s think step by step
+Figure 13: Final answer generation prompt for Ambiguous QA
+Answer the {{questions}} based on on the document info. For each question find as many answers
+as possible. Response all the answers in a short paragraph (as specific as possible).
+Relevant Document: {{context}}
+Figure 14: Subcomponent question answering prompt
+
+example Output of TreeRare
+Question: What screenwriter with credits for ‘Evolution’ co-wrote a film starring Nicolas Cage
+and Téa Leoni?
+Dependency Parser Output:
+ROOT []
+|
+co-wrote --root--> [What screenwriter with credits for
+"Evolution" co-wrote a film starring
+Nicolas Cage and Tea Leoni]
+|
+|-- screenwriter --nsubj--> [screenwriter with credits for "Evolution"]
+|
+|
+|
+|-- What --det--> [What]
+|
+|
+|
+-- credits --nmod--> [credits for "Evolution"]
+|
+|
+|
+|
+|-- with --case--> [with]
+|
+|
+|
+|
+-- Evolution --nmod--> [Evolution]
+|
+|-- film --obj--> [film starring Nicolas Cage and Tea Leoni]
+|
+|
+|
+|-- a --det--> [a]
+|
+|
+|
+-- starring --acl--> [starring Nicolas Cage and Tea Leoni]
+|
+|
+|
+|
+-- Nicolas Cage --obj--> [Nicolas Cage and Tea Leoni]
+|
+|
+|
+|
+|
+-- Tea Leoni --conj--> [Tea Leoni]
+|
+-- ? --punct--> [?]
+Figure 15: Output of TreeRare at question decomposition stage
+
+example Output of TreeRare
+Node: credits for ‘Evolution’ ” Generated Questions: Who wrote the screenplay for the film
+Evolution”? What movie starring Nicolas Cage and Tea Leoni was co-written by the same screen-
+writer as Evolution”? What year was Evolution” released? Subcomponent Question Answering:
+The screenplay for the film Evolution” was co-written by David Diamond and David Weissman,
+along with a story by Don Jakoby. The same screenwriters, Diamond and Weissman, also co-wrote
+the film The Family Man,” which stars Nicolas Cage and Tea Leoni. “Evolution” was released in
+the year 2001.
+Node: screenwriter with credits for ‘Evolution’ ” Generated Questions: Who are the screen-
+writers credited for Evolution”? What is the title of the film starring Nicolas Cage and Tea Leoni
+co-written by the same screenwriters? In what year was “Evolution” released? Subcomponent
+Question Answering: The screenwriters credited for Evolution” are David Diamond and David
+Weissman. They also co-wrote the film The Family Man,” which stars Nicolas Cage and Téa Leoni.
+“Evolution” was released in the year 2001.
+Node: Nicolas Cage and Téa Leoni” Generated Questions: What movies have Nicolas Cage
+and Téa Leoni starred in together? Who co-wrote the screenplay for the film Evolution”? What are
+the main themes of the film “Evolution”? Subcomponent Question Answering: Nicolas Cage
+and Téa Leoni starred together in the film The Family Man,” a romantic comedy-drama released
+in 2000. The screenplay for Evolution” was co-written by David Diamond and David Weissman,
+in collaboration with Don Jakoby, who originally came up with the story. The main themes of
+“Evolution” include the unintended consequences of technological advancement and the humorous
+exploration of evolution itself, particularly focusing on alien organisms and how they adapt to
+Earth, leading to unexpected and comedic situations.
+Node: starring Nicolas Cage and Téa Leoni” Generated Questions: What film did Nicolas
+Cage and Téa Leoni star in together? Who were the co-writers of the screenplay for Evolution”?
+What are the main themes explored in the film Evolution”? When was The Family Man” released?
+What genre does the film “The Family Man” belong to? Subcomponent Question Answering:
+Nicolas Cage and Téa Leoni starred together in the film The Family Man,” which was released
+in 2000. The screenplay for Evolution” was co-written by David Diamond and David Weissman.
+The film Evolution” explores themes such as the rapid development and adaptation of species,
+the impact of science and technology on society, and environmental issues tied to evolution. The
+Family Man” was released on December 22, 2000, and it belongs to the romantic comedy-drama
+genre.
+Node: film starring Nicolas Cage and Téa Leoni” Generated Questions:What film did Nicolas
+Cage and Téa Leoni star in together? Who were the co-writers of the screenplay for Evolu-
+tion”?When was “The Family Man” released? Subcomponent Question Answering: Nicolas
+Cage and Téa Leoni starred together in the film The Family Man,” which was released in 2000. The
+screenplay for Evolution” was co-written by David Diamond and David Weissman, who frequently
+collaborate on various projects. “The Family Man” premiered on December 22, 2000.
+Final Answer: The screenwriters credited for the film Evolution” are David Diamond and David
+Weissman.
+Figure 16: Output of TreeRare at the Subcomponent Question Answering Stage

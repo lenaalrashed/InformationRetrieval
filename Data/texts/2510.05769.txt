@@ -1,0 +1,1091 @@
+INFORME: IMPROVING INFORMATIVENESS OF ABSTRACTIVE
+TEXT SUMMARIZATION WITH INFORMATIVE ATTENTION
+GUIDED BY NAMED ENTITY SALIENCE
+Jianbin Shen
+University of Technology Sydney, Australia
+Chris.Shen@uts.edu.au
+Christy Jie Liang
+University of Technology Sydney, Australia
+Jie.Liang@uts.edu.au
+Junyu Xuan
+University of Technology Sydney, Australia
+Junyu.Xuan@uts.edu.au
+ABSTRACT
+Abstractive text summarization is integral to the Big Data era, which demands advanced methods
+to turn voluminous and often long text data into concise but coherent and informative summaries
+for efficient human consumption. Despite significant progress, there is still room for improvement
+in various aspects. One such aspect is to improve informativeness. Hence, this paper proposes a
+novel learning approach consisting of two methods: an optimal transport-based informative attention
+method to improve learning focal information in reference summaries and an accumulative joint
+entropy reduction method on named entities to enhance informative salience. Experiment results
+show that our approach achieves better ROUGE scores compared to prior work on CNN/Daily Mail
+while having competitive results on XSum. Human evaluation of informativeness also demonstrates
+the better performance of our approach over a strong baseline. Further analysis gives insight into the
+plausible reasons underlying the evaluation results. Our source code is accessible on GitHub1.
+Keywords Abstractive text summarization · Optimal transport · Joint entropy
+1
+Introduction
+Abstractive text summarization (ATS) is a learning task in natural language processing to condense a long document
+into a summary that is fluent, coherent, relevant, and consistent (e.g., Kryscinski et al., 2019). These are commonly
+accepted criteria for ATS. Efficient transfer learning enabled by pre-trained language modeling of Transformer (Vaswani
+et al., 2017) based models (e.g., Devlin et al., 2019; Lewis et al., 2020) has greatly benefited the progress of ATS on
+these criteria. Numerous task-specific methods (e.g., Zhang et al., 2022; Gabriel et al., 2021), developed to fine-tune
+pre-trained language models, have further improved and adapted ATS to various data domains, such as news articles
+and scientific papers.
+Among the criteria, relevance concerns generated summaries supported by their source documents. This is primarily
+attributable to cross-attention mechanisms devised in encoder-decoder modeling. For example, in prevalent Transformer-
+based ATS encoder-decoders, the cross-attention mechanisms intuitively assign each decoded token’s latent state with
+a distribution over the source document sequence token latent states. This teaches models to generate summaries
+correlated to their source documents. Although it is essential, this form of learning relevance may not always be
+optimal for informativeness from a reference summary viewpoint because it could ignore focal information in reference
+1https://github.com/74808917/ozizAxRminf6Zyv.
+arXiv:2510.05769v1 [cs.CL] 7 Oct 2025
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+summaries that are informative but less statistically correlated with the source documents otherwise, for example,
+extrinsic knowledge. This inadequacy is evident in generated summaries, which often contain less informative content,
+and it is not uncommon to miss out on substantial information. For example, given the following elliptically shortened
+long source document,
+“... But it is not impossible that our decision to leave the European Union could end up being judged
+in the European Court in Luxembourg. ...could, in theory, fight to keep us in their clutches. ...”,
+and its reference summary,
+“Irony of ironies, is it possible that the European Court could block us from leaving the European
+Union?”,
+A pre-trained model may generate a summary on the same source document as follows,
+“If you are an ardent Brexiteer, stop before you crack open the champagne.”.
+Clearly, the model-generated summary is much less informative compared to the reference summary.
+Recognizing the gap, researchers have proposed solutions to improve the informativeness of ATS (e.g., Wang et al.,
+2020; Fu et al., 2020). The approaches typically integrate topic modeling, which has long been used in extractive text
+summarization (e.g., Shenouda et al., 2022; Wu et al., 2017). Many of them adopt statistical topic extraction methods.
+The most used statistical method is Latent Dirichlet Allocation (e.g., Narayan et al., 2018; Huang et al., 2020), whereas
+Poisson Factor Analysis (e.g., Wang et al., 2020) is also used to learn topic words. The neural topic models (e.g., Fu
+et al., 2020; Ma et al., 2022) are recent alternatives to statistical methods for topic-relevant ATS modeling. However,
+topic modeling commonly imposes a fixed number of topics. This presumption makes topic modeling-based ATS
+sensitive to the number of topics and affects the applicability of the learned ATS models.
+This paper proposes a novel learning approach that includes an optimal transport-based informative attention method
+with an accumulative joint entropy reduction method on named entities. Our approach has the following advantages
+over topic modeling-based prior work. We integrate our methods into ATS modeling in end-to-end training seamlessly,
+whereas ATS modeling integrated with topic modeling is a two-stage process. Our approach is free of the aforementioned
+limitations imposed by topic modeling in ATS modeling. Our learning approach reconciles the reference summary
+perspective with the source document relevance in training, while prior work focuses on topics supported by the source
+documents. In summary, our approach has the following contributions,
+1. We propose an optimal transport (OT)-based informative attention method. It is devised as a reverse cross-
+attention complementary to the cross-attention of the existing encoder-decoder modeling. It aims to learn focal
+information in reference summaries that could otherwise be ignored.
+2. We further propose an accumulative joint entropy reduction (AJER) method. It is based on information theory,
+consisting of an accumulative negative information gain component and a joint entropy reduction component.
+Utilizing named entities, the method enhances the salience of named entities in the model’s latent space, which
+in turn guides the proposed informative attention method efficiently.
+3. Our experiments demonstrate that our approach outperforms prior work on summary ROUGE scores with
+CNN/Daily Mail while maintaining competitive results on XSum. Human evaluation of informativeness also
+shows that our approach achieves better results than a strong baseline. The further analysis sheds light on the
+plausible reasons behind the evaluation results.
+2
+Related Work
+To improve the informativeness of ATS, researchers typically incorporate topic modeling into ATS modeling. Statistical
+topic modeling, for example, using Latent Dirichlet Allocation, has been widely used with various ATS models, such
+as LSTM-based models (e.g., Huang et al., 2020), convolutional models (e.g., Khanam et al., 2021), and more recent
+Transformer-based models (e.g., Wang et al., 2020). The different ATS models open novel ways to incorporate extracted
+topics into ATS modeling. Narayan et al. [2018] pass the topic distributions directly to the model as additional inputs,
+whereas Pan et al. [2019] infuse the model’s attention mechanism with the topic distributions. Ailem et al. [2019]
+formulate the topic distributions into pointer-generator-based conditional probability estimation. Huang et al. [2020]
+further introduce a topic context learned from topic distributions into their pointer-generator. Utilizing ConceptNet,
+Khanam et al. [2021] integrate two extra knowledge-infused attention channels: input-topic knowledge attention and
+topic knowledge-summary attention. In comparison, Wang et al. [2020] extend the Transformer’s cross-attention with a
+2
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+topic semantic attention head and leverage the topic proportional factor from Poisson factor analysis to modulate the
+output of the integrated cross-attention.
+Neural topic modeling (NTM) is an alternative to statistical topic modeling to learn topic distributions. Neural topic
+models are mostly based on the variational autoencoders (VAE). The inputs to NTM are usually either input embeddings
+or the encoder’s output representations. Likewise, different ATS models open researchers to various approaches of
+integrating learned topics into topic-aware decoding. For example, Fu et al. [2020] compute a topic context vector from
+topic distributions and add it to the decoder’s linear transformation to acquire the decoding classification logits, whereas
+Zheng et al. [2021] extend the decoder to combine the decoding classification logits head with a devised topic model
+head argument on the topic distributions. On the other hand, Ma et al. [2022] develop a two-stage encoder-decoder using
+the topic-infused embeddings. The first stage encodes the topic-aware sentence representations by binary classification.
+The sentence representations then gate the second stage encoder’s outputs for decoding. Following the same idea of
+topic-aware sentences, Jiang et al. [2022] learn topic-aware sentence representations as inputs to the cross-attention,
+using a topic-sentence bipartite graph of the topic representations and the sentence representations.
+Differing from VAE-based topic models, Aralikatte et al. [2021] develop embedding-transformed topic distributions,
+which are combined to form a dynamic vocabulary bias vector. The bias vector is then formulated into the generative
+token probability distribution estimation. The authors practically fix the bias components to a predefined number of
+sampled tokens. Some researchers have also explored language models for topic extraction. For instance, Zheng et al.
+[2020] leverage a pre-trained BERT-NER to extract named entities in source documents as topics, but their BiLSTM
+decoder is conditioning on a fixed number of selected entities constrained by their decoder modeling.
+3
+Background
+Transformer-based encoder-decoders have an autoregressive formulation as a conditional probability estimation problem:
+p(ˆyt|θ) = pθ(ˆyt|y1:t−1, x)
+(1)
+where a parameterized model θ generates a probability distribution2 pθ(ˆyt) at step t conditional on the decoding inputs
+y1:t−1, a teacher-forcing learning strategy (Williams and Zipser, 1989), and the source document sequence x. The
+learning objective becomes to maximize the generative likelihood:
+ˆyt = argmax
+θ
+(pθ(ˆyt|y1:t−1, x)).
+(2)
+This maximization problem is translated into a negative log-likelihood minimization problem using the cross-entropy
+loss function for training:
+LMLE = −Eˆyt∼pθ[yt log ˆyt] ≈−1
+n
+n
+X
+t=1
+yt log pθ(ˆyt)
+(3)
+where yt is the ground truth at step t, and n is the length of the generated sequence.
+4
+Our Methods
+Fig. 1 illustrates our learning approach, which extends an encoder-decoder with our optimal transport-based informative
+attention and accumulative joint entropy reduction methods.
+4.1
+Optimal Transport-Based Informative Attention
+Learning summary generation should not only be relevant to source documents but also be informative concerning
+the reference summaries. This prompts the idea of reverse cross-attention. To this end, we devise an informativeness
+regularization as the optimal transport (OT) problem using Kantorovich’s formulation (e.g., Kolouri et al., 2017),
+which aims to find an optimal transport plan. The metric for the transport plan is Wasserstein distance (or Kantorovich
+distance). In our context, it is about moving semantic information in such a way that the source document content only
+‘interested’ by the summary distribution is retained for summary generation. For an l-length source document and the
+2We may omit the conditional notation for simplicity without loss of generality when there is no ambiguity.
+3
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Encoder
+Decoder
+Joint entropy reduction
+Accumulative negative
+information gain
+Optimal transport
+based attention
+Figure 1: Illustration of an encoder-decoder with our methods, including optimal transport-based informative attention
+(carmine block) and accumulative joint entropy reduction (tealish block).
+corresponding m-length summary, the discrete optimal transport problem, as a minimizer, can be expressed as follows:
+K(x, y) = min
+π
+l
+X
+i=1
+m
+X
+j=1
+π(xi, yj)c(xi, yj),
+s.t.
+m
+X
+j=1
+π(xi, yj) = π(xi),
+l
+X
+i=1
+π(xi, yj) = π(yj),
+π(xi, yj) ≥0
+(4)
+where π(·, ·) is joint distribution as a coupling matrix, and c(·, ·) is cost function. The joint distributions achieving the
+infimum are called optimal transport plans.
+To realize an optimal transport, we first formulate the cost function as follows. Given the latent states (or representations)
+of the source document hx and the corresponding summary hy, the cost function is defined as an L2 norm:
+c(xi,yj) = ||hxi −hyj||2.
+(5)
+For each source token hxi, its distances to the summary tokens {hyj}m
+j=1 are computed.
+Formulating the joint distribution (the plan) using a coupling method is crucial to learning an optimal transport that
+maximizes information concerning reference summaries. The orthogonal property of bi-linearity means that a source
+token representation similar to the summary token representation(s) would become salient, whereas it would be
+suppressed. This provides a simple yet effective coupling method for learning the focal information from source
+documents relevant to the summaries. So, we formulate the joint distribution based on the bilinear transformation of
+(x, y):
+Ti,j = hxiWi,jhyj
+(6)
+where Wi,j ∈W is the weight of the coupling pair. The joint distribution is then defined as:
+π(xi,yj) =
+ezi,j
+P
+j′ ezi,j′ , zi,j ∈Ti
+(7)
+where a probability distribution over the summary token representations is computed for each source document token
+representation. Substituting the terms in Eq. 4 with Eq. 5 and Eq. 7, we derive the informative attention learning
+objective as an average of the transport plan minimizer:
+LOT =
+1
+l × mK(x, y).
+(8)
+4
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+4.2
+Accumulative Joint Entropy Reduction
+The method gives rise to informative attention learning through named entity latent salience. Named entities3 provide
+the focal points since document content is commonly laid out through them. Increasing the salience of named entities
+implies reducing their uncertainty from an information theory viewpoint.
+A named entity often consists of multiple words. Furthermore, token encoding schemes like byte-pair encoding
+(Sennrich et al., 2016) employed in ATS modeling may segment a word into several tokens. This means that our method
+should reduce the uncertainty of the named entity tokens collectively as well as the uncertainty in their sequential
+structure. Our method addresses both uncertainties holistically, as detailed as follows.
+Uncertainty is measured by (Shannon) entropy in information theory. The higher entropy, the higher uncertainty4.
+The information theory (e.g., Polyanskiy and Wu, 2022) also states that conditioning reduces entropy (or uncertainty).
+Furthermore, under any stationary process X = (X1, ...Xn), it satisfies:
+H(xn|X1:n−1) ≤H(xn−1|X1:n−2)
+(9)
+Named entities follow a stationary process and are conditional. This suggests that each conditional named entity token
+prediction should be no more uncertain than that at the previous step. The empirical study by Xu et al. [2020] also
+supports the theory in the context of ATS. This permits us to formulate uncertainty reduction for named entities as
+follows.
+Let us express a named entity token sequence as x1:n, and assume the sequence is a Markov chain for notation simplicity,
+the conditional entropy of a named entity token can be expressed as5:
+H(xi|xi−1),
+i > 1,
+H(xi),
+i = 1.
+(10)
+To simplify our discussion without loss of generality, we introduce notations H(x0) = 0 and H(x1|x0) = H(x1). We
+can thus express a conditional uncertainty inequality as:
+H(xi+1|xi) ≤H(xi|xi−1), i ≥1.
+(11)
+After rearranging, we obtain an adjacent step entropy difference as follows:
+△H(xi, xi+1) = H(xi+1|xi) −H(xi|xi−1).
+(12)
+We reframe this entropy reduction as an adjacent information gain. Meanwhile, following the chain rule for entropy, the
+joint entropy of the sequence can be defined as:
+H(x1:n) =
+n
+X
+i=1
+H(xi|xi−1).
+(13)
+From Eq. 12 and Eq. 13, we derive a joint information gain:
+△H(x2:n) =
+n
+X
+i=2
+(H(xi|xi−1) −H(xi−1|xi−2)).
+(14)
+Maximizing this quantity reduces the relative uncertainty in the conditional prediction of the generative sequence. This
+maximization quantity is translated into a negative joint information gain for minimization training:
+LNIG = −△H(x2:n).
+(15)
+Drawing on the conditioning entropy theory, we expect the relative uncertainty to be higher at the beginning of an
+entity and lower toward the end of the entity sequence. It would be reasonable to apply hyperparameters to weight
+each term in the summation to regularize the uncertainty reduction for efficient learning. However, searching for
+proper hyperparameters could be time-consuming. Instead, we extend Eq. 15 to an accumulative formulation, named
+accumulative negative information gain:
+LANIG = −1
+n
+n
+X
+i=2
+i
+X
+j=2
+△H(x2:j).
+(16)
+3We follow the classification of named entity recognition.
+4We use entropy and uncertainty interchangeably when there is no ambiguity.
+5Entropy can then be defined for any Markov processes.
+5
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Model
+CNNDM Test Set
+XSum Test Set
+R-1
+R-2
+R-L1
+R-1
+R-2
+R-L1
+TAG+Cov (Ailem et al., 2019)
+40.06
+17.89
+36.52
+N/A
+N/A
+N/A
+BertSUM+TA (Wang et al., 2020)
+43.06
+20.58
+39.67
+39.77
+17.39
+32.39
+TAS (Zheng et al., 2021)
+44.38
+21.19
+41.33
+44.63
+21.62
+36.77
+KTOPAS (Khanam et al., 2021)
+42.10
+20.01
+38.45
+N/A
+N/A
+N/A
+PEGFAME (Aralikatte et al., 2021)
+42.95
+20.79
+39.90
+45.31
+22.75
+37.46
+T-BERTSUM(ExtAbs/Abs) (Ma et al., 2022)2
+43.06
+19.76
+39.43
+39.90
+17.48
+32.18
+GATSum (Jiang et al., 2022)
+44.46
+21.32
+39.84
+44.60
+21.53
+36.66
+BART-large (Lewis et al., 2020)
+44.16
+21.28
+40.90
+45.14
+22.27
+37.25
+BART-large/OT
+44.67
+21.16
+41.59
+45.16
+21.69
+36.54
+BART-large/AJER
+44.67
+21.31
+41.58
+44.83
+21.51
+36.17
+BART-large*/OT+AJER
+44.75
+21.54
+41.69
+45.08
+21.58
+36.22
+Table 1: ROUGE evaluation (on CNNDM and XSum). CNNDM: 11490 samples. XSum: 11334 samples. 1. Our
+summary-level R-L scores (equivalent to the R-Lsum ROUGE metric this paper uses). 2. T-BERTSUM(ExtAbs) for
+CNNDM, and T-BERTSUM(Abs) for XSum.
+This has the effect of penalizing more in the beginning and then weighting the penalty less gradually. Eq. 16 encourages
+the learning model to conditionally choose the next token that is less uncertain than the current token. It thus reduces
+the uncertainty in the token sequential structure. However, it may not guarantee efficiency in reducing the absolute
+uncertainty of choosing a named entity. This can be amended by using the joint entropy as a regularization term too,
+defined as:
+LJE = 1
+n
+n
+X
+i=1
+H(xi|xi−1).
+(17)
+Eq. 16 and Eq. 17 form two components of the accumulative joint entropy reduction (AJER). The double-dose
+formulation safeguards the integrity of named entity estimations. The AJER can be applied to named entities in both
+source documents and summaries due to the conditionality inherent in the entities. The autoregressive nature of the
+decoder further makes the conditionality model-explicit on summary entities.
+4.3
+Total Learning Objective
+Composing of Eq. 3, Eq. 8, Eq. 16, and Eq. 17, we arrive at the total learning objective:
+L = LMLE + αOTLOT + αANIGLANIG + αJELJE
+(18)
+where αOT, αANIG, and αJE are hyperparameters to control objective influences.
+5
+Experiment Results and Analysis
+5.1
+Dataset
+We choose two typical English benchmark datasets commonly used in ATS research, CNN/Daily Mail (CNNDM)
+(See et al., 2017; Hermann et al., 2015) and XSum (Narayan et al., 2018). CNNDM’s reference summaries tend to be
+extractive and intrinsic, while those of XSum are extremely abstractive and extrinsic, as the extrinsic characteristic is
+also studied and quantified by Lu et al. [2020]. We use Stanford CoreNLP (v4.4.0) named entity recognition (NER)
+parsing tool6 to acquire named entities from the training datasets. The data preparation is detailed in Section A.1.
+6https://stanfordnlp.github.io/CoreNLP.
+6
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Model
+QuestEval
+CNNDM µ(%)
+XSum µ(%)
+BART-large
+46.5
+45.1
+BART-large* /OT+AJER
+47.0
+44.7
+Table 2: QuestEval mean score statistic over the summaries generated from the CNNDM and
+XSum test sets (measured against reference summaries).
+Model
+CNNDM (60 samples)
+XSum (60 samples)
+No.
+%
+No.
+%
+BART-large
+11/60
+18.33
+9/60
+15.00
+BART-large*/OT+AJER
+18/60
+30.00
+19/60
+31.66
+Table 3: Human evaluation of better informativeness on 60 randomly drawn samples of generated
+summaries from CNNDM and XSum, respectively.
+5.2
+Implementation
+We use BART (Lewis et al., 2020) as our backbone encoder-decoder. Our implementation adopts Hugging Face’s BART
+implementation7 with the pre-trained BART-large weight profiles8. Note that the model evaluation is conducted on
+the trained backbones solely, as our methods are only used to train the backbone models. The pre-trained BART-large
+models are also used as baselines for evaluation comparison. The key implementation details are given in Section A.2.
+5.3
+Results and Analysis
+We conduct ROUGE evaluation, factuality consistency evaluation, and human evaluation. Our analysis covers them to
+gain insights into the results and plausible reasons.
+5.3.1
+ROUGE Evaluation
+We first present ROUGE9 results in Table 1. The table includes prior work for comparison, starting with several recent
+topic-aware ATS research outcomes that have achieved high ROUGE scores, followed by the published BART-large
+results for ATS. Separated by double lines are our experiments, which include the ablation study results of OT and
+AJER. Our OT+AJER-trained backbone achieves the best results compared to prior work on CNNDM, while our
+OT+AJER-trained backbone on XSum also has competitive results. We think that the characteristics of XSum may
+impact the performance of our methods. Later, our human evaluation explores the impact and draws on plausible
+reasons behind the results.
+Ablation Study
+The ablation study trains our backbone models with OT and AJER, respectively. Comparing the
+ablation results shown in Table 1, we see that the OT+AJER-trained model achieves better results on CNNDM, while
+the OT-trained model edges ahead on XSum. We will also explore the reasons underlying the observation here in our
+human evaluation.
+5.3.2
+Automatic Factuality Consistency Evaluation
+Factuality consistency metrics are possibly the most relevant choice for measuring informativeness semantically. Several
+automatic factuality consistency metrics have been developed over the years (e.g., Kryscinski et al., 2020; Durmus
+et al., 2020; Scialom et al., 2021). Given that our methods reconcile the reference summaries, question-answering
+model-based metrics are proper for the purpose. For that reason, we choose QuestEval (Scialom et al., 2021) and
+evaluate model-generated summaries against the golden references. We compare our OT+AJER-trained backbone with
+7https://huggingface.co/transformers/v4.9.2/model_doc/bart.html.
+8https://huggingface.co/facebook/bart-large-cnn for CNNDM, and https://huggingface.co/facebook/
+bart-large-xsum for XSum.
+9The implementation of ROUGE metrics (Lin, 2004) used in this paper is from Hugging Face’s Python package datasets.
+7
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Error Type
+CNNDM
+XSum
+Baseline2
+Ours3
+Baseline2
+Ours3
+Entity extrinsic1
+1
+1
+2
+8 (5+2+1)4
+Name
+2
+1
+6
+5
+Event
+0
+0
+1
+1
+Event-time
+0
+0
+1
+1
+Location
+0
+1
+3
+2
+Number
+0
+0
+10
+8
+Other
+3
+3
+11
+5
+Total
+6
+6
+34
+30 (25)
+Table 4: Human evaluation of factuality on the same 60 randomly sampled generated summaries
+(CNNDM and XSum, respectively). 1. The entity extrinsic covers person names, events, and
+locations. 2. BART-large baseline. 3. BART-large*/OT+AJER. 4. Five of them are factual, two
+are erroneous, and one is inconclusive.
+the BART-large baseline, given that the pre-trained baseline implementation is available and utilized as our backbone
+model. The mean scores are shown in Table 2. The results show that the OT+AJER-trained model performs better than
+the baseline on CNNDM, while the baseline edges ahead on XSum. The results are in agreement with the ROUGE
+evaluation in terms of performance.
+5.3.3
+Human Evaluation
+To further ascertain automatic evaluations and gain a better understanding of plausible reasons underlying the results,
+we conduct our human evaluations on both informativeness and factuality.
+Informativeness Evaluation
+This evaluation is challenging in that model-generated summaries may contain extrinsic
+information not evidenced in the articles and reference summaries. They may also contain factual errors. Some errors
+may obscure informativeness more than others. It is also challenging because reference summaries could occasionally
+be uninformative or erroneous. So, we set out a few key rules to ensure the evaluation is more objective, including
+taking into account factual error impact on the informative explication, and consolidating reference summaries with the
+information the articles convey instead of relying on reference summaries solely. The evaluation does not take into
+consideration the extrinsic information in model-generated summaries, which is not evident in source documents and
+reference summaries. They will be assessed in a human evaluation of factuality when extrinsic issues are investigated.
+The evaluation guidelines are detailed in Section A.3.1. Note that we ‘normalize’ whitespaces in model-generated
+summaries and detail reasons in Section A.3.2.
+To facilitate the evaluation, we have developed a user interface-based evaluation tool and procedures as detailed in
+Section A.3.3.
+The results are shown in Table 3. The OT+AJER-trained backbones generate more informative summaries than the
+baselines on both CNNDM (by ~11%) and XSum (by ~16%), respectively. The resulting disparities between the
+OT+AJER-trained backbones and the pre-trained baselines could be a good indication of sampled token distributional
+shifts.
+Factuality Evaluation
+As we expect that our methods could alter the generative distributions considerably, we are
+curious about what it actually means for ATS factuality. We thus conduct the human evaluation on factuality to answer
+the question and further obtain some insights underlying the answers. The evaluation is a non-trivial task because
+factual issues or hallucinations can have various forms (e.g., Maynez et al., 2020; Tang et al., 2023). Shen et al. [2023]
+have demonstrated that their human evaluation of factuality using syntactic agreement categorization gives a better
+understanding of hallucination forms and plausible underlying causes. We follow their approach by tailoring it to our
+NER-related focus.
+8
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+The results are shown in Table 4. It is noticeable that our OT+AJER-trained backbone incurs a considerable number of
+extrinsic entity issues on XSum that are not seen in either corresponding source documents or reference summaries. As
+extrinsic entities can be factual (e.g., Cao et al., 2022), we are interested in knowing how many of these extrinsic issues
+are factual. After investigating the cases using external resources (e.g., Google search), it turns out that five of them
+are factual and informative, two are erroneous, and one is inconclusive. Taking into account the five factual extrinsic
+entities, we see the overall factual error counts reduced to nine fewer errors than the baseline on XSum.
+The finding suggests that our methods may be capable of extrinsic data mining within a dataset, whereas extrinsic
+data mining typically employs external knowledge bases. We hypothesize that the salience boosted by the AJER
+method helps the OT method to effectively ‘build’ the correlational linkage between entities in source documents and
+extrinsic entities in reference summaries in a global context, both document-wide and corpus-wide. The hypothesis
+would be consolidated if the summaries generated by the OT-trained model had fewer factual extrinsic entities. To
+this end, we analyze the extrinsic entities in the summaries generated by the OT-trained model on the same numbered
+random samples. We find five extrinsic entity issues, among which two are factual and three are erroneous. This
+result supports our hypothesis. These findings might partially explain the results on XSum in Table 1 where the scores
+from the OT+AJER-trained model are lower than those of the OT-trained model and some prior works. They could
+similarly reason the results on XSum in Table 2. We believe that the model’s increased ability to utilize globally learned
+extrinsic knowledge in composing summaries gives rise to a capacity closely analogous to human intelligence in writing
+summaries using extrinsic knowledge. We provide the five extrinsic but factual entity-related summaries in Section A.4.
+Additionally, the summaries generated by our trained model incur fewer categorized syntactic agreement errors on
+XSum than those by the baseline, including person name, location, number, and ‘Other’ categories. We believe this
+error reduction across categories is also attributable to the integrated AJER method, which enhances the salience of
+named entities in their contexts within the model latent space and thus reduces the uncertainty in their conditional
+probability estimations.
+Meanwhile, Table 4 shows that the OT+AJER-trained model also fends off hallucinations well on CNNDM, on a par
+with the baseline. The rationale for the analysis on XSum above is also applicable to the results on CNNDM. The
+difference is that the entities in both source documents and reference summaries of CNNDM are largely from the
+same distribution. Thus, incurring much less extrinsic information may explain the better scores resulting from the
+OT+AJER-trained model on CNNDM in Table 1 and Table 2 because of more gram overlapping lexically and similar
+semantically in the model latent space between the OT+AJER-trained model-generated summaries and the reference
+summaries, respectively.
+We also notice that the models trained on CNNDM have produced much fewer errors than the models trained on XSum.
+This suggests that existing ATS modeling is efficient at learning from extractive and intrinsic datasets but weak on
+extremely abstractive and extrinsic datasets. Our approach may have provided a data-efficient way to reduce the gap,
+given that the OT+AJER-trained model reduces the number of errors on XSum compared to the baseline.
+6
+Conclusion
+This paper proposes an optimal transport-based informative attention method guided by an accumulative joint entropy
+reduction method, aiming at improving the informativeness of ATS. Our experiments and analysis have demonstrated
+that our methods can improve ATS on informativeness and factuality, and are applicable to two typical but very different
+characteristic datasets.
+Limitations
+Our research in this paper is confined to English news article documents, even though the chosen datasets represent
+typical characteristics of ATS. Our future investigation may expand our methods to other document types. The bias
+exposure will also be closely examined in our future work through the lens of empirical experiments with different
+learning objective weight configurations and the study of mathematical bounds. The evaluation methods, including
+auto-metric evaluations and human assessment, have their strengths and weaknesses. We hope that the combination of
+the auto-metric evaluations and human evaluations on informativeness and factuality may have improved our overall
+analysis. A study with larger backbone models may also be undertaken in the future when adequate computational
+resources become available.
+9
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Ethics Statement
+To the best of our knowledge, we have attributed our work to the previous research and implementations on which
+this paper depends, either in the main script or in the appendices. Any changes to third-party implementations follow
+the license permits of those implementations. One author conducts the human evaluations. Our work and experiment
+results are all genuine.
+References
+Wojciech Kryscinski, Nitish Shirish Keskar, Bryan McCann, Caiming Xiong, and Richard Socher. Neural Text Summa-
+rization: A Critical Evaluation. In Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan, editors, Proceedings of the
+2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference
+on Natural Language Processing (EMNLP-IJCNLP), pages 540–551, Hong Kong, China, November 2019. Associa-
+tion for Computational Linguistics. doi:10.18653/v1/D19-1051. URL https://aclanthology.org/D19-1051.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser,
+and Illia Polosukhin.
+Attention is All you Need.
+In Advances in Neural Information Processing Systems,
+volume 30. Curran Associates, Inc., 2017.
+URL https://proceedings.neurips.cc/paper/2017/hash/
+3f5ee243547dee91fbd053c1c4a845aa-Abstract.html.
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. BERT: Pre-training of Deep Bidirectional
+Transformers for Language Understanding.
+In Proceedings of the 2019 Conference of the North American
+Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and
+Short Papers), pages 4171–4186, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics.
+doi:10.18653/v1/N19-1423. URL https://aclanthology.org/N19-1423.
+Mike Lewis, Yinhan Liu, Naman Goyal, Marjan Ghazvininejad, Abdelrahman Mohamed, Omer Levy, Veselin
+Stoyanov, and Luke Zettlemoyer. BART: Denoising Sequence-to-Sequence Pre-training for Natural Language
+Generation, Translation, and Comprehension. In Proceedings of the 58th Annual Meeting of the Association
+for Computational Linguistics, pages 7871–7880, Online, July 2020. Association for Computational Linguistics.
+doi:10.18653/v1/2020.acl-main.703. URL https://aclanthology.org/2020.acl-main.703.
+Shengqiang Zhang, Xingxing Zhang, Hangbo Bao, and Furu Wei. Attention Temperature Matters in Abstractive
+Summarization Distillation. In Proceedings of the 60th Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 127–141, Dublin, Ireland, May 2022. Association for Computational
+Linguistics. doi:10.18653/v1/2022.acl-long.11. URL https://aclanthology.org/2022.acl-long.11.
+Saadia Gabriel, Antoine Bosselut, Jeff Da, Ari Holtzman, Jan Buys, Kyle Lo, Asli Celikyilmaz, and Yejin Choi.
+Discourse Understanding and Factual Consistency in Abstractive Summarization. In Proceedings of the 16th
+Conference of the European Chapter of the Association for Computational Linguistics: Main Volume, pages 435–
+447, Online, April 2021. Association for Computational Linguistics. doi:10.18653/v1/2021.eacl-main.34. URL
+https://aclanthology.org/2021.eacl-main.34.
+Zhengjue Wang, Zhibin Duan, Hao Zhang, Chaojie Wang, Long Tian, Bo Chen, and Mingyuan Zhou. Friendly Topic
+Assistant for Transformer Based Abstractive Summarization. In Proceedings of the 2020 Conference on Empirical
+Methods in Natural Language Processing (EMNLP), pages 485–497, Online, November 2020. Association for
+Computational Linguistics. doi:10.18653/v1/2020.emnlp-main.35. URL https://aclanthology.org/2020.
+emnlp-main.35.
+Xiyan Fu, Jun Wang, Jinghan Zhang, Jinmao Wei, and Zhenglu Yang. Document Summarization with VHTM:
+Variational Hierarchical Topic-Aware Mechanism. Proceedings of the AAAI Conference on Artificial Intelligence,
+34(05):7740–7747, April 2020. ISSN 2374-3468. doi:10.1609/aaai.v34i05.6277. URL https://ojs.aaai.org/
+index.php/AAAI/article/view/6277. Number: 05.
+Gabriel Shenouda, Aurélien Bossard, Oussama Ayoub, and Christophe Rodrigues. SummVD : An efficient approach
+for unsupervised topic-based text summarization. In Proceedings of the 2nd Conference of the Asia-Pacific Chapter
+of the Association for Computational Linguistics and the 12th International Joint Conference on Natural Language
+Processing (Volume 1: Long Papers), pages 501–511, Online only, November 2022. Association for Computational
+Linguistics. URL https://aclanthology.org/2022.aacl-main.38.
+Zongda Wu, Li Lei, Guiling Li, Hui Huang, Chengren Zheng, Enhong Chen, and Guandong Xu. A topic modeling
+based approach to novel document automatic summarization. Expert Systems with Applications, 84:12–23, October
+2017. ISSN 0957-4174. doi:10.1016/j.eswa.2017.04.054. URL https://www.sciencedirect.com/science/
+article/pii/S0957417417303020.
+10
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Shashi Narayan, Shay B. Cohen, and Mirella Lapata. Don’t Give Me the Details, Just the Summary! Topic-Aware
+Convolutional Neural Networks for Extreme Summarization. In Proceedings of the 2018 Conference on Empirical
+Methods in Natural Language Processing, pages 1797–1807, Brussels, Belgium, October 2018. Association for
+Computational Linguistics. doi:10.18653/v1/D18-1206. URL https://aclanthology.org/D18-1206.
+Yuxin Huang, Zhengtao Yu, Junjun Guo, Zhiqiang Yu, and Yantuan Xian. Legal public opinion news abstractive
+summarization by incorporating topic information. International Journal of Machine Learning and Cybernetics, 11
+(9):2039–2050, September 2020. ISSN 1868-808X. doi:10.1007/s13042-020-01093-8. URL https://doi.org/
+10.1007/s13042-020-01093-8.
+Tinghuai Ma, Qian Pan, Huan Rong, Yurong Qian, Yuan Tian, and Najla Al-Nabhan. T-BERTSum: Topic-Aware Text
+Summarization Based on BERT. IEEE Transactions on Computational Social Systems, 9(3):879–890, June 2022.
+ISSN 2329-924X. doi:10.1109/TCSS.2021.3088506. Conference Name: IEEE Transactions on Computational
+Social Systems.
+Shirin Akther Khanam, Fei Liu, and Yi-Ping Phoebe Chen. Joint knowledge-powered topic level attention for a
+convolutional text summarization model. Knowledge-Based Systems, 228:107273, September 2021. ISSN 0950-
+7051. doi:10.1016/j.knosys.2021.107273. URL https://www.sciencedirect.com/science/article/pii/
+S0950705121005359.
+Heng-Xi Pan, Hai Liu, and Yong Tang. A Sequence-to-Sequence Text Summarization Model with Topic Based
+Attention Mechanism. In Weiwei Ni, Xin Wang, Wei Song, and Yukun Li, editors, Web Information Systems and
+Applications, Lecture Notes in Computer Science, pages 285–297, Cham, 2019. Springer International Publishing.
+ISBN 978-3-030-30952-7. doi:10.1007/978-3-030-30952-7_29.
+Melissa Ailem, Bowen Zhang, and Fei Sha. Topic Augmented Generator for Abstractive Summarization, August 2019.
+URL http://arxiv.org/abs/1908.07026. arXiv:1908.07026 [cs, stat] version: 1.
+Chujie Zheng, Kunpeng Zhang, Harry Jiannan Wang, Ling Fan, and Zhe Wang. Topic-Guided Abstractive Text Summa-
+rization: a Joint Learning Approach, August 2021. URL http://arxiv.org/abs/2010.10323. arXiv:2010.10323
+[cs] version: 2.
+Ming Jiang, Yifan Zou, Jian Xu, and Min Zhang. GATSum: Graph-Based Topic-Aware Abstract Text Summarization.
+Information Technology and Control, 51(2):345–355, June 2022. ISSN 2335-884X. doi:10.5755/j01.itc.51.2.30796.
+URL https://itc.ktu.lt/index.php/ITC/article/view/30796. Number: 2.
+Rahul Aralikatte, Shashi Narayan, Joshua Maynez, Sascha Rothe, and Ryan McDonald. Focus Attention: Promoting
+Faithfulness and Diversity in Summarization. In Chengqing Zong, Fei Xia, Wenjie Li, and Roberto Navigli, editors,
+Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International
+Joint Conference on Natural Language Processing (Volume 1: Long Papers), pages 6078–6095, Online, August 2021.
+Association for Computational Linguistics. doi:10.18653/v1/2021.acl-long.474. URL https://aclanthology.
+org/2021.acl-long.474.
+Changmeng Zheng, Yi Cai, Guanjie Zhang, and Qing Li.
+Controllable Abstractive Sentence Summarization
+with Guiding Entities. In Proceedings of the 28th International Conference on Computational Linguistics, pages
+5668–5678, Barcelona, Spain (Online), December 2020. International Committee on Computational Linguistics.
+doi:10.18653/v1/2020.coling-main.497. URL https://aclanthology.org/2020.coling-main.497.
+Ronald J. Williams and David Zipser. A Learning Algorithm for Continually Running Fully Recurrent Neural
+Networks. Neural Computation, 1(2):270–280, June 1989. ISSN 0899-7667. doi:10.1162/neco.1989.1.2.270. URL
+https://doi.org/10.1162/neco.1989.1.2.270.
+Soheil Kolouri, Se Rim Park, Matthew Thorpe, Dejan Slepcev, and Gustavo K. Rohde. Optimal Mass Transport: Signal
+processing and machine-learning applications. IEEE Signal Processing Magazine, 34(4):43–59, July 2017. ISSN
+1558-0792. doi:10.1109/MSP.2017.2695801. URL https://ieeexplore.ieee.org/abstract/document/
+7974883. Conference Name: IEEE Signal Processing Magazine.
+Rico Sennrich, Barry Haddow, and Alexandra Birch. Neural machine translation of rare words with subword units. In Ka-
+trin Erk and Noah A. Smith, editors, Proceedings of the 54th Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1715–1725, Berlin, Germany, August 2016. Association for Computa-
+tional Linguistics. doi:10.18653/v1/P16-1162. URL https://aclanthology.org/P16-1162.
+Yury Polyanskiy and Yihong Wu. Information Theory: From Coding to Learning. Cambridge University Press, first
+edition, 2022. URL https://people.lids.mit.edu/yp/homepage/papers.html.
+Jiacheng Xu, Shrey Desai, and Greg Durrett. Understanding Neural Abstractive Summarization Models via Uncertainty.
+In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages
+6275–6281, Online, November 2020. Association for Computational Linguistics. doi:10.18653/v1/2020.emnlp-
+main.508. URL https://aclanthology.org/2020.emnlp-main.508.
+11
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Abigail See, Peter J. Liu, and Christopher D. Manning. Get To The Point: Summarization with Pointer-Generator
+Networks. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume
+1: Long Papers), pages 1073–1083, Vancouver, Canada, July 2017. Association for Computational Linguistics.
+doi:10.18653/v1/P17-1099. URL https://aclanthology.org/P17-1099.
+Karl Moritz Hermann, Tomas Kocisky, Edward Grefenstette, Lasse Espeholt, Will Kay, Mustafa Suleyman, and
+Phil Blunsom. Teaching Machines to Read and Comprehend. In Advances in Neural Information Processing
+Systems, volume 28. Curran Associates, Inc., 2015. URL https://proceedings.neurips.cc/paper/2015/
+hash/afdec7005cc9f14302cd0474fd0f3c96-Abstract.html.
+Yao Lu, Yue Dong, and Laurent Charlin. Multi-XScience: A Large-scale Dataset for Extreme Multi-document Summa-
+rization of Scientific Articles. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language
+Processing (EMNLP), pages 8068–8074, Online, November 2020. Association for Computational Linguistics.
+doi:10.18653/v1/2020.emnlp-main.648. URL https://aclanthology.org/2020.emnlp-main.648.
+Chin-Yew Lin. ROUGE: A package for automatic evaluation of summaries. In Text Summarization Branches Out,
+pages 74–81, Barcelona, Spain, July 2004. Association for Computational Linguistics. URL https://www.aclweb.
+org/anthology/W04-1013.
+Wojciech Kryscinski, Bryan McCann, Caiming Xiong, and Richard Socher. Evaluating the Factual Consistency of
+Abstractive Text Summarization. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language
+Processing (EMNLP), pages 9332–9346, Online, November 2020. Association for Computational Linguistics.
+doi:10.18653/v1/2020.emnlp-main.750. URL https://aclanthology.org/2020.emnlp-main.750.
+Esin Durmus, He He, and Mona Diab. FEQA: A Question Answering Evaluation Framework for Faithfulness
+Assessment in Abstractive Summarization. In Proceedings of the 58th Annual Meeting of the Association for
+Computational Linguistics, pages 5055–5070, Online, July 2020. Association for Computational Linguistics.
+doi:10.18653/v1/2020.acl-main.454. URL https://aclanthology.org/2020.acl-main.454.
+Thomas Scialom, Paul-Alexis Dray, Sylvain Lamprier, Benjamin Piwowarski, Jacopo Staiano, Alex Wang, and Patrick
+Gallinari. QuestEval: Summarization Asks for Fact-based Evaluation. In Proceedings of the 2021 Conference
+on Empirical Methods in Natural Language Processing, pages 6594–6604, Online and Punta Cana, Dominican
+Republic, November 2021. Association for Computational Linguistics. doi:10.18653/v1/2021.emnlp-main.529. URL
+https://aclanthology.org/2021.emnlp-main.529.
+Joshua Maynez, Shashi Narayan, Bernd Bohnet, and Ryan McDonald. On Faithfulness and Factuality in Abstractive
+Summarization. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics, pages
+1906–1919, Online, July 2020. Association for Computational Linguistics. doi:10.18653/v1/2020.acl-main.173.
+URL https://aclanthology.org/2020.acl-main.173.
+Liyan Tang, Tanya Goyal, Alex Fabbri, Philippe Laban, Jiacheng Xu, Semih Yavuz, Wojciech Kryscinski, Justin
+Rousseau, and Greg Durrett. Understanding Factual Errors in Summarization: Errors, Summarizers, Datasets, Error
+Detectors. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume
+1: Long Papers), pages 11626–11644, Toronto, Canada, July 2023. Association for Computational Linguistics.
+doi:10.18653/v1/2023.acl-long.650. URL https://aclanthology.org/2023.acl-long.650.
+Jianbin Shen, Junyu Xuan, and Christy Liang. Mitigating Intrinsic Named Entity-Related Hallucinations of Abstractive
+Text Summarization. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Findings of the Association for
+Computational Linguistics: EMNLP 2023, pages 15807–15824, Singapore, December 2023. Association for Com-
+putational Linguistics. doi:10.18653/v1/2023.findings-emnlp.1059. URL https://aclanthology.org/2023.
+findings-emnlp.1059.
+Meng Cao, Yue Dong, and Jackie Cheung. Hallucinated but Factual! Inspecting the Factuality of Hallucinations
+in Abstractive Summarization. In Proceedings of the 60th Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 3340–3354, Dublin, Ireland, May 2022. Association for Computational
+Linguistics. doi:10.18653/v1/2022.acl-long.236. URL https://aclanthology.org/2022.acl-long.236.
+Mitchell P. Marcus, Beatrice Santorini, and Mary Ann Marcinkiewicz. Building a large annotated corpus of English: The
+Penn Treebank. Computational Linguistics, 19(2):313–330, 1993. URL https://aclanthology.org/J93-2004.
+Kaiqiang Song, Lin Zhao, and Fei Liu. Structure-Infused Copy Mechanisms for Abstractive Summarization. In
+Proceedings of the 27th International Conference on Computational Linguistics, pages 1717–1729, Santa Fe, New
+Mexico, USA, August 2018. Association for Computational Linguistics. URL https://aclanthology.org/
+C18-1146.
+12
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Dataset
+CNNDM
+XSum
+Train
+196735
+186589
+Validation
+13367
+11316
+Test
+11490
+11334
+Table 5: Preprocessed dataset sizes.
+A
+Experiment Setup
+A.1
+Data Preparation
+We download both CNNDM and XSum datasets as JSON files (train, validation, and test) using Hugging Face’s Python
+package datasets. We utilize Stanford CoreNLP’s named entity recognition tool to obtain named entity annotation data,
+including entity names and their word positions in sentences and documents. The annotated NER entities used for this
+research include TITLE, PERSON, ORGANIZATION, NATIONALITY, RELIGION, IDEOLOGY, DEGREE, DATE,
+TIME, DURATION, LOCATION, CITY, STATE_OR_PROVINCE, COUNTRY, NUMBER, MONEY, PERCENT,
+ORDINAL, CAUSE_OF_DEATH, CRIMINAL_CHARGE. To minimize potential erroneous annotations, we only
+include entities whose length is not greater than ten. We thereafter transform them into our training datasets of both
+CNNDM and XSum.
+The Stanford CoreNLP uses Penn Treebank (Marcus et al., 1993), which segments words, to produce the parsing tree for
+NER annotation. Therefore, our training source documents and summaries are built from the annotated word sequences.
+We further preprocess the token encodings10 of the annotated training documents and summaries for runtime efficiency.
+To map the word-level annotated named entities to the token-level encodings during fine-tuning (training), a word-token
+map (graph) is created for each annotated source document and summary.
+The token encodings of validation and test datasets (CNNDM and XSum) are also prepared without annotation. Table 5
+lists the dataset sizes.
+A.2
+Key Implementation
+A.2.1
+Initialization of Extended Modules
+Optimal Transport Plan
+The bilinear transformation weight matrix is initialized to 1.0.
+Entity Probability Estimation for AJER
+For named entities in summaries, we directly use the decoder’s output
+logits in formulating AJER. For named entities in source documents, we clone the BART-large decoder’s logits head
+(a linear transformation layer) and initialize it using BART-large’s weight initialization function. Note that we do not
+share the logits linear layer of the decoder for the source document entity probability estimations because we found that
+sharing is detrimental to summary generation.
+Learning Objective Weights
+All learning objective weights αOT, αANIG, and αJE are default to 1.0 in our experi-
+ments.
+A.2.2
+Index Mapping from Named Entity Words to Encoded Tokens
+The word-level named entities and the model-encoded entity tokens are not aligned by their sequential position indices.
+Therefore, we map entity words to entity tokens during fine-tuning by utilizing the word-token map and their positions
+in the document prepared in Section A.1.
+A.2.3
+Dropout
+Dropout is a widely adopted technique to mitigate overfitting. The pre-trained BART-large models on CNNDM and
+XSum from Hugging Face are not configured with activation dropouts. We thus set the model activation dropouts to 0.1
+for fine-tuning the models with our methods, following the dropout configuration of the pre-trained BART-base from
+Hugging Face.
+10https://huggingface.co/transformers/v4.9.2/model_doc/bart.html#transformers.BartTokenizer.
+13
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Setting
+CNNDM
+XSum
+Maximum Length
+142
+62
+Minimum Length
+56
+11
+Beam No.
+4
+6
+Length Penalty
+2.0
+1.0
+Table 6: Inference settings.
+A.2.4
+Single Token Entity Case for Negative Information Gain
+In such cases, we skip them without incurring costs.
+A.2.5
+Early Stop Fine-Tuning Criterion
+Fine-tuning sessions on the BART-large backbones are time-consuming and subject to shared computational resource
+scarcity. However, we would like to take model checkpoints that provide us with good indications of the performance
+of test inference later, within our computational time budget. To this end, we use ROUGE metrics to evaluate models
+on the validation datasets each epoch during fine-tuning, just as we would evaluate models on the test dataset during
+test inference. This allows us to take model checkpoints on the highest validation ROUGE scores when the following
+three or four consecutive validation runs do not have higher ROUGE scores.
+A.2.6
+Fine-Tuning on Multi-GPUs
+Our multi-GPU running procedure is based on the reference runtime script11, including the optimizer settings (the
+AdamW optimizer, the learning rate 5e−5 with a linear decay). The weight decay 1e−6 is initially adopted from Song
+et al. [2018] and has worked well in our early projects, which experimented with different weight decay settings. We set
+the total mini-batch size to 64.
+The models are trained by our methods on two-GPU parallelism. Each GPU card is NVIDIA RTX8000/48GB. A
+configuration of OT+AJER has a model size of 1750.418MB. As models are trained on shared computational resources,
+the training time may vary considerably due to GPU utilization loads. At a light GPU load, a training iteration may take
+about one second.
+A.2.7
+Inference Setting
+We extract the inference settings from Hugging Face’s pre-trained BART-base configuration as shown in Table 6.
+A.3
+Human Evaluation of Summary Informativeness
+A.3.1
+Human Evaluation Guidelines
+We define the following guidelines for the evaluation:
+1. Evaluation considers the coverage of focal information (explication rather than word-by-word match).
+2. Reference summaries are unnecessarily ideal. Sometimes, they could be uninformative or erroneous. Thus,
+evaluation should be based on reference summaries consolidated with the key information the articles convey
+instead of relying on reference summaries alone.
+3. Generated summaries may contain factual errors that are inconsistent with or contradict the facts in articles.
+Some errors may obscure informativeness more than others. An annotator is free to decide on that.
+4. Generated summaries may contain extrinsic knowledge that is not evidenced in the articles and reference
+summaries. Such extrinsic knowledge may or may not be factual. An annotator can ignore them.
+5. Information in a model-generated summary may not be evidenced directly in the article sometimes, but it may
+be deduced, induced, or derivable from the article.
+11https://github.com/huggingface/transformers/blob/v4.9.2/examples/pytorch/summarization/run_
+summarization_no_trainer.py.
+14
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Figure 2: Main user interface of informativeness evaluation.
+6. Long summaries are truncated according to modeling configurations. So, the evaluation assesses summaries
+up to the point.
+7. Summaries may not be in grammatically perfect format, such as whitespace, punctuation, indefinite article,
+and plurality. They are less concerned if they do not alter the meaning.
+8. If unsure of which model-generated summary is better, please choose ’tie’.
+9. External resources, such as dictionaries, Google Search, and Google Maps, can be used to assist the evaluation.
+A.3.2
+Normalize Whitespace in Model-Generated Summaries
+As discussed in Section A.1, our NER-annotated training dataset is built from Penn Treebank segmented words. We
+have observed that the Penn Treebank segmented words are compatible well with the pre-trained BART-large model
+tokenization vocabulary. However, the model tokenizer has an encoding strategy in which the whitespace preceding a
+word is converted into a special character and merged with the word before applying byte-pair encoding to generate the
+token sequences. As a result, the model tokenizer’s decoding process in inference restores both whitespace and the
+word. This leaves the model trained with the training datasets to insert whitespaces around these tokens, such as around
+hyphens and inside round brackets, when generating summaries on test sets. These extra whitespaces do not alter
+comprehension but might distract an annotator from a fair assessment. Also, to avoid informativeness evaluation discern
+generated summary-model binding due to such unusual spacing patterns, we therefore ‘normalize’ (remove) these
+whitespaces in the samples used for evaluation. Additionally, we have also observed that whitespace after an apostrophe
+may occasionally be absent in model-generated summaries, including those generated by the baseline. Similarly, they
+have little effect on comprehension but could be distractive to an annotator. So, we also ‘normalize’ (insert) whitespace
+after an apostrophe when it is proper. We do so for the sample summaries of both ours and the baseline.
+A.3.3
+Human Evaluation User Interface and Procedure
+Fig. 2 shows the main user interface of the informativeness evaluation tool. The main page presents an article, a
+reference summary, and model-generated summaries, followed by the informativeness choices. An annotator can either
+select the better informative summary or rank the summaries as a ‘tie’. 60 random samples from the respective CNNDM
+and XSum test sets are selected. A total of 120 samples are shown to an annotator by pages. The tool presents randomly
+shuffled generated summaries to ensure the evaluation is as fair as possible. Thus, the model-generated summaries are
+15
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+shown in “Summary 1" and “Summary 2" in such a way that the numbers “1" and “2" in the captions have no fixed
+binding to the models throughout the evaluation. The user interface also does not indicate which dataset a sample
+is drawn from. The tool records an annotator’s choices in a back-end database from which the queried analysis is
+conducted upon evaluation completion.
+A.4
+Extrinsic but Factual Examples
+Table 7 lists five extrinsic but factual entity-related summaries found in the human evaluation of factuality on XSum.
+16
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Source
+Text
+Article
+In only his second season with Porsche, Webber and his two team-mates, German Timo Bernhard and
+New Zealander Brendon Hartley, need a fourth-place finish or better in the 6 Hours of Bahrain on
+Saturday to complete a remarkable run of success for car number 17. ... Webber, 39, cannot remember
+such a hot streak of form beyond his days in junior categories and admits he never expected to be in
+contention so quickly at this stage of his return to sportscars.
+"I’m very surprised we’re in this position," he said. "We had a few tough races at the start of the
+championship and now here we are in Bahrain ready to close the championship off hopefully.
+"It started in an incredible June where we got two cars home at Le Mans and had a 1-2 against Audi.
+"Since then we have won every race and I don’t think we envisaged that - the aggressive mentality of
+the F1 approach." ...
+Reference
+Almost exactly five years after Mark Webber lost his best chance of becoming Formula 1 world cham-
+pion, the Australian is on the brink of fulfilling his title dream in the World Endurance Championship
+this weekend in Bahrain.
+BART-large
+Former Red Bull driver Mark Webber says he is "surprised" his Porsche team are in such a strong
+position to win the world championship.
+BART-large*
+/OT+AJER
+Former Red Bull driver Mark Webber says he is surprised how good a run of form his Porsche
+team have been in this year’s World Endurance Championship is as he aims to close the gap on
+championship leader Nico Rosberg.
+Article
+Levein, the club’s director of football, described finishing fifth in the Premiership, as "frustrating and
+a tad disappointing".
+"I’ve got high hopes for him [Cathro]," Levein said. "This is a tough place to manage, as I know
+myself.
+"The thing about here is the players like him."
+Levein points to mistakes in the January transfer window which saw Hearts sign nine players - six of
+whom have since left the club - as a chief reason for the underwhelming league campaign. ... "Rushed
+is probably a fair assessment," Levein explained. ... "For him to be a real success here we need to
+give him time and let him understand what this is all about," Levein explained. ...
+Reference
+Craig Levein retains "high hopes" for Ian Cathro’s Hearts tenure but says the club will seek to "repair
+the damage" of recent transfer windows.
+BART-large
+Hearts head coach Ian Cathro has been "rushed" into taking charge of the club, according to director
+of football Craig Levein.
+BART-large*
+/OT+AJER
+Hearts director of football Craig Levein says head coach Ian Cathro has been "rushed" into taking
+charge at Tynecastle.
+Article
+Killie moved eight points clear of bottom side Dundee United with a 3-0 win over St Johnstone on
+Saturday. ..."You want to be part of that and it gives me the chance to attract the kind of players I
+would like to make sure the club isn’t in this situation again.
+"The club has been dicing with survival for many seasons and that needs to change." ...
+Reference
+Manager Lee Clark is urging Kilmarnock to build on the first win of his tenure and make sure they
+are part of an exciting top flight next season.
+BART-large
+Hibernian manager Lee Clark hopes his side can regain the "wow factor" of the Scottish Premiership.
+BART-large*
+/OT+AJER
+Manager Lee Clark hopes Kilmarnock can help restore the "wow factor" to the Scottish Premiership
+as they bid to avoid relegation.
+Article
+Property developers Michael and John Taggart are offering a settlement where they would repay less
+than 1p for every pound they owe.
+That arrangement, known as an Individual Voluntary Arrangement (IVA), would allow them to avoid
+bankruptcy. ...
+Reference
+Two County Londonderry brothers facing bankruptcy owe their creditors up to £213m, the High Court
+has been told.
+BART-large
+Creditors of the Taggart family are set to vote on a proposal that would allow them to avoid bankruptcy.
+BART-large*
+/OT+AJER
+Two of Northern Ireland’s biggest businessmen are seeking to avoid bankruptcy by offering a voluntary
+repayment plan to their creditors.
+Continued on next page
+17
+
+InforME: Improving Informativeness of Abstractive Text Summarization With Informative Attention Guided by Named
+Entity Salience
+A PREPRINT
+Source
+Text
+Article
+Jack Beales, 93, of Rhyl, carried out the attacks while she was a young girl, mainly when he was in
+his 70s. ... The court heard the abuse began when she was aged six and continued for about 10 years.
+... But she said it had not and she was still on strong medication for depression and anxiety, and was
+awaiting counselling. ... Det Insp William Jones, of North Wales Police, said: "John (Jack) Beales
+was a manipulative and depraved sexual predator who committed multiple offences over a sustained
+period of time. He is now thankfully behind bars.
+Reference
+The victim of a pensioner jailed for 13 years for horrific sex attacks has told of the abuse that ruined
+her life.
+BART-large
+A "manipulative and depraved sexual predator" who raped and sexually abused a woman over a
+10-year period has been jailed for 12 years.
+BART-large*
+/OT+AJER
+A "depraved" Denbighshire pensioner who raped and sexually abused his victim as a child has been
+jailed for 12 years.
+Table 7: Extrinsic but factual examples (from the 60 model-generated random samples on XSum). We use ellipses to omit the
+long content that is irrelevant to the discussion. The extrinsic but factual entities are highlighted with blue-colored underlines. For
+legibility, we replace the Unicode ‘\u00a3’ with £, and ‘\n’ with the Latex’s newline format command.
+18

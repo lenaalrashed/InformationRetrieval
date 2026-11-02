@@ -1,0 +1,1194 @@
+DUAL: Diversity and Uncertainty Active
+Learning for Text Summarization
+Petros Stylianos Giouroukis1*, Alexios Gidiotis1 and
+Grigorios Tsoumakas1
+1School of Informatics, Aristotle University of Thessaloniki, Aristotle
+University Campus, Thessaloniki, 54124, Greece.
+*Corresponding author(s). E-mail(s): pgiouroukis@gmail.com;
+Contributing authors: alexgidiotis@gmail.com; greg@csd.auth.gr;
+Abstract
+With the rise of large language models, neural text summarization has advanced
+significantly in recent years. However, even state-of-the-art models continue to
+rely heavily on high-quality human-annotated data for training and evaluation.
+Active learning is frequently used as an effective way to collect such datasets,
+especially when annotation resources are scarce. Active learning methods typi-
+cally prioritize either uncertainty or diversity but have shown limited effectiveness
+in summarization, often being outperformed by random sampling. We present
+Diversity and Uncertainty Active Learning (DUAL), a novel algorithm that com-
+bines uncertainty and diversity to iteratively select and annotate samples that are
+both representative of the data distribution and challenging for the current model.
+DUAL addresses the selection of noisy samples in uncertainty-based methods
+and the limited exploration scope of diversity-based methods. Through exten-
+sive experiments with different summarization models and benchmark datasets,
+we demonstrate that DUAL consistently matches or outperforms the best per-
+forming strategies. Using visualizations and quantitative metrics, we provide
+valuable insights into the effectiveness and robustness of different active learning
+strategies, in an attempt to understand why these strategies haven’t performed
+consistently in text summarization. Finally, we show that DUAL strikes a good
+balance between diversity and robustness.
+Keywords: Active learning, Abstractive text summarization, Natural language
+processing, Deep learning, Large language models
+1
+arXiv:2503.00867v1 [cs.CL] 2 Mar 2025
+
+1 Introduction
+Neural text summarization methods have achieved impressive performance in recent
+years [1–4], driven by the great advances in Natural Language Processing (NLP). Large
+Language Models (LLMs), based on the Transformer architecture [5], have become
+the predominant approach for solving any Natural Language Generation (NLG) prob-
+lem [1, 6, 7], including summarization. These models rely on extensive pre-training on
+massive amounts of text data, in order to generalize to a variety of downstream tasks
+[1, 7–9]. Nonetheless, in most cases, they still require some task specific fine-tuning.
+Contrary to previous generation non pre-trained neural models, state-of-the-art sum-
+marization models no longer require thousands of labeled training data points, and
+can achieve great performance with much fewer samples. A consequence of this shift
+to smaller datasets is that the quality of each training sample is now even more impor-
+tant. The impact of even a few noisy or non-representative training samples has a
+much greater effect on the final model [10, 11]. This amplifies the need for high quality
+annotated training data.
+Active Learning (AL), has for many years been an obvious choice for collecting a
+small but high quality training set, especially for shallow learning models. Nevertheless,
+the application of AL methods to generative tasks such as summarization has been
+non-trivial [11]. The primary reason for this is that selecting highly informative and
+diverse samples for annotation is a very hard problem to solve. There’s no obvious
+answer to what constitutes a good sample [12], and various classic AL strategies have
+failed to produce consistent results.
+This work takes a step forward in addressing the challenge of selecting highly infor-
+mative and diverse samples for summarization training. We explore the advantages
+and shortcomings of traditional uncertainty and diversity based strategies, and aim
+to understand why both of those approaches haven’t been very effective in text sum-
+marization. Finally, we present Diversity and Uncertainty Active Learning (DUAL),
+a novel AL algorithm that combines both strategies to leverage their complementary
+strengths. Through extensive experiments on several well known models and bench-
+mark datasets, we show that indeed this combination of methods produces significant
+improvements over existing strategies. Furthermore, the performance of DUAL is
+consistent across all models and datasets in our experiments.
+The remainder of this article is organized as follows. Section 2 presents an
+overview of AL methods for NLP and summarization, emphasizing two complementary
+approaches closely related to our proposed method. Section 3 details the methodology
+behind our approach. Section 4 describes our experimental setup. Section 5 discusses
+the experimental results and key findings. Finally, Section 6 summarizes our contribu-
+tions and findings, offering insights and potential directions for future research. The
+source code used in our experiments is publicly available online1.
+1https://github.com/pgiouroukis/dual
+2
+
+2 Related Work
+Active learning has been applied to a wide variety of NLP tasks. Firstly, in text clas-
+sification, [13–17] have shown interesting results by applying different AL methods.
+Secondly, in Neural Machine Translation (NMT), AL has been particularly use-
+ful in low-resource language pairs [18–21]. Finally, in named entity recognition, the
+application of AL methods has also resulted in performance improvements [22–25].
+In contrast, for most generative tasks other than NMT, AL methods have struggled
+to produce consistent results, often being outperformed by simple baselines such as
+random sampling [10, 11]. [12] evaluates existing AL strategies in NLG tasks such
+as paraphrase generation, summarization and question generation. Interestingly, the
+authors suggest that compared to classification, NLG tasks lack a clearly defined
+ground-truth, which contributes to the poor performance of AL methods.
+Most AL methods in NLG, and summarization in particular, focus on one of two
+strategies: uncertainty sampling and diversity sampling. In the following two sections,
+we delve deeper into the AL literature for text summarization, examining two comple-
+mentary methods, one based on uncertainty and the other on diversity. These methods
+form the foundation of our work, so we will present each one in detail.
+2.1 Bayesian Active Summarization
+Bayesian Active Summarization (BAS) [11] applies a Bayesian deep learning frame-
+work to quantify summarization uncertainty, and uses it as query strategy to select
+data instances. In particular, BAS uses Monte Carlo (MC) dropout [26] in order to
+efficiently approximate sampling from the predictive distribution of a neural summa-
+rization model. In practice, this involves generating N summaries for the same input
+with dropout enabled. The differences between these summaries yi and yj, are mea-
+sured using the BLEU metric [27] BLEU(yi, yj). Summarization uncertainty is then
+estimated by calculating the BLEU Variance (BLEUVar) [28] across all N summaries,
+as described in Equation 1.
+BLEUVar =
+1
+N(N −1)
+N
+X
+i=1
+N
+X
+j̸=i
+(1 −BLEU(yi, yj))2
+(1)
+At each iteration of BAS a subset of the unlabeled data instances is scored using
+a summarization model with MC dropout, and BLEUVar is computed. Then the
+samples of this subset with the highest BLEUVar are selected for annotation, added
+to the labeled set and the summarization model is trained on the extended labeled set.
+This method has shown promising results with very few training instances on several
+benchmark datasets using the BART [1] and PEGASUS [2] summarization models.
+2.2 In-Domain Diversity Sampling
+In-Domain Diversity Sampling (IDDS) [10] ranks unlabeled samples based on their
+similarity to the unlabeled set and their dissimilarity to the labeled set. This encour-
+ages the selection of samples that are representative of the unlabeled data while being
+3
+
+dissimilar from already labeled instances. Formally, for each sample in the pool of
+unlabeled documents, IDDS computes a score as follows:
+IDDS(x) = λ
+P|U|
+j=1 s(ϕ(x), ϕ(xj))
+|U|
+−(1 −λ)
+P|L|
+i=1 s(ϕ(x), ϕ(xi))
+|L|
+(2)
+where ϕ(x) denotes the embedding of document x, s(i, j) is the similarity between
+i and j, and U and L are the unlabeled and labeled data pools respectively. In the
+equation above, λ is a balancing parameter with a value between 0 and 1.
+In order to compute the similarity scores, IDDS requires the calculation of vector
+representations for all labeled and unlabeled samples. At each step, the IDDS scores
+are determined for all documents in U, and a sample x∗that maximizes the IDDS score
+is selected and moved from U to L. This process repeats, recalculating the scores for
+the remaining documents in U, until the annotation budget B is reached. Importantly,
+the model is not involved in the selection process, allowing B samples to be selected
+without intermediate model training steps.
+3 Methodology
+AL methods have mainly focused either on uncertainty-based or diversity-based sample
+selection strategies. While both types of strategies have a solid theoretical background,
+they also have different shortcomings. Pure uncertainty-based strategies can be prob-
+lematic because noisy samples tend to have high uncertainty, increasing their likelihood
+of being selected, and can be harmful when a model is trained on them [10, 11]. On
+the other hand, as we show in this work, diversity-based strategies can become con-
+fined within a limited region of the embedding space, which in turn might lead to a
+sample that’s not representative of the entire dataset. This limitation is compounded
+by the inherent challenge of generating high-quality embeddings that fully capture all
+the nuances of the data.
+To overcome these limitations, our approach combines both uncertainty- and
+diversity-based queries, leveraging their strengths while mitigating their shortcomings.
+The outcome is Diversity and Uncertainty Active Learning (DUAL), a method that
+iteratively selects and annotates the most diverse and informative data samples, in
+order to arrive at a better trained model.
+We start with a pre-trained model M, a pool of unlabeled samples U and an
+initially empty labeled pool L. DUAL iteratively selects s samples using a strategy that
+integrates both diversity-based and uncertainty-based selection, until the annotation
+budget B is exhausted. At each iteration, we first compute the IDDS score for all
+document vectors ϕ(x) ∈U, using Equation 2. We then select the top-k samples with
+the highest scores, creating a subset K ⊂U. The selected samples form a relatively
+tight neighborhood in the embedding space, as a natural consequence of the IDDS
+scoring mechanism. This diversity-based selection step aims to identify regions of the
+embedding space were samples are highly representative of the data distribution yet
+underepresented in the labeled set.
+After selecting the diverse set K, we estimate the uncertainty of all k samples using
+the BAS method. For each sample x ∈K, we perform n stochastic forward passes with
+4
+
+dropout enabled in M. Using Equation 1, we compute the BLEUVar score for each x
+as an uncertainty metric. Following [11], to avoid selecting noisy samples that could
+harm performance, we exclude samples with BLEUVar scores exceeding a threshold
+τ. From the remaining candidates, we select the sample with the highest BLEUVar
+score moving it from U to L, while removing the rest of the K set from the pool.
+This selection process is repeated, starting again from the IDDS scoring step, until
+the required number of samples is selected.
+As shown in [11], including a percentage of randomly selected samples benefits
+performance. Our method introduces a parameter p between 0 and 1, that controls
+the amount of random samples we select at each AL iteration. In order to reach the
+required s samples, we first select s1 = p · s samples using the DUAL strategy, and
+then we select the remaining s2 = (1 −p) · s samples by randomly sampling from
+the unlabeled pool U. This random sampling step is crucial for several reasons. First,
+it mitigates the tendency of IDDS to focus on limited regions, thereby enhancing
+diversity. Second, it encourages exploration in the AL process.
+After selecting all s samples, we retrain model M to incorporate the new labeled
+data, ensuring future uncertainty calculations reflect the updated model state. This
+cycle of selection, labeling, and retraining constitutes one iteration of our active learn-
+ing approach, and is repeated until the annotation budget B is exhausted. A full
+iteration of DUAL is shown in Figure 1.
+Unlabeled
+Data
+Compute
+IDDS Scores
+Labeled
+Data
+Document
+k
+Model
+...
+Summary
+n
+Summary
+k
+BLEUVar
+k
+Filter-Argmax
+Document
+Random
+Sample
+Document
+s1 samples
+select
+topk
+annotate
+finetune after s
+collected samples
+s2 samples
+annotate
+Targeted Sampling Step
+repeats s1 times
+Random Sampling Step
+repeats s2 times
+Unlabeled
+Data
+Fig. 1: An iteration cycle of DUAL, comprising the selection of samples, their labeling
+and model retraining
+Before the first active learning iteration we warm-start the model M by training
+on a small set of s0 labeled documents. This step is not necessary for modern LLMs,
+as they’re already able to generalize to the summarization problem [9, 12]. Neverthe-
+less, we found that it helps make the first iteration more effective, as it adapts the
+5
+
+model to the actual data distribution. The warm-up samples can be selected via ran-
+dom sampling or IDDS, as these methods do not depend on the model’s uncertainty
+assessments.
+At each iteration of DUAL, we label one of the samples in K, but we move the
+remaining k −1 samples from U to an excluded set E, ensuring that we cannot
+select these samples in subsequent iterations. This addresses a specific challenge we
+encountered during our experiments. More specifically, in certain dense regions of the
+embedding space, samples that lie very close to each other may be selected in different
+AL iterations. As a result, we end up oversampling a certain region of the space, which
+can lead to creating an imbalanced training set. When computing the IDDS scores,
+we consider L ∪E alongside L. By removing all k samples from the pool, we ensure
+the algorithm consistently explores new regions of the embedding space, instead of
+focusing on a single dense region. The pseudocode of the proposed method is provided
+in Algorithm 1.
+It is important to note that while the IDDS process selects samples from a tight
+region in the embedding space, the uncertainty of these samples can vary significantly.
+This happens because uncertainty in summarization is not solely a function of a doc-
+ument’s content or position in the embedding space, but also depends on the model’s
+current state. Two documents that are very similar in content and style can pose dif-
+ferent challenges to the summarization model. This variation in uncertainty within a
+tight neighborhood is a key aspect that our method exploits. In short, by selecting
+the sample with the highest BLEUVar score from the retrieved documents we achieve
+the following. First, we ensure that it is representative, as it was selected by IDDS.
+Second, because the model has high uncertainty for this sample, it is more likely to
+benefit performance if the model is trained on it.
+4 Experimental Setup
+This section presents the details of our experimental study. We start off by presenting
+the key hyper-parameters of our AL experimental framework, and then we introduce
+the models and datasets that were used in our experiments. Finally, we discuss the
+embeddings, as they are a core part of our method.
+4.1 Active Learning Framework
+In accordance with prior studies [10, 11], we evaluate the performance of the different
+strategies using the following common AL experimental framework. In each experi-
+ment, we assume an annotation budget B = 150 samples, which are acquired over
+15 AL iterations with s = 10 new samples selected per iteration. At each iteration,
+the newly annotated samples are then added to the labeled dataset. Following sample
+selection, we fine-tune a model from its initial pre-trained state on the labeled train-
+ing set and evaluate its performance on a held-out test set. This evaluation step is
+not part of the real-world AL process. Rather, it serves the evaluation of the different
+strategies. In a real-world AL scenario, such extensive evaluation would not be fea-
+sible due to the absence of a large labeled test set. This experimental design allows
+us to observe the impact of different strategies on model performance as the labeled
+6
+
+Algorithm 1 DUAL Strategy
+Require: Pre-trained model M, unlabeled pool U, annotation budget B, samples per
+iteration s, warm-up size s0, random ratio p, uncertainty threshold τ, MC dropout
+passes n
+1: L ←∅
+2: E ←∅
+3: s1 ←⌈p · s⌉
+4: s2 ←s −s1
+5: W ←select random(U, s0)
+▷Optional warm-start
+6: L ←L ∪W
+7: U ←U \ W
+8: Mθ ←train(Mθ, L)
+9: while |L| < B do
+10:
+for i ←1 to s1 do
+▷Targeted Sampling Step
+11:
+idds scores ←compute idds(U, L ∪E)
+12:
+K ←select top k(k, U, idds scores)
+13:
+for all x ∈K do
+14:
+outputs ←generate MC dropout summaries(x, n, Mθ)
+15:
+bleuvars[x] ←compute bleuvar(outputs)
+16:
+end for
+17:
+K ←{x ∈K | bleuvars[x] ≤τ}
+18:
+if K = ∅then
+19:
+break
+20:
+end if
+21:
+x∗←arg maxx∈K bleuvars[x]
+22:
+L ←L ∪{x∗}
+23:
+U ←U \ K
+24:
+E ←E ∪(K \ {x∗})
+25:
+end for
+26:
+R ←select random(U, s2)
+▷Random Sampling Step
+27:
+L ←L ∪R
+28:
+U ←U \ R
+29:
+Mθ ←train(Mθ, L)
+30: end while
+dataset gradually expands. Also note that in a real-world AL scenario, a human anno-
+tator would typically label the selected documents at each iteration. However, in our
+experiments we simulate this by “revealing” the reference summaries included in the
+dataset for the samples in the labeled pool.
+We use ROUGE metrics [29] to assess the quality of the generated summaries,
+as they offer a reliable measure of summary quality and enable comparison with
+[10, 11]. While we computed ROUGE-1, ROUGE-2 and ROUGE-L metrics, we focus
+on ROUGE-1 because it provides a good overall indication of summary quality. Fur-
+thermore, we noticed that the values of the other metrics follow the same patterns.
+7
+
+The complete results, including all ROUGE metrics at key AL steps, are provided in
+Appendix B.
+Due to the stochastic nature of both the random sampling step and MC dropout
+and in order to ensure robust results, we repeat each experiment 6 times with different
+random seeds. In all comparisons, we report the mean performance across all 6 runs,
+along with the standard deviation to indicate the variability of the results.
+4.2 Models and Training
+To evaluate our AL approach, we conducted experiments on the following Transformer-
+based sequence-to-sequence models that have been proven to be effective for
+summarization tasks:
+• BART2 [1] is pre-trained as a denoising autoencoder, where the input is corrupted
+and the model learns to denoise it. This type of pre-training makes it suitable
+for language generation tasks and a strong performer on a number of NLP tasks
+including summarization. The encoder and decoder in the BARTBASE architecture
+are built of 6 Transformer blocks.
+• PEGASUS3 [2] is pre-trained on the C4 [7] and HugeNews [2] datasets at a sentence
+infilling task and achieves strong performance on multiple well established summa-
+rization benchmarks. The model’s encoder and decoder are built of 16 Transformer
+blocks each.
+• FLAN-T54 [30] adds instruction fine-tuning to the T5 model [7], a model with 24
+Transformer blocks in both the encoder and decoder. Finetuning leads to improved
+performance across a wide range of natural language generation tasks [31], including
+summarization. When using this model we add the instruction prefix “Summarize: ”
+at the beginning of each input.
+We used the open-source pre-trained versions of these models from the Hug-
+ging Face models repository. To select appropriate training hyperparameters for each
+model, we conducted a series of fine-tuning experiments on XSUM [32], which was
+not used in our main experiments. After exploring various configurations, we selected
+a single set of hyperparameters per model that balanced performance and computa-
+tional efficiency. The full set of hyperparameters can be found in Appendix A. All
+experiments were conducted on a single NVIDIA GeForce RTX 3090 GPU.
+4.3 Datasets
+We run experiments on the following summarization datasets:
+• AESLC5 [33] consists of 18k emails from the Enron corpus [34]. The body of each
+email is used as source text and the subject as summary.
+2https://huggingface.co/facebook/bart-base
+3https://huggingface.co/google/pegasus-large
+4https://huggingface.co/google/flan-t5-large
+5https://huggingface.co/datasets/Yale-LILY/aeslc
+8
+
+• Reddit TIFU6 [35] is a dataset sourced from posts on the TIFU subreddit, where
+users share personal stories. Each story is accompanied by a user-provided ”TL;DR”
+summary. We use the “long” subset, containing around 80k samples.
+• WikiHow7 [36] consists of approximately 200k how-to articles from the wikihow.com
+website. Each article is divided into multiple paragraphs, with the first sentence of
+each paragraph serving as the summary. For our task we use the concatenation of
+these first sentences to create the reference summary for the entire article, similar to
+the approach followed by [2]. We evaluate our models on 1.5k out of the 6k samples
+from the test set to lower the computational complexity.
+• BillSum8 [36, 37] is a dataset of approximately 23k US Congressional bills along
+with their corresponding human-written summaries. Following [2], we ignore the
+California test set and we evaluate our models on 1k out of the 3k samples from the
+test set to lower the computational complexity.
+We purposely selected these four datasets to cover a diverse range of domains,
+summarization styles and document/summary lengths. Dataset details are shown in
+Table 1. We used the publicly available versions of these datasets from the Hugging
+Face datasets repository.
+Table 1: Summarization datasets details
+Length in words
+Dataset
+Domain
+Dataset size
+Source
+Summary
+AESLC
+email
+18,302
+75
+5
+Reddit TIFU
+narrative
+120,000
+432
+23
+WikiHow
+article
+230,000
+580
+62
+BillSum
+legislative text
+22,218
+1382
+200
+4.4 Embeddings
+Embeddings play a crucial role in similarity-based AL strategies, forming the semantic
+representations of source documents. Selecting and adapting appropriate embeddings
+is therefore key for the effectiveness of this kind of methods. In our experiments, we
+utilize the uncased BERTBASE9 [38] model to generate embeddings. The dimension-
+ality of the embedding vectors is 768. In order to extract the embedding for each
+document, we rely on the pooled [CLS] token of the BERT model.
+To better align these embeddings with the characteristics of each target domain, we
+employ the Transformer-based Sequential Denoising AutoEncoder (TSDAE) method
+[39] for unsupervised domain adaptation. TSDAE trains an encoder-decoder archi-
+tecture where input sentences are intentionally corrupted, and the model learns to
+reconstruct the original input from the encoded representations, thereby forcing the
+6https://huggingface.co/datasets/ctr4si/reddit tifu
+7https://huggingface.co/datasets/wangwilliamyang/wikihow
+8https://huggingface.co/datasets/FiscalNote/billsum
+9https://huggingface.co/google-bert/bert-base-uncased
+9
+
+encoder to capture robust semantic features in its embeddings. By fine-tuning the pre-
+trained BERT model on unlabeled domain-specific data using TSDAE, we enhance its
+ability to produce embeddings that reflect domain-specific language usage and seman-
+tics. In contrast, [10] uses Task-Adaptive Pre-Training (TAPT) [40], which continues
+pre-training the language model on unlabeled domain data using the masked language
+modeling objective. However, the embeddings generated through TAPT performed
+worse in our experiments compared to those produced by TSDAE, so we decided to
+use the latter.
+Finally, we evaluated different state-of-the-art embedding models, such as MPNet
+[41], without any domain adaptation. Despite the more advanced architectures and
+strong theoretical performance, we found that the domain-adapted embeddings pro-
+duced by TSDAE outperformed them in all of our tasks. This outcome underscores
+the importance of domain adaptation over more advanced embedding models.
+5 Results and Discussion
+This section presents the results of the experiments we conducted on 4 benchmark
+datasets with 3 different summarization models. First, we show the learning curves of
+DUAL and compare them with different diversity and uncertainty based strategies.
+Second, we present a visual analysis of the embedding space, showcasing the differences
+in the way these methods select samples. Last but not least, we focus on the diversity
+of the selected data, and discuss the topic of outliers.
+5.1 Performance
+Figure 2 illustrates the performance of all AL strategies across different models for each
+of our experimental datasets. We obtain the learning curves by computing ROUGE-1
+scores on the test set at the end of every AL iteration. The lines represent the mean,
+while the shaded areas indicate the standard deviation across 6 runs with different
+random seeds. Table B2 in Appendix B provides a detailed comparison of ROUGE-
+1, ROUGE-2, and ROUGE-L scores at key AL iterations (5, 10, 15) for all datasets,
+models, and strategies.
+We observe that the performance of AL strategies on a particular dataset can
+vary significantly between different models. In WikiHow, BAS performs best for the
+BARTBASE model, IDDS excels for the PEGASUSLARGE model, and DUAL achieves
+the best results for FLAN-T5LARGE. This variability suggests that the behavior of
+uncertainty and diversity as AL strategies is not universal across all models, and
+highlights the challenge of finding an AL strategy that is effective across all differ-
+ent models. Nonetheless, DUAL demonstrates consistently good performance across
+all models and dataset combinations, showcasing competitive results in all different
+scenarios.
+Another notable observation is that in certain experimental setups, such as FLAN-
+T5LARGE on Reddit TIFU and PEGASUSLARGE on BillSum, both BAS and IDDS fail
+to match the performance of random selection. This further highlights the inconsis-
+tency of AL strategies in summarization tasks [10, 11]. In contrast, DUAL consistently
+outperforms or matches the performance of random selection in all experimental
+10
+
+Fig. 2: Rouge-1 scores of AL strategies across models and datasets
+setups, emerging as a more reliable approach. This consistent performance can be
+attributed to DUAL’s design, which integrates both uncertainty and diversity based
+characteristics, as well as the inclusion of random sampling as a core component of
+the method.
+We now focus on the combinations of datasets and models where the best per-
+formance is achieved, as these are the cases with higher practical value. We notice
+that FLAN-T5LARGE achieves the best results in AESLC, Reddit TIFU and Wiki-
+How, while PEGASUSLARGE achieves the best results in BillSum. There are several
+considerations that align with these observations. First, FLAN-T5LARGE has 770 mil-
+lion parameters, significantly larger than PEGASUSLARGE (568M) and BARTBASE
+(139M). Consequently, it is expected to generalize better across different formats,
+styles, and text lengths. Second, FLAN-T5LARGE is trained on the full C4 dataset using
+a text-to-text approach, enhancing its adaptability. PEGASUSLARGE also leverages C4
+but only partially, with a primary focus on HugeNews. As a result, PEGASUSLARGE
+11
+
+is more specialized for document-level summarization, explaining its superior perfor-
+mance on BillSum. Interestingly in 3 out of these 4 cases (all except Reddit TIFU)
+IDDS achieves significantly worse results than the rest of the methods.
+With BARTBASE on WikiHow, IDDS shows a strong start, outperforming other
+strategies in the early stages of learning. However, its performance begins to decline
+after about 40-50 samples, eventually falling below random sampling and other strate-
+gies. Notably, the performance drop in IDDS is not caused by random fluctuations.
+Rather, it stems from the limitations of the sample selection strategy, as IDDS con-
+sistently chooses the same set regardless of the training seed. In contrast, DUAL
+demonstrates more stable performance throughout the AL process, as it avoids the
+sharp decline seen in IDDS.
+5.2 Visualization Analysis of Selected Samples
+In order to understand the differences between selection strategies, we present a visual
+analysis of the sample distributions selected by each strategy. For all datasets, we apply
+PCA to reduce the dimensionality of the BERT embedding vectors to two dimensions
+for visualization. Figure 3 shows the samples that were selected for labeling by each
+AL strategy. Since each experiment was repeated multiple times with different models
+and random seeds, the selected samples vary slightly across different experimental
+runs, but the distributions are similar.
+The plotted distributions reveal that IDDS can become confined within a certain
+region of the embedding space. As we have discussed earlier, this behavior can be
+problematic for several reasons. The lack of exploration prevents the model from being
+trained on samples that are not represented in those regions. This limitation becomes
+even more pronounced because the IDDS distribution is only based on the initial
+embeddings and will never change throughout the AL training. This effectively means
+that if IDDS gets stuck in a region that’s not representative enough, there’s no way to
+explore samples outside this region. Furthermore, in cases where the data distribution
+includes more than one cluster, such as in Wikihow and BillSum, IDDS tends to
+focus on one cluster, missing other parts of the data space, or can even select outliers
+between the two clusters (BillSum). This will inevitably lead to a training set that is
+not indicative of the real data distribution.
+In contrast, we observe that both random sampling and BAS select samples
+that cover the entire data distribution. Unfortunately, both of these methods seem
+to also select a relatively high amount of outlier samples, which is likely to harm
+summarization performance.
+DUAL on the other hand avoids both of the aforementioned issues, as it samples
+with high probability from the denser regions of the space, but also explores other
+regions. As we can see in the Wikihow and BillSum results, unlike IDDS, DUAL selects
+data samples from both clusters of the data space. In addition, the majority of samples
+selected by DUAL come from the dense parts of the data distribution with much fewer
+outliers compared to random and BAS. As a result, the training set created by DUAL
+exhibits a good coverage of the entire data space.
+Finally, this analysis highlights the significance of embedding pre-training in the
+performance of methods that rely on diversity. The quality of the embeddings directly
+12
+
+Fig. 3: Visualization of the embedding space showing selected samples by each AL
+strategy in each dataset
+impacts the ability of both DUAL and IDDS to effectively select representative sam-
+ples. As explained, this limitation is somewhat but not completely mitigated in DUAL
+by incorporating random sampling in the process.
+5.3 Diversity and Outliers
+Driven by the findings of the embeddings analysis, we further investigated the behav-
+ior of different AL strategies with regards to diversity and outliers. To quantify these
+aspects, we rely on the two additional metrics defined on the labeled set L. Following
+[42], we measure the diversity score of L by computing the average Euclidean distance
+13
+
+of all samples from the center, using the BERT embeddings from our previous experi-
+ments. In addition, we compute the outlier score based on the KNN-density proposed
+in [43]. More specifically, we quantify density by taking the average Euclidean distance
+between an instance and its K = 10 nearest neighbors within U. The outlier score
+of L is then defined as the average density of its instances, where a higher density
+corresponds to a lower outlier score.
+Figure 4 shows the diversity and outlier scores for different AL strategies per
+dataset. On one hand, IDDS consistently shows the lowest outlier scores but at the
+same time exhibits lower diversity scores, reflecting its tendency to select samples from
+the denser regions of the embedding space. On the other hand, BAS and Random show
+the highest diversity, but this comes at the cost of higher outlier scores, particularly
+in AESLC and Reddit TIFU. This suggests that they are more prone to selecting
+atypical or noisy examples that can potentially harm summarization performance.
+DUAL strikes a balance, consistently achieving good diversity and low outliers across
+all datasets. In other words, it sufficiently explores the data space, while also avoiding
+most of the outliers.
+Fig. 4: Diversity and outlier scores for different AL strategies in each dataset
+14
+
+5.4 Computational Efficiency
+While computational efficiency is not the primary focus of AL, it remains an important
+aspect to consider in practical applications. Uncertainty-based approaches generally
+require forward-passing each candidate sample through the model to estimate uncer-
+tainty. Specifically, BAS leverages multiple stochastic forward passes via Monte Carlo
+dropout, magnifying the computational overhead. Since these forward passes are per-
+formed at each AL iteration to reassess the uncertainty of the unlabeled pool or a
+portion of it, the cost can grow considerably with larger datasets and bigger models.
+Diversity-based strategies typically do not utilize the model during the AL iterations,
+as they primarily operate on pre-computed embeddings. However, these strategies
+still require an upfront computational cost due to the embedding computation and
+potential domain adaptation. Again, this cost can be substantial, especially for large
+datasets.
+DUAL combines both uncertainty and diversity, thus incurring the respective costs
+of each component. In practice, however, incorporating the random sampling step and
+using uncertainty estimates only on smaller subsets (i.e. the top-k IDDS candidates)
+can help contain computational demands. This means that in many real-world sce-
+narios, DUAL’s overhead remains manageable. Embeddings are computed once and
+reused, and Monte Carlo dropout inference is restricted to a narrower set of promising
+samples.
+Table 2 presents average sample selection times per AL iteration for both BAS
+and DUAL strategies across various datasets and models, alongside the corresponding
+training times. Note that we do not show the sample selection times for Random and
+IDDS because their selection overhead is 0. These results demonstrate that DUAL
+consistently requires less time for sample selection than BAS. For example, with
+BARTBASE on AESLC, DUAL takes about 20.71 seconds compared to BAS’s 24.86
+seconds, and on Reddit TIFU with FLAN-T5LARGE, the selection time is reduced
+from 177.64 seconds (BAS) to 110.50 seconds (DUAL). Note that DUAL still requires
+the computation of embeddings for all samples as a preliminary step in its selection
+process. The training time is included solely to provide context regarding the overall
+duration of the AL cycles and does not depend on the specific AL strategy employed.
+6 Conclusion
+This work demonstrates how uncertainty and diversity based strategies can be com-
+bined in an AL setting. Extensive experiments across several benchmark datasets, and
+using various popular models, show that the combination consistently outperforms
+each individual strategy as well as random sampling. Our analysis indicates that this
+is because DUAL successfully addresses the limitations of BAS and IDDS, such as
+noisy samples and lack of exploration.
+In addition, we study the effect of different strategies with regards to the selected
+data distribution and outliers. By visualizing the distribution of selected data points
+and analyzing diversity, we get a better understanding of the common issues each
+strategy faces. These insights allow us to develop several techniques, such as including
+15
+
+Table 2: Average sample selection times (in seconds) per AL iteration
+for BAS and DUAL, and training times (in seconds) for each dataset–
+model combination. The average train time per AL step is roughly the
+same for all strategies since each AL iteration uses the same amount of
+data. For other strategies (Random, etc.), the average sample selection
+duration is 0.
+Avg. Selection Time
+Dataset
+Model
+BAS
+DUAL
+Train Time
+AESLC
+BARTBASE
+24.86
+20.71
+74.07
+PEGASUSLARGE
+46.57
+38.57
+102.20
+FLAN-T5LARGE
+81.71
+54.71
+27.93
+Reddit TIFU
+BARTBASE
+23.93
+19.93
+82.80
+PEGASUSLARGE
+75.93
+53.43
+113.53
+FLAN-T5LARGE
+177.64
+110.50
+40.07
+WikiHow
+BARTBASE
+25.12
+20.57
+106.73
+PEGASUSLARGE
+85.71
+59.93
+133.00
+FLAN-T5LARGE
+121.36
+87.29
+147.40
+BillSum
+BARTBASE
+36.43
+31.07
+116.13
+PEGASUSLARGE
+149.40
+110.12
+124.60
+FLAN-T5LARGE
+172.64
+128.00
+46.20
+a percentage of random samples and discarding candidate IDDS samples when they
+are not selected, in order to safeguard against those issues.
+6.1 Future Work
+While the proposed hybrid AL framework effectively combines uncertainty and
+diversity, there are several promising avenues for future exploration.
+First, while BLEU variance (BLEUVar) and other traditional metrics have been
+effective for uncertainty estimation, their task-agnostic nature may limit their appli-
+cability in certain summarization tasks. Incorporating task-specific metrics, such as
+content preservation or factual consistency, could provide a more robust basis for
+evaluating uncertainty and selecting data instances.
+Second, the current framework was evaluated on benchmark datasets, which may
+not fully represent the challenges posed by large-scale, real-world datasets. Future
+research could focus on scaling the framework to handle extensive datasets while
+maintaining computational efficiency. This might involve techniques such as model
+distillation or sparse sampling methods.
+Finally, incorporating human feedback as part of the AL loop could further refine
+the hybrid framework. For example, human evaluators could help validate or adjust
+the sampled instances, especially in cases where the model’s uncertainty estimates
+may not align with human judgment.
+By addressing these directions, future research can not only refine the current
+hybrid framework but also advance the broader field of active learning for text sum-
+marization. Continued exploration of this topic has the potential to unlock even
+16
+
+greater efficiency and effectiveness in summarization tasks across diverse real-world
+applications.
+References
+[1] Lewis, M., Liu, Y., Goyal, N., Ghazvininejad, M., Mohamed, A., Levy, O., Stoy-
+anov, V., Zettlemoyer, L.: BART: Denoising sequence-to-sequence pre-training
+for natural language generation, translation, and comprehension. In: Proceedings
+of the 58th Annual Meeting of the Association for Computational Linguistics,
+pp. 7871–7880. Association for Computational Linguistics, ??? (2019). https:
+//doi.org/10.18653/v1/2020.acl-main.703
+[2] Zhang, J., Zhao, Y., Saleh, M., Liu, P.J.: PEGASUS: Pre-training with Extracted
+Gap-sentences for Abstractive Summarization. In: 37th International Conference
+on Machine Learning, ICML 2020, pp. 11328–11339. PMLR, ??? (2020)
+[3] Guo, M., Ainslie, J., Uthus, D., Onta˜n´on, S., Ni, J., Sung, Y.H., Yang, Y.:
+LongT5: Efficient Text-To-Text Transformer for Long Sequences. In: Findings of
+the Association for Computational Linguistics: NAACL 2022 - Findings (2022).
+https://doi.org/10.18653/v1/2022.findings-naacl.55
+[4] Xiong, W., Gupta, A., Toshniwal, S., Mehdad, Y., Yih, W.T.: Adapting Pre-
+trained Text-to-Text Models for Long Text Sequences. In: Findings of the
+Association for Computational Linguistics: EMNLP 2023 (2023). https://doi.org/
+10.18653/v1/2023.findings-emnlp.370
+[5] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N.,
+Kaiser, L., Polosukhin, I.: Attention is all you need. In: Advances in Neural
+Information Processing Systems, pp. 5998–6008 (2017)
+[6] Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis, M.,
+Zettlemoyer, L., Stoyanov, V.: Roberta: A robustly optimized bert pretraining
+approach. arXiv preprint arXiv:1907.11692 (2019)
+[7] Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li,
+W., Liu, P.J.: Exploring the limits of transfer learning with a unified text-to-text
+transformer. Journal of Machine Learning Research 21 (2020)
+[8] Radford, A., Narasimhan, K., Salimans, T., Sutskever, I.: Improving language
+understanding by generative pre-training (2018)
+[9] Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I.: Language
+Models are Unsupervised Multitask Learners. OpenAI Blog 1(8) (2019)
+[10] Tsvigun, A., Lysenko, I., Sedashov, D., Lazichny, I., Damirov, E., Karlov, V.,
+Belousov, A., Sanochkin, L., Panov, M., Panchenko, A., Burtsev, M., Shelmanov,
+A.: Active Learning for Abstractive Text Summarization. In: Findings of the
+17
+
+Association for Computational Linguistics: EMNLP 2022 (2022). https://doi.org/
+10.18653/v1/2022.findings-emnlp.377
+[11] Gidiotis, A., Tsoumakas, G.: Bayesian active summarization. Computer Speech
+and Language 83 (2023) https://doi.org/10.1016/j.csl.2023.101553
+[12] Perlitz, Y., Gera, A., Shmueli-Scheuer, M., Sheinwald, D., Slonim, N., Ein-Dor,
+L.: Active Learning for Natural Language Generation. In: EMNLP 2023 - 2023
+Conference on Empirical Methods in Natural Language Processing, Proceedings
+(2023). https://doi.org/10.18653/v1/2023.emnlp-main.611
+[13] Ein-Dor, L., Halfon, A., Gera, A., Shnarch, E., Dankin, L., Choshen, L.,
+Danilevsky, M., Aharonov, R., Katz, Y., Slonim, N.: Active Learning for BERT:
+An Empirical Study. In: Proceedings of the 2020 Conference on Empirical Meth-
+ods in Natural Language Processing, EMNLP 2020 (2020). https://doi.org/10.
+18653/v1/2020.emnlp-main.638
+[14] Schr¨oder, C., Niekler, A., Potthast, M.: Revisiting Uncertainty-based Query
+Strategies for Active Learning with Transformers. In: Proceedings of the Annual
+Meeting of the Association for Computational Linguistics (2022). https://doi.
+org/10.18653/v1/2022.findings-acl.172
+[15] Margatina, K., Vernikos, G., Barrault, L., Aletras, N.: Active Learning by Acquir-
+ing Contrastive Examples. In: EMNLP 2021 - 2021 Conference on Empirical
+Methods in Natural Language Processing, Proceedings (2021). https://doi.org/
+10.18653/v1/2021.emnlp-main.51
+[16] Wu, J., Wang, R., Yu, T., Zhang, R., Zhao, H., Li, S., Henao, R., Nenkova, A.:
+Context-aware Information-theoretic Causal De-biasing for Interactive Sequence
+Labeling. In: Findings of the Association for Computational Linguistics: EMNLP
+2022 (2022). https://doi.org/10.18653/v1/2022.findings-emnlp.251
+[17] Yu, Y., Kong, L., Zhang, J., Zhang, R., Zhang, C.: ACTUNE: Uncertainty-Based
+Active Self-Training for Active Fine-Tuning of Pretrained Language Models. In:
+NAACL 2022 - 2022 Conference of the North American Chapter of the Association
+for Computational Linguistics: Human Language Technologies, Proceedings of
+the Conference (2022). https://doi.org/10.18653/v1/2022.naacl-main.102
+[18] Haffari, G., Roy, M., Sarkar, A.: Active learning for statistical phrase-based
+machine translation. In: NAACL HLT 2009 - Human Language Technologies:
+The 2009 Annual Conference of the North American Chapter of the Asso-
+ciation for Computational Linguistics, Proceedings of the Conference (2009).
+https://doi.org/10.3115/1620754.1620815
+[19] Zheng, H., Lapata, M.: Sentence Centrality Revisited for Unsupervised Sum-
+marization. In: Proceedings of the 2019 Annual Meeting of the Association for
+Computational Linguistics, pp. 6236–6247 (2019). https://doi.org/10.18653/v1/
+18
+
+p19-1628
+[20] Zhao, Y., Zhang, H., Zhou, S., Zhang, Z.: Active learning approaches to enhancing
+neural machine translation. In: Findings of the Association for Computational
+Linguistics Findings of ACL: EMNLP 2020 (2020). https://doi.org/10.18653/v1/
+2020.findings-emnlp.162
+[21] Liu, C., Yu, J.: Uncertainty-aware non-autoregressive neural machine translation.
+Computer Speech and Language 78 (2023) https://doi.org/10.1016/j.csl.2022.
+101444
+[22] Shen, Y., Yun, H., Lipton, Z.C., Kronrod, Y., Anandkumar, A.: Deep active
+learning for named entity recognition. In: 6th International Conference on Learn-
+ing Representations, ICLR 2018 - Conference Track Proceedings (2018). https:
+//doi.org/10.18653/v1/w17-2630
+[23] Siddhant, A., Lipton, Z.C.: Deep Bayesian active learning for natural language
+processing: Results of a large-scale empirical study. In: Proceedings of the 2018
+Conference on Empirical Methods in Natural Language Processing, EMNLP 2018,
+pp. 2904–2909. Association for Computational Linguistics, Brussels, Belgium
+(2020). https://doi.org/10.18653/v1/d18-1318
+[24] Radmard, P., Fathullah, Y., Lipani, A.: Subsequence based deep active learning
+for named entity recognition. In: ACL-IJCNLP 2021 - 59th Annual Meeting of the
+Association for Computational Linguistics and the 11th International Joint Con-
+ference on Natural Language Processing, Proceedings of the Conference (2021).
+https://doi.org/10.18653/v1/2021.acl-long.332
+[25] Liu, M., Wang, Z., Tu, Z., Xu, X.: LTP: a new active learning strategy for BERT-
+CRF based named entity recognition (2020)
+[26] Gal, Y., Ghahramani, Z.: Dropout as a Bayesian approximation: Representing
+model uncertainty in deep learning. In: 33rd International Conference on Machine
+Learning, ICML 2016, vol. 3, pp. 1050–1059. PMLR, ??? (2016)
+[27] Papineni, K., Roukos, S., Ward, T., Zhu, W.-J.: BLEU: a method for automatic
+evaluation of machine translation. In: Proceedings of the 40th Annual Meet-
+ing on Association for Computational Linguistics, pp. 311–318. Association for
+Computational Linguistics, ??? (2002)
+[28] Gidiotis, A., Tsoumakas, G.: Should We Trust This Summary? Bayesian
+Abstractive Summarization to The Rescue. In: Findings of the Association for
+Computational Linguistics: ACL 2022, pp. 4119–4131 (2022)
+[29] Lin, C.-Y.: Rouge: A package for automatic evaluation of summaries. In: Proceed-
+ings of the 2004 Workshop on Text Summarization Branches Out, Post Conference
+Workshop of ACL (2004)
+19
+
+[30] Chung, H.W., Hou, L., Longpre, S., Zoph, B., Tay, Y., Fedus, W., Li, Y., Wang,
+X., Dehghani, M., Brahma, S., Webson, A., Gu, S.S., Dai, Z., Suzgun, M., Chen,
+X., Chowdhery, A., Castro-Ros, A., Pellat, M., Robinson, K., Valter, D., Narang,
+S., Mishra, G., Yu, A., Zhao, V., Huang, Y., Dai, A., Yu, H., Petrov, S., Chi, E.H.,
+Dean, J., Devlin, J., Roberts, A., Zhou, D., Le, Q.V., Wei, J.: Scaling instruction-
+finetuned language models. Journal of Machine Learning Research 25(70), 1–53
+(2024)
+[31] Longpre, S., Hou, L., Vu, T., Webson, A., Chung, H.W., Tay, Y., Zhou,
+D., Le, Q.V., Zoph, B., Wei, J., Roberts, A.: The flan collection: Designing
+data and methods for effective instruction tuning. In: Krause, A., Brun-
+skill, E., Cho, K., Engelhardt, B., Sabato, S., Scarlett, J. (eds.) Proceedings
+of the 40th International Conference on Machine Learning. Proceedings of
+Machine Learning Research, vol. 202, pp. 22631–22648. PMLR, ??? (2023).
+https://proceedings.mlr.press/v202/longpre23a.html
+[32] Narayan, S., Cohen, S.B., Lapata, M.: Don’t give me the details, just the sum-
+mary! Topic-aware convolutional neural networks for extreme summarization. In:
+Proceedings of the 2018 Conference on Empirical Methods in Natural Language
+Processing, Brussels, Belgium (2018)
+[33] Zhang, R., Tetreault, J.: This email could save your life: Introducing the task
+of email subject line generation. In: ACL 2019 - 57th Annual Meeting of the
+Association for Computational Linguistics, Proceedings of the Conference, pp.
+446–456. Association for Computational Linguistics, ??? (2020). https://doi.org/
+10.18653/v1/p19-1043
+[34] Klimt, B., Yang, Y.: The enron corpus: A new dataset for email classification
+research. In: Lecture Notes in Artificial Intelligence (Subseries of Lecture Notes in
+Computer Science), vol. 3201, pp. 217–226. Springer, Berlin, Heidelberg (2004).
+https://doi.org/10.1007/978-3-540-30115-8
+[35] Kim, B., Kim, H., Kim, G.: Abstractive summarization of Reddit posts with
+multi-level memory networks. In: Burstein, J., Doran, C., Solorio, T. (eds.)
+Proceedings of the 2019 Conference of the North American Chapter of the Asso-
+ciation for Computational Linguistics: Human Language Technologies, Volume
+1 (Long and Short Papers), pp. 2519–2531. Association for Computational Lin-
+guistics, Minneapolis, Minnesota (2019). https://doi.org/10.18653/v1/N19-1260
+. https://aclanthology.org/N19-1260
+[36] Koupaee, M., Wang, W.Y.: WikiHow: A Large Scale Text Summarization Dataset
+(2018). https://arxiv.org/abs/1810.09305
+[37] Kornilova, A., Eidelman, V.: BillSum: A corpus for automatic summarization
+of US legislation. In: Wang, L., Cheung, J.C.K., Carenini, G., Liu, F. (eds.)
+Proceedings of the 2nd Workshop on New Frontiers in Summarization, pp.
+48–56. Association for Computational Linguistics, Hong Kong, China (2019).
+20
+
+https://doi.org/10.18653/v1/D19-5406 . https://aclanthology.org/D19-5406
+[38] Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.: BERT: Pre-training of deep
+bidirectional transformers for language understanding. In: Burstein, J., Doran,
+C., Solorio, T. (eds.) Proceedings of the 2019 Conference of the North Ameri-
+can Chapter of the Association for Computational Linguistics: Human Language
+Technologies, Volume 1 (Long and Short Papers), pp. 4171–4186. Association for
+Computational Linguistics, Minneapolis, Minnesota (2019). https://doi.org/10.
+18653/v1/N19-1423 . https://aclanthology.org/N19-1423
+[39] Wang, K., Reimers, N., Gurevych, I.: TSDAE: Using transformer-based sequen-
+tial denoising auto-encoderfor unsupervised sentence embedding learning. In:
+Moens, M.-F., Huang, X., Specia, L., Yih, S.W.-t. (eds.) Findings of the Associ-
+ation for Computational Linguistics: EMNLP 2021, pp. 671–688. Association for
+Computational Linguistics, Punta Cana, Dominican Republic (2021). https://doi.
+org/10.18653/v1/2021.findings-emnlp.59 . https://aclanthology.org/2021.findings-
+emnlp.59
+[40] Gururangan,
+S.,
+Marasovi´c,
+A.,
+Swayamdipta,
+S.,
+Lo,
+K.,
+Beltagy,
+I.,
+Downey, D., Smith, N.A.: Don’t stop pretraining: Adapt language models
+to domains and tasks. In: Jurafsky, D., Chai, J., Schluter, N., Tetreault,
+J. (eds.) Proceedings of the 58th Annual Meeting of the Association for
+Computational Linguistics, pp. 8342–8360. Association for Computational
+Linguistics,
+Online
+(2020).
+https://doi.org/10.18653/v1/2020.acl-main.740
+.
+https://aclanthology.org/2020.acl-main.740
+[41] Song, K., Tan, X., Qin, T., Lu, J., Liu, T.Y.: MPNet: Masked and permuted
+pre-training for language understanding. In: Advances in Neural Information
+Processing Systems, vol. 2020-December (2020)
+[42] Perlitz, Y., Gera, A., Shmueli-Scheuer, M., Sheinwald, D., Slonim, N., Ein-Dor,
+L.: Active learning for natural language generation. In: Bouamor, H., Pino, J.,
+Bali, K. (eds.) Proceedings of the 2023 Conference on Empirical Methods in
+Natural Language Processing, pp. 9862–9877. Association for Computational Lin-
+guistics, Singapore (2023). https://doi.org/10.18653/v1/2023.emnlp-main.611 .
+https://aclanthology.org/2023.emnlp-main.611
+[43] Zhu, J., Wang, H., Yao, T., Tsou, B.K.: Active learning with sampling by uncer-
+tainty and density for word sense disambiguation and text classification. In: Scott,
+D., Uszkoreit, H. (eds.) Proceedings of the 22nd International Conference on
+Computational Linguistics (Coling 2008), pp. 1137–1144. Coling 2008 Organizing
+Committee, Manchester, UK (2008). https://aclanthology.org/C08-1143
+21
+
+Appendix A
+Hyperparameters
+Table A1: Train hyperparameters
+Hyperparameter
+BARTBASE
+PEGASUSLARGE
+FLAN-T5LARGE
+Number of train epochs
+-
+-
+3
+Train batch size
+16
+8
+61
+Min. train steps
+350
+200
+-
+Optimizer
+AdamW
+AdamW
+Adafactor
+Learning rate
+2e-5
+5e-4
+3e-5
+Weight decay
+0.028
+0.03
+0.01
+Warmup ratio
+0.1
+0.1
+0.1
+Num. of beams at evaluation
+4
+4
+3
+1We set the train batch size to 4 for the WikiHow and BillSum datasets due to memory
+constraints.
+Appendix B
+Performance of different AL iterations
+22
+
+Table B2: Rouge scores (R1/R2/RL) at key AL iterations (5, 10, 15) across all datasets, strate-
+gies, and models. Bold indicates the highest score for each experiment.
+Model
+Dataset / Strategy
+Iter. 5
+Iter. 10
+Iter. 15
+BARTBASE
+AESLC
+Random
+22.87/11.23/22.42
+25.05/12.49/24.50
+26.92/13.37/26.19
+BAS
+22.76/11.26/22.33
+25.41/12.68/24.81
+26.71/13.22/26.06
+IDDS
+25.32/12.82/24.94
+26.55/13.18/25.91
+27.15/13.62/26.48
+DUAL
+25.37/12.75/24.88
+26.32/13.24/25.72
+27.21/13.62/26.50
+Reddit TIFU
+Random
+20.90/4.81/16.29
+22.24/5.40/17.41
+23.09/5.78/18.00
+BAS
+20.88/4.60/16.06
+22.31/5.38/17.38
+23.08/5.81/18.06
+IDDS
+21.08/4.77/16.28
+22.24/5.24/17.21
+23.19/5.77/18.11
+DUAL
+21.50/4.91/16.68
+22.80/5.51/17.68
+23.12/5.79/18.02
+WikiHow
+Random
+28.79/8.12/20.30
+29.66/8.94/21.34
+30.01/9.44/21.84
+BAS
+29.09/8.28/20.29
+29.78/8.95/21.29
+30.16/9.48/21.80
+IDDS
+29.54/8.56/20.87
+29.18/8.95/21.51
+29.23/9.36/21.82
+DUAL
+29.05/8.24/20.31
+29.60/8.91/21.26
+29.80/9.38/21.77
+BillSum
+Random
+41.57/21.15/29.50
+43.29/22.29/30.76
+44.16/22.85/31.32
+BAS
+42.35/21.08/29.64
+43.35/22.17/30.71
+43.51/22.74/31.12
+IDDS
+39.52/20.29/28.51
+44.15/21.57/30.26
+44.38/22.40/31.00
+DUAL
+43.64/21.12/29.76
+44.66/22.31/30.87
+44.93/22.86/31.30
+PEGASUSLARGE
+AESLC
+Random
+18.48/8.31/18.01
+20.84/9.69/20.34
+22.68/10.61/22.12
+BAS
+18.40/7.79/18.00
+21.11/9.64/20.51
+22.02/9.82/21.39
+IDDS
+22.21/10.20/21.68
+23.52/10.64/23.05
+24.74/11.28/23.94
+DUAL
+20.01/9.27/19.48
+22.00/10.19/21.45
+24.34/11.51/23.63
+Reddit TIFU
+Random
+21.39/4.71/16.50
+22.43/5.21/17.19
+22.86/5.41/17.60
+BAS
+21.25/4.61/16.29
+22.68/5.27/17.34
+23.37/5.54/17.96
+IDDS
+22.05/5.08/16.81
+22.68/5.36/17.35
+23.23/5.52/17.69
+DUAL
+22.05/4.93/16.79
+23.13/5.40/17.74
+23.30/5.57/17.77
+WikiHow
+Random
+28.35/8.21/20.75
+30.62/9.50/22.62
+31.28/10.01/23.30
+BAS
+28.72/8.13/20.73
+30.50/9.21/22.20
+30.73/9.44/22.47
+IDDS
+30.97/9.47/22.50
+31.29/10.05/23.38
+31.58/10.30/23.72
+DUAL
+29.29/8.52/21.36
+30.92/9.46/22.50
+31.47/10.09/23.43
+BillSum
+Random
+46.90/24.77/32.83
+47.96/26.31/34.25
+47.46/26.81/34.67
+BAS
+46.74/24.75/32.74
+47.89/25.98/33.91
+47.47/26.72/34.60
+IDDS
+45.96/24.61/32.36
+45.99/25.06/32.58
+46.62/26.02/33.79
+DUAL
+47.61/25.26/33.16
+48.13/26.40/34.08
+47.66/26.69/34.56
+FLAN-T5LARGE
+AESLC
+Random
+34.50/18.91/33.19
+35.21/19.37/34.03
+35.51/19.59/34.38
+BAS
+34.35/18.68/33.04
+35.41/19.53/34.22
+35.46/19.58/34.29
+IDDS
+32.75/17.71/31.43
+33.11/17.75/31.75
+33.58/18.25/32.26
+DUAL
+34.07/18.51/32.74
+35.11/19.24/33.71
+35.57/19.43/34.10
+Reddit TIFU
+Random
+24.97/7.83/19.97
+25.92/8.22/20.79
+26.46/8.44/21.19
+BAS
+25.02/7.87/20.01
+25.83/8.23/20.67
+26.26/8.34/21.04
+IDDS
+24.83/7.78/19.74
+25.98/8.18/20.71
+26.26/8.34/20.95
+DUAL
+25.47/8.02/20.31
+26.30/8.29/21.02
+26.50/8.39/21.20
+WikiHow
+Random
+36.00/15.90/29.85
+36.65/16.04/30.18
+36.77/16.09/30.25
+BAS
+36.08/15.95/29.90
+36.62/16.07/30.18
+36.80/16.05/30.19
+IDDS
+35.78/15.83/29.66
+35.83/15.93/29.81
+36.02/15.92/29.90
+DUAL
+36.44/16.17/30.28
+36.69/16.14/30.29
+36.86/16.01/30.14
+BillSum
+Random
+38.95/20.86/29.97
+41.43/22.10/31.82
+42.58/22.94/32.65
+BAS
+37.20/20.42/28.70
+41.33/22.91/32.05
+42.65/23.87/33.02
+IDDS
+40.15/21.37/30.20
+42.14/22.22/31.72
+43.12/23.19/32.64
+DUAL
+39.81/21.19/30.17
+41.58/22.25/31.83
+42.56/23.04/32.51
+23

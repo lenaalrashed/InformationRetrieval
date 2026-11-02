@@ -1,0 +1,1172 @@
+LANID: LLM-assisted New Intent Discovery
+Lu Fan1, Jiashu Pu2, Rongsheng Zhang2, and Xiao-Ming Wu1∗
+Department of Computing, The Hong Kong Polytechnic University, Hong Kong S.A.R.1
+Fuxi AI Lab, NetEase Inc. China, Hang Zhou, China.2
+cslfan@comp.polyu.edu.hk, pujiashu@corp.netease.com,
+zhangrongsheng@corp.netease.com, xiao-ming.wu@polyu.edu.hk
+Abstract
+Task-oriented Dialogue Systems (TODS) often face the challenge of encountering new intents. New Intent Discovery
+(NID) is a crucial task that aims to identify these novel intents while maintaining the capability to recognize existing
+ones. Previous efforts to adapt TODS to new intents have struggled with inadequate semantic representation or have
+depended on external knowledge, which is often not scalable or flexible. Recently, Large Language Models (LLMs)
+have demonstrated strong zero-shot capabilities; however, their scale can be impractical for real-world applications
+that involve extensive queries. To address the limitations of existing NID methods by leveraging LLMs, we propose
+LANID, a framework that enhances the semantic representation of lightweight NID encoders with the guidance of
+LLMs. Specifically, LANID employs the K-nearest neighbors and Density-Based Spatial Clustering of Applications
+with Noise (DBSCAN) algorithms to sample selective utterance pairs from the training set. It then queries an LLM to
+ascertain the relationships between these pairs. The data produced from this process is utilized to design a contrastive
+fine-tuning task, which is then used to train a small encoder with a contrastive triplet loss. Our experimental results
+demonstrate the efficacy of the proposed method across three distinct NID datasets, surpassing strong baselines
+in both unsupervised and semi-supervised settings. Our code is available at https://github.com/floatSDSDS/LANID.
+Keywords: new intent discovery, large language models, clustering, contrastive learning
+1.
+Introduction
+Task-Oriented Dialogue Systems (TODS) are de-
+signed to assist users in accomplishing specific
+goals, such as booking flights or resolving techni-
+cal issues. However, as these systems evolve, they
+inevitably encounter user intents that were unseen
+during initial training. New Intent Discovery (NID)
+aims to enable systems to autonomously identify
+novel intents while maintaining robust performance
+on known ones. Such capability is critical for de-
+ploying TODS in dynamic real-world environments.
+Previous approaches have utilized clustering algo-
+rithms (Shi et al., 2018; Perkins and Yang, 2019;
+Chatterjee and Sengupta, 2020) to group utter-
+ances with similar intents, or have implemented
+semi-supervised pre-training methods for repre-
+sentation learning. These methods face significant
+limitations: many struggle to learn discriminative
+semantic representations for unseen intents (Lin
+et al., 2020; Pu et al., 2022; Zhang et al., 2021b),
+while others depend on the quality and quantity of
+external knowledge (Zhang et al., 2021a, 2022b),
+hindering scalability and adaptability.
+Recent advancements in Large Language Mod-
+els (LLMs) (OpenAI, 2023) have demonstrated im-
+pressive zero-shot reasoning capabilities (Heck
+et al., 2023), providing promising solutions for in-
+tent recognition.
+However, implementing these
+large-scale models in production environments is
+*Corresponding author
+both complex and resource-intensive. This com-
+plexity raises potential privacy issues (Kim et al.,
+2023), and the significant computational demands
+can lead to increased latency, impacting the real-
+time performance essential for many applications.
+Consequently, there is a growing interest in explor-
+ing the use of LLMs to guide and optimize offline,
+lightweight NID models.
+To leverage the capabilities of LLMs while ensur-
+ing lightweight performance and privacy for the NID
+task, we propose LANID (LLM-Assisted New Intent
+Discovery), a novel framework that integrates the
+rich knowledge of LLMs into lightweight encoders
+using contrastive learning to enhance in-domain
+NID performance. Specifically, we propose to sam-
+pling pairs of utterances and using their relation-
+ships discriminated by LLMs as contrastive signals.
+As establishing relationships for all possible utter-
+ance pairs would incur excessively high costs, we
+propose two data sampling strategies to sample in-
+formative and representative utterance pairs. Both
+strategies leverage unsupervised algorithms to en-
+hance data sampling. The initial strategy employs
+the concept of core points from DBSCAN (Ester
+et al., 1996) to effectively sample representative
+data. Conversely, the second strategy leverages
+the K-nearest neighbor algorithm (Cover and Hart,
+1967) to enhance the probability that the sampled
+data will accurately represent class boundaries.
+The proposed selection strategies ensure that the
+chosen pairs are more representative and thereby
+enhancing the system’s efficiency.
+arXiv:2503.23740v1 [cs.CL] 31 Mar 2025
+
+Next, a powerful LLM is employed to determine
+the relationships between the selected utterance
+pairs. The obtained supervision signals are then
+used to construct a contrastive learning task. By
+optimizing a lightweight encoder with a triplet loss
+objective, LANID enhances the model’s ability to
+discern both known and new intents without com-
+promising efficiency. The data sampling and teach-
+ing steps are conducted iteratively, and the train-
+ing set can be incrementally updated with either
+LLM-annotated or manually annotated new data,
+ensuring the system’s flexibility and scalability.
+The main contributions of this paper are three-
+fold:
+• We propose a framework that distills LLM-
+derived semantic insights into small in-domain
+encoders with contrastive learning methods
+for the NID task.
+• We introduce two data sampling strategies
+based on unsupervised algorithms to con-
+struct contrastive tasks more efficiently.
+• Extensive experiments on three benchmark
+datasets demonstrate LANID’s superiority
+over existing baselines in both unsupervised
+and semi-supervised NID settings.
+2.
+Related Works
+We briefly review recent work on intent recogni-
+tion, discovering new intents, and using LLMs to
+improve intent understanding in TODS.
+Intent Recognition. To help TODS manage
+the ever-expanding range of user intents, intent
+recognition has been a long-standing and active
+research area. Current studies have looked into
+different settings and techniques, which can be
+grouped into three main categories: (1) Clustering-
+based approaches (Shi et al., 2018; Perkins and
+Yang, 2019; Chatterjee and Sengupta, 2020; Pu
+et al., 2022), which group similar user queries to
+identify intents in an unsupervised manner; (2)Few-
+shot intent recognition (Zhang et al., 2021c; Zhan
+et al., 2022; Zhang et al., 2022a), which aims to
+enable models to quickly adapt to new scenarios
+with multiple new intents by creating different net-
+work structures or training frameworks; and (3)
+methods based on Pre-trained Language Models
+(PLMs) (Haponchyk et al., 2018; Liu et al., 2019;
+Yan et al., 2020; Haponchyk and Moschitti, 2021;
+Ma et al., 2022) believe that more general semantic
+representation can lead to better dialogue under-
+standing.
+New Intent Discovery (NID). To better suit real-
+world production needs, a more practical setting
+named NID has been introduced (Zhang et al.,
+2021a,b). This setting effectively leverages known
+labels while also uncovering novel intent cate-
+gories, thereby expanding the set of supported
+intents. Subsequently, further efforts have been
+made to expand on this line of research. Zhang et
+al. (Zhang et al., 2022b) designed a specific con-
+trastive loss to exploit self-supervisory signals in
+unlabeled data for clustering. Zhou et al. (Zhou
+et al., 2023) introduced a probabilistic framework
+for NID where intent assignments are treated as la-
+tent variables. An et al. (An et al., 2023) proposed
+a robust pseudo-label training and source domain
+joint-training network to refine noisy pseudo labels
+and fully utilize prior knowledge.
+Large Language Models (LLMs).
+LLMs
+show great potential for advancing conversational
+AI (OpenAI, 2023; Heck et al., 2023); however, their
+application in NID is still not well explored. While
+LLMs excel at detecting emerging intents, they re-
+quire extensive computational resources and pose
+privacy concerns. As mentioned above, existing
+NID methods typically rely on smaller semantic
+encoders, such as BERT (Devlin et al., 2019).
+Recently, Song et al. (Song et al., 2023) reveal
+ChatGPT’s strengths in zero-shot settings but also
+pointed out its limitations compared to fine-tuned
+models. In this paper, we propose leveraging the
+semantic understanding capabilities of LLMs to
+generate auxiliary labels for contrastive training.
+3.
+Proposed Method: LANID
+Problem Formulation. To better align with the
+practical need for continuous training to recognize
+new intents, we follow the approach of prior re-
+search (Zhang et al., 2021b) and evaluate our
+method in both unsupervised and semi-supervised
+evaluation settings. We represent an utterance and
+its intent label as x and y, respectively. y can either
+belong to the set of unknown intents Cu or the set
+of known intents Ck. The training set, validation set,
+and test set are denoted as Dtrain, Dval and Dtest.
+These three sets share the same distribution of
+intent labels. In the unsupervised setting, Dtrain
+does not contain any annotated utterances, mean-
+ing that no intents are known or labeled. In the
+semi-supervised setting, Dtrain comprises both a
+labeled dataset, Dlabeled = {(xi, yi)|yi ∈Ck} and
+an unlabeled dataset Dunlabeled. The intent labels
+of utterances in Dunlabeled may belong to either Ck
+or Cu. In both settings, the goal is to group utter-
+ances from Dtest into clusters, with each cluster
+representing a distinct intent.
+Overview.
+The proposed LANID framework is il-
+lustrated in Figure 1. LANID utilizes contrastive
+learning to distill knowledge from LLMs, thereby
+facilitating the training of a lightweight encoder for
+novel intent detection. The contrastive learning
+
+Reachable points
+Core points
+Outliers
+KNN
+KN-DBSCAN-cores
+LLMs
+Here are two utterances from users: 
+<A> and <B>. Please differentiate 
+whether they represent the same intent. 
+Just answer yes or no.
+A: I want to donate money to Italy.
+B: How can I donate to New York city?
+Answers:
+Data pair sampler
+Encoder
+I want to donate 
+money to Italy.
+How can I donate to 
+New York city?
+Dataset
+LLM 
+Manager
+Training set
+Added data
+Optimization with 
+contrastive loss
+Prediction
+Figure 1: Illustration of the proposed LANID framework. First, utterances are encoded by our target light
+encoder, and informative utterance pairs are sampled from Dtrain using the proposed data pair sampler.
+Next, the LLM manager inputs the sampled data pairs into the LLM and uses it to annotate the relationship
+for each utterance pair. Contrastive tasks are then constructed to optimize the target encoder. These
+three steps are repeated iteratively until convergence is reached. Once this is achieved, we apply the
+trained encoder to the test set, Dtest, and utilize the k-means algorithm to cluster the encoded utterances.
+Utterances within the same cluster are then considered to share the same intent.
+Table 1: Hyper-parameter Settings: MinPts denotes the minimum number of points needed within a
+specified radius (epsilon) to form a dense region in DBSCAN.
+K
+p
+nk
+m
+kn
+T
+#Epoch
+MinPts
+Banking
+50
+0.1
+2
+5
+2
+3
+10
+4
+Stackoverflow
+50
+0.05
+2
+8
+2
+2
+10
+4
+M-CID
+50
+0.2
+2
+5
+2
+3
+20
+4
+process consists of three main steps: 1) sampling
+selective utterance pairs from Dtrain to form the
+contrastive tasks based on clustering algorithms,
+2) determining the relationships between these ut-
+terance pairs using a powerful LLM that provides
+pseudo-labeling, and 3) fine-tuning the encoder
+with the LLM’s output to distill the knowledge from
+the powerful LLM. This three-step training proce-
+dure is iteratively repeated until either a predefined
+condition set by the user is satisfied or conver-
+gence is attained. Finally, the utterances in Dtest
+are encoded using the optimized encoder and clus-
+tered with the k-means algorithm, consistent with
+previous attempts in NID (Zhang et al., 2021b,
+2022b).
+3.1.
+Selecting Utterance Pairs
+We propose injecting knowledge encoded in LLMs
+into the small model through contrastive learning.
+In the learning process, the LLM acts like a teacher,
+while the small model acts like a student. One of
+the most essential things in the teaching stage
+is designing contrastive tasks. In this work, we
+propose sampling utterance pairs and asking the
+LLM to determine the relation between each one.
+The contrastive tasks are formed with utterance
+pairs and their pseudo-relation label annotated by
+LLMs. It is impractical to establish relationships for
+all possible utterance pairs. Therefore, we propose
+two selective sampling strategies for utterance pair
+sampling, which will selectively sample represen-
+tative and informative data. Next, we will illustrate
+the two proposed sampling strategies.
+Selection based on K-Nearest Neighbors.
+Starting locally, we first find those utterances that
+are close to each other (based on the original
+representation) and determine whether the distri-
+bution among them is reasonable. In each iter-
+ation, we randomly sample p% utterances from
+Dtrain. Then, for each sampled utterance xi, we
+search for its top-K nearest neighbors N Near
+i
+us-
+ing the Euclidean distance, and we uniformly sam-
+ple nk(nk < |N Near
+i
+|) utterances from N Near
+i
+. We
+denote the nearest-neighbor set for xi as MNear
+i
+=
+{(xi, xj)|xj ∈N Near
+i
+}, where |MNear
+i
+| = nk.
+Selection based on Global Density.
+It is difficult
+to divide a data set into exactly a few categories,
+and there will always be some outliers. Also, the
+distribution of semantics is usually not uniform, and
+there are high and low densities of different seman-
+tic clusters. We propose a DBSCAN-based (Ester
+et al., 1996) sampling approach to reflect the re-
+lationship between globally high and low-density
+
+Table 2: Performance on Unsupervised NID: Best results for each dataset are highlighted in bold. Results
+are shown for three LANID variants: LANID-Near (KNN-based sampling), LANID-DBSCAN (DBSCAN
+sampling), and LANID (combination of both strategies)
+Banking
+StackOverflow
+M-CID
+Methods
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+SAE-KM
+60.12
+24.00
+37.38
+48.72
+23.36
+37.16
+51.03
+43.51
+52.95
+SAE-DEC
+62.92
+25.68
+39.35
+61.32
+21.17
+57.09
+50.69
+44.52
+53.07
+SAE-DCN
+62.94
+25.69
+39.36
+61.34
+34.98
+57.09
+50.69
+44.52
+53.07
+MTP
+77.25
+47.80
+59.12
+61.35
+45.77
+61.90
+70.53
+45.76
+64.76
+MTP-CLNN
+82.15
+57.68
+66.88
+75.20
+63.13
+79.20
+80.03
+67.39
+79.94
+LANID-Near
+83.44
+58.28
+66.75
+79.56
+66.67
+83.40
+80.80
+69.86
+81.38
+LANID-DBSCAN
+83.21
+58.02
+65.78
+81.25
+72.86
+85.30
+80.41
+68.10
+79.08
+LANID
+84.12
+60.40
+70.58
+81.25
+72.96
+86.60
+82.64
+71.36
+82.52
+Table 3: Performance on Semi-Supervised NID with Varying Known Class Ratios: Best results for each
+dataset are highlighted in bold. The Known Class Ratio (KCR) is defined as
+|Ck|
+(|Ck|+Cu). A 10% subset
+of each known class was randomly sampled to create Dlabeled. Results are shown for the three LANID
+variants as described in Table 2.
+Banking
+StackOverflow
+M-CID
+Methods
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+KCR-25%
+BERT-KCL
+53.85
+20.07
+28.79
+35.47
+16.80
+32.88
+29.35
+11.58
+24.76
+DAC
+69.85
+37.16
+49.67
+53.97
+36.46
+53.96
+49.83
+27.21
+43.72
+MTP
+79.17
+50.83
+62.05
+74.86
+62.27
+77.20
+70.53
+45.76
+64.76
+MTP-CLNN
+83.88
+60.76
+70.91
+78.38
+65.80
+80.10
+78.30
+65.32
+78.30
+LANID-Near
+85.28
+63.48
+72.47
+80.83
+65.86
+83.30
+81.91
+70.30
+81.09
+LANID-DBSCAN
+84.74
+62.22
+70.13
+74.74
+60.54
+73.70
+80.04
+69.69
+83.09
+LANID
+85.51
+64.23
+71.40
+79.55
+63.23
+81.80
+85.11
+75.66
+86.82
+Banking
+StackOverflow
+M-CID
+Methods
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+KCR-50%
+BERT-KCL
+62.86
+30.16
+40.81
+57.63
+41.90
+56.58
+42.48
+22.83
+38.11
+DAC
+76.41
+47.28
+59.32
+70.78
+56.44
+73.76
+63.27
+43.52
+57.19
+MTP
+82.12
+56.43
+67.34
+76.58
+65.55
+82.50
+70.53
+45.76
+64.76
+MTP-CLNN
+86.42
+66.66
+74.97
+81.41
+72.15
+86.00
+79.34
+66.18
+78.80
+LANID-Near
+86.83
+67.41
+76.10
+81.62
+64.32
+81.30
+81.20
+69.54
+81.95
+LANID-DBSCAN
+85.62
+64.35
+72.44
+81.19
+65.75
+81.40
+79.16
+67.85
+80.80
+LANID
+86.31
+66.53
+75.49
+82.07
+70.51
+83.00
+81.58
+70.66
+82.81
+Banking
+StackOverflow
+M-CID
+Methods
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+NMI
+ARI
+ACC
+KCR-75%
+BERT-KCL
+72.18
+44.29
+58.70
+70.38
+57.98
+71.50
+54.22
+34.60
+52.15
+DAC
+79.99
+54.57
+65.87
+75.31
+60.02
+78.84
+71.41
+54.22
+69.11
+MTP
+84.61
+63.23
+72.76
+80.41
+70.01
+81.10
+77.90
+64.57
+77.65
+MTP-CLNN
+87.24
+68.77
+77.14
+80.99
+72.14
+85.80
+80.12
+67.40
+79.37
+LANID-Near
+87.59
+70.13
+78.51
+82.14
+73.05
+85.80
+81.13
+69.75
+83.09
+LANID-DBSCAN
+86.79
+67.18
+74.35
+83.74
+76.45
+88.30
+80.65
+70.24
+82.52
+LANID
+87.64
+68.89
+76.56
+82.80
+74.33
+87.50
+82.16
+70.56
+82.23
+regions of semantics. Concretely, we conduct DB-
+SCAN clustering on Dtrain and obtain a set of core
+points xc and a set of non-core points xnc. Then,
+we randomly sample a subset x
+′
+nc from xnc. For
+each utterance xi in x
+′
+nc, we search for its m near-
+est neighbors in xc, forming a global density set
+as MDen
+i
+= {(xi, xj)|xj ∈N Core
+i
+}, where N Core
+i
+is the set consisting of the nearest points to xi in
+xc.
+3.2.
+LLM Manager
+The LLM manager is another major module in
+LANID. It constructs prompts using sampled data
+and parses the responses from LLMs.
+We de-
+sign prompts with three components (Pan et al.,
+2023): schema, regulations, and sentence input.
+The schema component is intended to guide LLMs
+to produce responses that meet our desired criteria.
+To identify the optimal schema for each dataset,
+several schemas were manually crafted and evalu-
+ated based on their performance on Dlabeled. The
+regulations component constrains the format of the
+LLM’s responses. For simplicity, we uniformly use
+the phrase "just answer yes or no." The sentence
+input component consists of utterance pairs sam-
+pled as detailed in Section 3.1. Finally, we predict
+r(i, j) = 1 for a data pair (i, j) if ’yes’ appears
+in the LLM’s corresponding response; otherwise,
+r(i, j) = 0.
+3.3.
+Training and Optimization
+To optimize the representation of the text encoder
+on domain data, we collect pairs of positive sam-
+ples from MNear
+i
+and/or MCore
+i
+, with their rela-
+tionships r(i, j) determined by the LLM manager.
+For each positive sample pair {(xi, xj)}, we ran-
+
+domly sample kn utterances from Dtrain as negative
+samples to better represent the distribution of the
+entire dataset, assuming the dataset distribution
+is not extreme. This approach forms a dataset
+Df = (xi, pi, ni) of triplets. We then fine-tune the
+model using a triplet margin loss defined as:
+L(xi, pi, ni) = max(d(xi, pi) −d(xi, ni) + mgn, 0),
+(1)
+where xi serves as the anchor point, mgn. rep-
+resents a hyperparameter, and pi and ni are its
+positive and negative samples, respectively. The
+function d(xi, yj) = ∥xi −yj∥represents the dis-
+tance, and the margin is a hyperparameter that de-
+termines the minimum desired difference between
+d(xi, pi) and d(xi, ni).
+As training progresses, the quality of the text
+encoder’s representation improves, leading to en-
+hanced sampling outcomes. In practice, the pro-
+cess of selecting utterance pairs and querying the
+LLM manager recurs every T epochs, with the
+fine-tuning dataset Df and the text encoder being
+incrementally updated during this iterative process.
+Finally, upon completing the training stage, we
+apply the optimized encoder on the test set Dtest
+and employ the k-means algorithm to do clustering.
+Utterances that fall within the same cluster are
+considered to share the same intent.
+4.
+Experiment
+4.1.
+Experimental Details
+We evaluate LANID using three intent recognition
+benchmarks. The BANKING dataset (Casanueva
+et al., 2020) includes 13,083 utterances distributed
+across 77 intents within the banking domain. The
+StackOverflow dataset (Xu et al., 2015) comprises
+20,000 queries collected from an online question-
+answering platform1, categorized into 20 different
+categories. The M-CID dataset (Arora et al., 2020)
+consists of 1,745 utterances associated with 16
+intents specifically related to COVID-19 services.
+Experimental Setup.
+Our proposed method is
+evaluated under both unsupervised and semi-
+supervised settings. We use three clustering evalu-
+ation metrics: normalized mutual information (NMI)
+(Estévez et al., 2009), adjusted Rand index (ARI)
+(Yeung and Ruzzo, 2001), and accuracy (ACC).
+Baselines.
+We compare LANID with both unsu-
+pervised and semi-supervised NID state-of-the-art
+(SOTAs). The unsupervised NID SOTAs include
+the SAE series (Xie et al., 2016), MTP, and CLNN
+(Zhang et al., 2022b). The semi-supervised base-
+lines include BERT-KCL (Hsu et al., 2019), DAC
+1https://stackoverflow.com/
+(Zhang et al., 2021b), MTP, and CLNN (Zhang
+et al., 2022b).
+Implementation Details.
+We use the default set-
+tings of CLNN (Zhang et al., 2022b) and continue
+to train the model pretrained by MTP-CLNN as a
+post-finetuning stage. Further training can also be
+conducted on other NID baselines. For LLMs, we
+use the gpt-3.5-turbo2 model. The hyperparame-
+ters of LANID as shown in Table 1 are selected
+based on performance on the validation set.
+4.2.
+Result Analysis
+Tables 2 and 3 summarize the performance of
+LANID compared to state-of-the-art (SOTA) meth-
+ods in both unsupervised and semi-supervised set-
+tings across three intent recognition benchmarks.
+The results reveal several key observations: (1)
+LANID and its variants excel in unsupervised learn-
+ing, beating other baselines due to effective LLM
+labeling that compensates for missing supervised
+signals. (2) LANID consistently surpasses base-
+lines in most cases, proving its effectiveness. (3)
+Although the combination of two neighborhood
+sampling strategies generally works well, relying
+solely on the DBSCAN-based sampling strategy
+can sometimes hinder performance. This is be-
+cause the LLM is constrained to make binary judg-
+ments and retain only positive pairs. For many
+outliers, their nearest cores may not express the
+same intent, thereby reducing the size of Df and
+leading to overfitting problems.
+5.
+Conclusion
+In this work, we introduce LANID, a framework
+designed to tackle the challenge of novel intent
+discovery in TODS by LLMs to train lightweight
+encoders through contrastive learning. This ap-
+proach enhances the system’s capability to identify
+new user intents while maintaining efficiency, scal-
+ability, and privacy. By employing effective data
+sampling techniques and harnessing LLM knowl-
+edge, LANID demonstrates superior performance
+compared to existing methods, as evidenced by ex-
+tensive experiments on benchmark datasets. Over-
+all, the proposed framework sets the stage for more
+adaptive and responsive TODS that can effectively
+operate in dynamic real-world environments.
+Acknowledgments
+We thank the anonymous reviewers for their valu-
+able feedback. This research was partially sup-
+ported by the grant of HK ITF ITS/359/21FP.
+2https://platform.openai.com/docs/models/gpt-3-5
+
+6.
+Bibliographical References
+Alfred V. Aho and Jeffrey D. Ullman. 1972. The
+Theory of Parsing, Translation and Compiling,
+volume 1. Prentice-Hall, Englewood Cliffs, NJ.
+American Psychological Association. 1983. Publi-
+cations Manual. American Psychological Asso-
+ciation, Washington, DC.
+Wenbin An, Feng Tian, Ping Chen, Qinghua Zheng,
+and Wei Ding. 2023. New user intent discovery
+with robust pseudo label training and source do-
+main joint training. IEEE Intelligent Systems,
+38(4):21–31.
+Rie Kubota Ando and Tong Zhang. 2005. A frame-
+work for learning predictive structures from mul-
+tiple tasks and unlabeled data. Journal of Ma-
+chine Learning Research, 6:1817–1853.
+Galen Andrew and Jianfeng Gao. 2007. Scalable
+training of L1-regularized log-linear models. In
+Proceedings of the 24th International Confer-
+ence on Machine Learning, pages 33–40.
+Abhinav Arora, Akshat Shrivastava, Mrinal Mohit,
+Lorena Sainz-Maza Lecanda, and Ahmed Aly.
+2020. Cross-lingual transfer learning for intent
+detection of covid-19 utterances.
+Vassileios Balntas, Edgar Riba, Daniel Ponsa, and
+Krystian Mikolajczyk. 2016. Learning local fea-
+ture descriptors with triplets and shallow con-
+volutional neural networks. In Bmvc, volume 1,
+page 3.
+BSI. 1973a.
+Natural Fibre Twines, 3rd edition.
+British Standards Institution, London. BS 2570.
+BSI. 1973b. Natural fibre twines. BS 2570, British
+Standards Institution, London. 3rd. edn.
+Inigo Casanueva, Tadas Temcinas, Daniela Gerz,
+Matthew Henderson, and Ivan Vulic. 2020. Ef-
+ficient intent detection with dual sentence en-
+coders. ACL 2020, page 38.
+A. Castor and L. E. Pollux. 1992. The use of user
+modelling to guide inference and learning. Ap-
+plied Intelligence, 2(1):37–53.
+Ashok K. Chandra, Dexter C. Kozen, and Larry J.
+Stockmeyer. 1981.
+Alternation.
+Journal
+of the Association for Computing Machinery,
+28(1):114–133.
+Ajay Chatterjee and Shubhashis Sengupta. 2020.
+Intent mining from past conversations for conver-
+sational agent. arXiv preprint arXiv:2005.11014.
+J.L. Chercheur. 1994.
+Case-Based Reasoning,
+2nd edition. Morgan Kaufman Publishers, San
+Mateo, CA.
+N. Chomsky. 1973. Conditions on transformations.
+In A festschrift for Morris Halle, New York. Holt,
+Rinehart & Winston.
+James W. Cooley and John W. Tukey. 1965. An
+algorithm for the machine calculation of complex
+Fourier series.
+Mathematics of Computation,
+19(90):297–301.
+Thomas Cover and Peter Hart. 1967.
+Nearest
+neighbor pattern classification. IEEE transac-
+tions on information theory, 13(1):21–27.
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019. Bert: Pre-training of
+deep bidirectional transformers for language un-
+derstanding. In Proceedings of the 2019 con-
+ference of the North American chapter of the
+association for computational linguistics: human
+language technologies, volume 1 (long and short
+papers), pages 4171–4186.
+Umberto Eco. 1990. The Limits of Interpretation.
+Indian University Press.
+Martin Ester, Hans-Peter Kriegel, Jörg Sander,
+Xiaowei Xu, et al. 1996.
+A density-based al-
+gorithm for discovering clusters in large spatial
+databases with noise. In kdd, volume 96, pages
+226–231.
+Pablo A Estévez, Michel Tesmer, Claudio A Perez,
+and Jacek M Zurada. 2009. Normalized mutual
+information feature selection. IEEE Transactions
+on neural networks, 20(2):189–201.
+Dan Gusfield. 1997. Algorithms on Strings, Trees
+and Sequences. Cambridge University Press,
+Cambridge, UK.
+J Han. 2001.
+m. kamber (2001): Data mining,
+concepts and techniques.
+Iryna Haponchyk and Alessandro Moschitti. 2021.
+Supervised neural clustering via latent struc-
+tured output learning: application to question in-
+tents. In Proceedings of the 2021 Conference of
+the North American Chapter of the Association
+for Computational Linguistics: Human Language
+Technologies, pages 3364–3374.
+Iryna Haponchyk, Antonio Uva, Seunghak Yu, Olga
+Uryupina, and Alessandro Moschitti. 2018. Su-
+pervised clustering of questions into intents for
+dialog system applications. In Proceedings of
+the 2018 conference on empirical methods in
+natural language processing, pages 2310–2321.
+
+Michael Heck, Nurul Lubis, Benjamin Ruppik,
+Renato Vukovic,
+Shutong Feng,
+Christian
+Geishauser, Hsien-Chin Lin, Carel van Niekerk,
+and Milica Gasic. 2023. Chatgpt for zero-shot
+dialogue state tracking: A solution or an opportu-
+nity? In Proceedings of the 61st Annual Meeting
+of the Association for Computational Linguistics
+(Volume 2: Short Papers), pages 936–950.
+Paul Gerhard Hoel. 1971a. Elementary Statistics,
+3rd edition. Wiley series in probability and math-
+ematical statistics. Wiley, New York, Chichester.
+ISBN 0 471 40300.
+Paul Gerhard Hoel. 1971b. Elementary Statistics,
+3rd edition, Wiley series in probability and mathe-
+matical statistics, pages 19–33. Wiley, New York,
+Chichester. ISBN 0 471 40300.
+Yen-Chang Hsu, Zhaoyang Lv, Joel Schlosser,
+Phillip Odom, and Zsolt Kira. 2019. Multi-class
+classification without multi-class labels. arXiv
+preprint arXiv:1901.00544.
+Otto Jespersen. 1922. Language: Its Nature, De-
+velopment, and Origin. Allen and Unwin.
+Siwon Kim, Sangdoo Yun, Hwaran Lee, Martin
+Gubri, Sungroh Yoon, and Seong Joon Oh. 2023.
+Propile: Probing privacy leakage in large lan-
+guage models. Advances in Neural Information
+Processing Systems, 36:20750–20762.
+Hao Lang, Yinhe Zheng, Jian Sun, Fei Huang,
+Luo Si, and Yongbin Li. 2022. Estimating soft
+labels for out-of-domain intent detection. In Pro-
+ceedings of the 2022 Conference on Empirical
+Methods in Natural Language Processing, pages
+261–276.
+Ting-En Lin, Hua Xu, and Hanlei Zhang. 2020.
+Discovering new intents via constrained deep
+adaptive clustering with cluster refinement. In
+Proceedings of the AAAI Conference on Artificial
+Intelligence, volume 34, pages 8360–8367.
+Han Liu, Xiaotong Zhang, Lu Fan, Xuandi Fu, Qi-
+mai Li, Xiao-Ming Wu, and Albert YS Lam. 2019.
+Reconstructing capsule networks for zero-shot
+intent classification. In Proceedings of the 2019
+Conference on Empirical Methods in Natural
+Language Processing and the 9th International
+Joint Conference on Natural Language Process-
+ing (EMNLP-IJCNLP), pages 4799–4809.
+Tingting Ma, Qianhui Wu, Zhiwei Yu, Tiejun Zhao,
+and Chin-Yew Lin. 2022. On the effectiveness
+of sentence encoding for intent detection meta-
+learning. In Proceedings of the 2022 Conference
+of the North American Chapter of the Associa-
+tion for Computational Linguistics: Human Lan-
+guage Technologies, pages 3806–3818.
+Lindung
+Parningotan
+Manik,
+Zaenal
+Akbar,
+Hani Febri Mustika, Ariani Indrawati, Dwi Setyo
+Rini, Agusdin Dharma Fefirenta, and Tutie Djar-
+waningsih. 2021. Out-of-scope intent detection
+on a knowledge-based chatbot. International
+Journal of Intelligent Engineering & Systems,
+14(5).
+OpenAI. 2023. Gpt-4 technical report.
+Wenbo Pan, Qiguang Chen, Xiao Xu, Wanxiang
+Che, and Libo Qin. 2023. A preliminary eval-
+uation of chatgpt for zero-shot dialogue under-
+standing. arXiv preprint arXiv:2304.04256.
+Baolin Peng, Chunyuan Li, Pengcheng He, Michel
+Galley, and Jianfeng Gao. 2023. Instruction tun-
+ing with gpt-4. arXiv preprint arXiv:2304.03277.
+Hugh Perkins and Yi Yang. 2019. Dialog intent
+induction with deep multi-view clustering. arXiv
+preprint arXiv:1908.11487.
+Jiashu Pu, Guandan Chen, Yongzhu Chang, and
+Xiaoxi Mao. 2022. Dialog intent induction via
+density-based deep clustering ensemble. arXiv
+preprint arXiv:2201.06731.
+Chengwei Qin, Aston Zhang, Zhuosheng Zhang,
+Jiaao Chen, Michihiro Yasunaga, and Diyi Yang.
+2023. Is chatgpt a general-purpose natural lan-
+guage processing task solver? In Proceedings
+of the 2023 Conference on Empirical Methods
+in Natural Language Processing, pages 1339–
+1384.
+Mohammad Sadegh Rasooli and Joel R. Tetreault.
+2015. Yara parser: A fast and accurate depen-
+dency parser. Computing Research Repository,
+arXiv:1503.06733. Version 2.
+Florian Schroff, Dmitry Kalenichenko, and James
+Philbin. 2015. Facenet: A unified embedding for
+face recognition and clustering. In Proceedings
+of the IEEE conference on computer vision and
+pattern recognition, pages 815–823.
+Chen Shi, Qi Chen, Lei Sha, Sujian Li, Xu Sun,
+Houfeng Wang, and Lintao Zhang. 2018. Auto-
+dialabel: Labeling dialogue data with unsuper-
+vised learning. In Proceedings of the 2018 con-
+ference on empirical methods in natural lan-
+guage processing, pages 684–689.
+Charles Joseph Singer, E. J. Holmyard, and A. R.
+Hall, editors. 1954–58. A history of technology.
+Oxford University Press, London. 5 vol.
+Xiaoshuai Song, Keqing He, Pei Wang, Guanting
+Dong, Yutao Mou, Jingang Wang, Yunsen Xian,
+Xunliang Cai, and Weiran Xu. 2023. Large lan-
+guage models meet open-world intent discovery
+
+and recognition: An evaluation of chatgpt. In
+Proceedings of the 2023 Conference on Empir-
+ical Methods in Natural Language Processing,
+pages 10291–10304.
+Jannik Strötgen and Michael Gertz. 2012. Tem-
+poral tagging on different domains: Challenges,
+strategies, and gold standards. In Proceedings
+of the Eight International Conference on Lan-
+guage Resources and Evaluation (LREC’12),
+pages 3746–3753, Istanbul, Turkey. European
+Language Resource Association (ELRA).
+S. Superman, B. Batman, C. Catwoman, and
+S. Spiderman. 2000. Superheroes experiences
+with books, 20th edition. The Phantom Editors
+Associates, Gotham City.
+Junyuan Xie, Ross Girshick, and Ali Farhadi. 2016.
+Unsupervised deep embedding for clustering
+analysis. In International conference on machine
+learning, pages 478–487. PMLR.
+Jiaming Xu, Peng Wang, Guanhua Tian, Bo Xu,
+Jun Zhao, Fangyuan Wang, and Hongwei Hao.
+2015. Short text clustering via convolutional neu-
+ral networks. In Proceedings of the 1st Work-
+shop on Vector Space Modeling for Natural Lan-
+guage Processing, pages 62–69.
+Guangfeng Yan, Lu Fan, Qimai Li, Han Liu, Xiao-
+tong Zhang, Xiao-Ming Wu, and Albert YS Lam.
+2020. Unknown intent detection using gaussian
+mixture model with an application to zero-shot
+intent classification. In Proceedings of the 58th
+annual meeting of the association for computa-
+tional linguistics, pages 1050–1060.
+Ka Yee Yeung and Walter L Ruzzo. 2001.
+De-
+tails of the adjusted rand index and clustering
+algorithms, supplement to the paper an empir-
+ical study on principal component analysis for
+clustering gene expression data. Bioinformatics,
+17(9):763–774.
+Li-Ming Zhan, Haowen Liang, Lu Fan, Xiao-Ming
+Wu, and Albert YS Lam. 2022. A closer look at
+few-shot out-of-distribution intent detection. In
+Proceedings of the 29th International Confer-
+ence on Computational Linguistics, pages 451–
+460.
+Li-Ming Zhan, Haowen Liang, Bo Liu, Lu Fan, Xiao-
+Ming Wu, and Albert YS Lam. 2021. Out-of-
+scope intent detection with self-supervision and
+discriminative training. In Proceedings of the
+59th Annual Meeting of the Association for Com-
+putational Linguistics and the 11th International
+Joint Conference on Natural Language Process-
+ing (Volume 1: Long Papers), pages 3521–3532.
+Hanlei Zhang, Xiaoteng Li, Hua Xu, Panpan Zhang,
+Kang Zhao, and Kai Gao. 2021a. Textoir: An
+integrated and visualized platform for text open
+intent recognition. In Proceedings of the 59th
+Annual Meeting of the Association for Computa-
+tional Linguistics and the 11th International Joint
+Conference on Natural Language Processing:
+System Demonstrations, pages 167–174.
+Hanlei Zhang, Hua Xu, Ting-En Lin, and Rui
+Lyu. 2021b. Discovering new intents with deep
+aligned clustering. In Proceedings of the AAAI
+Conference on Artificial Intelligence, volume 35,
+pages 14365–14373.
+Hanlei Zhang, Hua Xu, Xin Wang, Fei Long, and
+Kai Gao. 2023. A clustering framework for unsu-
+pervised and semi-supervised new intent discov-
+ery. IEEE Transactions on Knowledge and Data
+Engineering, 36(11):5468–5481.
+Haode Zhang, Haowen Liang, Yuwei Zhang, Li-
+Ming Zhan, Xiao-Ming Wu, Xiaolei Lu, and Al-
+bert Lam. 2022a. Fine-tuning pre-trained lan-
+guage models for few-shot intent detection: Su-
+pervised pre-training and isotropization. In Pro-
+ceedings of the 2022 Conference of the North
+American Chapter of the Association for Compu-
+tational Linguistics: Human Language Technolo-
+gies, pages 532–542.
+Haode Zhang, Yuwei Zhang, Li-Ming Zhan, Ji-
+axin Chen, Guangyuan Shi, Xiao-Ming Wu, and
+Albert YS Lam. 2021c.
+Effectiveness of pre-
+training for few-shot intent classification. In Find-
+ings of the Association for Computational Lin-
+guistics: EMNLP 2021, pages 1114–1120.
+Yuwei Zhang, Haode Zhang, Li-Ming Zhan, Xiao-
+Ming Wu, and Albert Lam. 2022b. New intent
+discovery with pre-training and contrastive learn-
+ing. In Proceedings of the 60th Annual Meeting
+of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 256–269.
+Yunhua Zhou, Guofeng Quan, and Xipeng Qiu.
+2023. A probabilistic framework for discover-
+ing new intents.
+In Proceedings of the 61st
+Annual Meeting of the Association for Compu-
+tational Linguistics (Volume 1: Long Papers),
+pages 3771–3784.

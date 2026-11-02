@@ -1,0 +1,1418 @@
+Real-Time Textless Dialogue Generation
+Long Mai and Julie Carson-Berndsen
+ML-Labs, School of Computer Science, University College Dublin, Ireland
+long.mai@ucdconnect.ie, julie.berndsen@ucd.ie
+Abstract
+Recent advancements in large language mod-
+els (LLMs) have led to significant progress in
+text-based dialogue systems. These systems
+can now generate high-quality responses that
+are accurate and coherent across a wide range
+of topics and tasks. However, spoken dialogue
+systems still lag behind in terms of natural-
+ness. They tend to produce robotic interac-
+tions, with issues such as slow response times,
+overly generic or cautious replies, and a lack
+of natural rhythm and fluid turn-taking. This
+shortcoming is largely due to the over-reliance
+on the traditional cascaded design, which in-
+volve separate, sequential components, as well
+as the use of text as an intermediate represen-
+tation. This paper propose a real-time, textless
+spoken dialogue generation model (RTTL-DG)
+that aims to overcome these challenges. Our
+system enables fluid turn-taking and generates
+responses with minimal delay by processing
+streaming spoken conversation directly. Addi-
+tionally, our model incorporates backchannels,
+filters, laughter, and other paralinguistic signals,
+which are often absent in cascaded dialogue
+systems, to create more natural and human-like
+interactions. The implementations and gener-
+ated samples are available in our repository1.
+1
+Introduction
+The success of large general-purpose language
+models, such as ChatGPT and LLAMA, has led
+to significant advancements in various natural lan-
+guage processing (NLP) tasks, especially in chal-
+lenging tasks such as open-domain dialogue gen-
+eration. Chatbot applications like Replika (Rep-
+lika) and Character AI (CharacterAI) have demon-
+strated substantial progress in this sub-task, often
+achieving or surpassing human-level performance
+in terms of semantic coherence. Despite these ad-
+vancements, conversations with current chatbots
+often feel unnatural, especially in spoken interac-
+tions. This issue primarily arises from the design
+1https://github.com/mailong25/rts2s-dg
+of most chatbots, which prioritize generating well-
+written, formal responses, without incorporating
+informal conversational elements such as backchan-
+nels, laughter, and other paralinguistic cues. These
+elements are crucial for creating a more engaging,
+human-like experience.
+Most spoken-based systems rely on a cascade
+design, consisting of three distinct components:
+Automatic Speech Recognition (ASR), Dialogue
+Response Generation (DRG), and Text-to-Speech
+(TTS). This sequential structure introduces chal-
+lenges for providing a fluid, interactive conversa-
+tion, as it assumes turn-by-turn dialogue with no
+overlapping speech. In real-life conversations, how-
+ever, two people can speak simultaneously through
+parallel channels. Figure 1 shows an example of
+conversation with cascaded dialogue system. In
+this system, the dialogue context is often expanded
+sequentially where each speaker’s utterance is con-
+cated one after another (e.g., Speaker1-Speaker2-
+Speaker1). This forces the response generation
+model to wait for the user’s utterance to finish be-
+fore it can generate a response, often with a delay
+(e.g., 800ms). This results in slow and unnatural
+conversational flow. Additionally, the reliance on
+text as an intermediate representation introduces
+increased latency and complexity when integrat-
+ing multiple components. Generating spoken re-
+sponses based on text representations also limits
+the expressiveness of the speech.
+There is existing research on making spoken
+dialogue more naturalistic, including turn-taking
+prediction (Ekstedt and Skantze, 2022; Ishii et al.,
+2016), backchannel generation (Hara et al., 2018;
+Ishii et al., 2021), and duplex conversations (Lin
+et al., 2022). However, these approaches primarily
+use text as their input/output modality and focus
+more on task-oriented rather than open-domain gen-
+eration. The work most similar to ours is dGSLM
+(Nguyen et al., 2023), in which the authors propose
+a "textless" model capable of generating naturalis-
+arXiv:2501.04877v1 [cs.CL] 8 Jan 2025
+
+Figure 1: Examples of conversations with cascaded and real-time dialogue systems
+tic spoken dialogue given a conversational prompt
+between two speakers. However, this model can
+only generate dialogue offline, making it impracti-
+cal for real-world applications that require gener-
+ating instant responses from streaming conversa-
+tional input.
+To overcome these limitations, we propose a
+novel approach: a real-time, textless dialogue gen-
+eration model (RTTL-DG). Unlike traditional cas-
+cade systems, which require speech-to-text conver-
+sion before generating responses, our approach in-
+tegrates ASR and DRG into a unified model that di-
+rectly encodes spoken conversations. The encoded
+information is then used to predict the chatbot’s
+next action—such as remaining silent or speak-
+ing—at regular, short intervals (e.g., 160ms). This
+enables fluid turn-taking and faster response times.
+Moreover, our model generates speech units in-
+stead of text as the target output, resulting in more
+natural-sounding speech. In summary, the RTTL-
+DG model provides the following advantages:
+1. Real-time response generation. The RTTL-
+DG model provides near-instantaneous re-
+sponses by directly processing streaming in-
+put from conversations with minimal delay.
+2. Textless modeling. Our approach eliminates
+the need for text as an intermediate representa-
+tion, reducing latency introduced by the ASR
+system and simplifying the inference pipeline.
+3. Spontaneous expressions. The model gen-
+erates natural, coherent responses, including
+informal conversational elements such as hes-
+itations and laughters, which are essential for
+fostering human-like interactions.
+4. Fluid turn-taking.
+RTTL-DG enables
+smooth turn-taking in conversations, capable
+of handling interruptions and speech overlaps.
+5. Diverse response formats. The model pro-
+duces responses of varying lengths, from short
+back-and-forth phrases to long-form story-
+telling formats.
+Experimental results show that the proposed
+RTTL-DG model provides a more interactive and
+natural conversational experience. While it may
+slightly underperform in terms of semantic coher-
+ence compared to cascade models, it excels in
+naturalness, responsiveness, and fluidity. We be-
+lieve these advancements are crucial for developing
+more engaging and relatable chatbot systems. The
+RTTL-DG model holds significant potential across
+various domains, including companionship, ther-
+apy, customer service, and other areas that require
+human-like dialogue interactions.
+2
+RTTL-DG inference pipeline
+Figure 2 illustrates the process by which RTTL-DG
+generates responses during inference. The system
+comprises two main components: the Dialogue
+Manager and the Response Generator. Both mod-
+ules process continuous streaming speech inputs
+from both the user and the chatbot itself.
+At regular intervals (i.e., every 160 ms), the Dia-
+logue Manager determines the chatbot’s next action
+based on the most recent segment of the streaming
+input, truncated by a sliding context window (e.g.,
+the last 20 seconds). The Dialogue Manager must
+
+Figure 2: Inference pipeline of RTTL-DG
+select one of four possible actions: (1) Remain
+silent: the chatbot continues to listen without re-
+sponding, (2) Initiate speaking: the chatbot begins
+to generate a response, with the content provided
+by the Response Generator, (3) Keep speaking: if
+the chatbot is already speaking, this action directs it
+to continue its current utterance, (4) Stop speaking:
+if both the user and the chatbot are speaking si-
+multaneously, this action halts the chatbot’s speech.
+Actions (1) and (2) enable the chatbot to determine
+the optimal moment to respond, which does not
+necessarily rely on detecting the end of the user’s
+turn (e.g., a fixed period of silence). This flexibility
+allows the chatbot to provide timely feedback, such
+as backchannels, even while the user is still speak-
+ing. Meanwhile, actions (3) and (4) ensure smooth
+handling of interruptions, enabling the chatbot to
+adapt dynamically to user input without compro-
+mising the flow of conversation.
+When the Dialogue Manager decides to initi-
+ate a response, the Response Generator takes over.
+It uses the same input features as the Dialogue
+Manager-the most recent segment of the streaming
+conversation from both speakers. Instead of gener-
+ating traditional text-based responses, this model
+generates speech units. The discovery of these units
+is done by training a speech quantization model
+(i.e., HUBERT+KMeans (Hsu et al., 2021)) on a
+large amount of unlabeled speech audio. Using
+speech units allows the chatbot to generate more
+natural and dynamic expressions, including ele-
+ments such as pauses, hesitations, backchannels,
+and even laughter. Once the Response Generator
+generates the speech units, a unit-to-speech model
+converts them into a final spoken response.
+3
+RTTL-DG architecture
+Figure 3 illustrates the model architecture of RTTL-
+DG, which comprises two main components: an
+encoder and a decoder.
+The encoder is designed as a streaming causal
+transformer, tasked with processing the continu-
+ous speech input from each speaker. It includes a
+convolutional feature extractor followed by eight
+transformer encoder layers. The convolutional fea-
+ture extractor converts raw audio signals into a
+sequence of hidden states with dimensions RT×D,
+where T represents the number of timesteps (or
+sequence length), and D is the hidden dimension,
+set to 768. Each timestep corresponds to a 20ms
+segment of audio. The transformer encoder layers
+further refine these hidden states into contextual
+representations. To improve efficiency, the number
+of timesteps is progressively reduced by merging
+two adjacent hidden states after layers 2, 4, and
+6. This reduction not only speeds up computation
+but also enhances the semantic richness of the hid-
+den states. Since the model processes streaming
+input, causal masking is applied to ensure that the
+encoder layers do not access future information.
+The final output of the encoder for each speaker
+has dimensions R(T/8)×D. Positional embeddings
+and speaker embeddings, both with dimensions
+R(T/8)×D, are then added to the encoder outputs
+to incorporate temporal and speaker-specific in-
+formation. As the outputs from each speaker are
+time-aligned, they can be concatenated to produce
+the final encoder output R(T/8)×2D. Each timestep
+in this final representation corresponds to a 160ms
+chunk of speech, containing encoded information
+from both speakers. We initialize the encoder us-
+
+Figure 3: Model architecture of RTTL-DG
+ing a pre-trained HUBERT model (Nguyen et al.,
+2023), which was trained on 2000 hours of the
+Fisher dataset (Cieri et al., 2004).
+The decoder plays a dual role as the Dialogue
+Manager and the Response Generator. It takes the
+streaming input R(T/8)×2D and, at every 160ms
+interval, determines the next action of the chatbot,
+while also generating the content of its response
+if required. The decoder architecture consists of
+an embedding layer, eight transformer decoder lay-
+ers, and a projection language model head. The
+embedding layer converts input token indices into
+embeddings with dimensions RS×2D, where S is
+the target sequence length and 2D is the hidden di-
+mension. These embeddings are passed through the
+decoder layers, which extract contextual informa-
+tion and attend to the encoder outputs R(T/8)×2D
+from both speakers. The final contextualized de-
+coder hidden states, with dimensions RS×2D, are
+projected into RS×V by the language model head,
+where V is the vocabulary size. The vocabulary in-
+cludes special tokens for representing the chatbot’s
+next actions: padding (0), beginning of response
+[BOS] (1), end of response [EOS] (2), remain silent
+(3), continue speaking (4), start speaking (5), and
+stop speaking (6). The remaining token indices in
+the vocabulary represent the content of the chat-
+bot’s verbal response. More specifically, when the
+Dialogue Manager decides that the chatbot should
+initiate a speech, the first token generated by the
+decoder should be 5, followed by tokens that form
+the chatbot’s verbal response.
+4
+Training data for RTTL-DG
+Figure 4 illustrates example pairs of training sam-
+ples used for training the RTTL-DG model. As
+mentioned earlier, for each interval (i.e., 160 ms),
+there is a training pair of (input, output). The input
+is the preceding truncated conversation from both
+speakers, which is then encoded using the encoder
+introduced in Section 3. The output is a sequence
+of tokens containing two types of information: the
+next action and the response content.
+The first token in the output represents the next
+action (e.g., 3 indicates remaining silent, and 5 in-
+dicates initiating a response). To assign the next
+action label for each input, we rely on its last seg-
+ment (slast), which is the last 160ms chunk of the
+input. For each speaker, we first use voice activity
+detection (VAD) (Gao et al.) to identify speech seg-
+ments (SE) and silent segments (SI). If slast falls
+entirely within a silent segment, the next action is
+labeled as remaining silent. If slast lies completely
+within a speech segment, the action is labeled as
+continuing to speak. When slast marks the begin-
+ning of a speech segment, the action is labeled as
+initiating speech. If slast occurs at the end of a
+speech segment and there is overlapping speech
+between the two speakers, the action is labeled as
+stop speaking.
+If a response is initiated, the subsequent tokens
+in the output represent the response content. In-
+
+Figure 4: An example of how a training sample is constructed for RTTL-DG
+stead of using text tokens for the target response,
+we use speech units extracted from a pre-trained
+speech quantization model (i.e., HUBERT+K-
+means) (Nguyen et al., 2023). This approach en-
+ables the generation of more natural and expressive
+speech, including representations of non-verbal
+units such as laughter, pauses, and hesitations. To
+reduce the target response length and increase the
+semantic richness of each token, we apply dedu-
+plication (collapsing consecutive identical tokens
+into one) followed by byte-pair encoding to merge
+adjacent tokens into larger units. This significant
+reduction in output length facilitates faster response
+generation, thereby lowering overall response la-
+tency.
+We use the Switchboard-2 Phase II corpus (God-
+frey et al., 1992) to generate the training dataset.
+This dataset consists of 4,472 five-minute telephone
+conversations between two speakers discussing var-
+ious topics, such as jobs, hobbies, and movies. As
+shown in Table 1, the amount of data in Switch-
+board is relatively limited—approximately 372
+hours. This small dataset presents significant chal-
+lenges for modeling open-domain response genera-
+tion, which typically requires millions of training
+instances (Roller et al., 2020). To address this prob-
+lem, we propose a two-stage approach: first, pre-
+training the RTTL-DG model on a synthetic dataset
+to learn the response generation task, and then fine-
+tuning it on Switchboard data to adapt to the next
+action prediction task.
+To create the synthetic dataset, we leverage the
+abundance of text-based two-party conversations.
+Initially, we extract 91,796 five-turn conversations
+from several datasets, including BlendedSkillTask
+(Roller et al., 2020), ConvAI (Logacheva et al.,
+2018), TopicalChat (Gopalakrishnan et al., 2023),
+EmpatheticDialogues (Rashkin et al., 2018), and
+WizardOfWikipedia (Dinan et al., 2018). We then
+use GPT-4o to extend each conversation by gen-
+erating an additional 35 turns. Finally, a text-to-
+speech model is used to convert these extended
+text-based conversations into speech-based conver-
+sations, resulting in 5,798 hours of synthetic data,
+with an average duration of four minutes per con-
+versation. The text-to-speech model employed is
+a multi-speaker VITS2 model (Kong et al., 2023),
+trained using Switchboard data to ensure minimal
+differences between the synthetic and real datasets.
+5
+Experiment settings
+This section describes the setups we use to build
+and evaluate the proposed real-time dialogue gen-
+eration models. We also describe the baseline cas-
+caded model used for comparison.
+5.1
+Evaluation metrics
+There are two settings we use to evaluate the di-
+alogue generation model: single-turn and multi-
+turn settings. In the single-turn setting, we provide
+the model with a spoken dialogue context and ask
+it to predict the next action and response. In the
+multi-turn one, we provide the model with a seeded
+
+Dataset
+Hours
+Number of
+dialogues
+Number of
+speakers
+Training instances
+per conversation
+Response
+length
+SIL
+CON
+SPK
+STP
+Switchboard
+372
+4472
+679
+1751
+1395
+112
+70
+2.8s
+Synthetic
+5798
+91796
+300
+1509
+1287
+41
+0
+4.9s
+Table 1: Summary of the characteristics of synthetic and real datasets. SIL, SPK, CON, and STP denote Remain
+Silent, Initiate Speaking, Keep Speaking, and Stop Speaking, respectively.
+conversation between two speakers and ask it to
+complete the conversation for the next 30 seconds.
+Single-turn metrics. As mentioned earlier, at reg-
+ular intervals (i.e., every 160 ms), the model de-
+termines the chatbot’s next action and generates
+response content based on the most recent stream-
+ing input. For the next action recognition task, we
+evaluate the model using Precision, Recall, and F1-
+score metrics. These metrics assess how effectively
+the model predicts one of four possible actions:
+remain silent (SIL), initiate speaking (SPK), keep
+speaking (CONT), or stop speaking (STP). The pre-
+dictions are compared against ground-truth labels
+derived from the Switchboard test set, providing a
+benchmark for measuring the model’s performance
+in understanding and managing conversational flow.
+For the response generation task, we evaluate the
+model’s performance in terms of semantic coher-
+ence and naturalness. Semantic coherence mea-
+sures how logical and relevant the generated re-
+sponses are within the dialogue context. To assess
+coherence, we provide GPT-4o with a dialogue
+context and a generated response, then prompt it to
+assign a coherence score on a scale from 1 (worst)
+to 10 (best). We report the average coherence score,
+along with the percentage of responses rated as sen-
+sible—those with a coherence score of 5 or higher.
+We use Whisper (Radford et al., 2022) to transcribe
+the spoken context and response into text before
+prompting GPT-4o for coherence assessment.
+To evaluate the naturalness of the spoken re-
+sponses, we use the following metrics:
+1. Pitch/Energy
+standard
+deviation
+(PSTD/ESTD).
+Measures
+variation
+in
+pitch and energy levels.
+Higher values
+indicate more dynamic and natural-sounding
+speech with tonal variation.
+2. Words per minute (WPM). Tracks the pace
+of speech. A natural speaking speed varies by
+context, and speaking too fast or too slowly
+can sound unnatural.
+3. Filler words per minute (FWPM). Measures
+the frequency of filler words like "um" or
+"uh." While occasional fillers are normal in
+speech, excessive use can make the speaker
+sound hesitant.
+4. Repetitions per minute (RPM). Tracks re-
+peated words or phrases. Some repetition
+is natural, but excessive repetition can make
+speech feel redundant or robotic.
+5. Laughs/breaths per minute (LPM/BPM).
+Measures the frequency of laughter and
+breaths in speech. Occasional laughter and
+breathing contribute to naturalness, but exces-
+sive amounts can seem forced.
+6. Silence per minute (SPM). Measures the av-
+erage length of pauses. Short pauses are nat-
+ural, but too many or too few can disrupt the
+speech flow.
+For each response generated by the cascaded and
+RTTL-DG models, we calculate the above metrics
+and average them across the entire test set. We
+then compute the same metrics for the ground truth
+(i.e. human-generated responses). A more effective
+model, in terms of naturalness, should generate
+statistics that more closely align with the ground
+truth. We use PRAAT software to calculate pitch
+and energy standard deviation. We prompt GPT-4o
+to count the number of filler words and repetitions
+in the transcribed text of each spoken response. For
+laughter and breathing events, we use a publicly
+pre-trained model based on the AudioSet dataset
+(Hershey et al., 2017).
+Multi-turn metrics.
+To assess chatbot perfor-
+mance across multiple conversational turns, we
+analyze interactions that mimic realistic dialogue
+scenarios. While deploying chatbots to engage
+with human participants offers valuable insights,
+
+this approach can be resource-intensive and time-
+consuming. To address this challenge, we employ a
+self-chat evaluation method. Starting with a seeded
+dialogue context, we proceed a conversation be-
+tween two chatbots (based on the same model) that
+interact with each other for a set duration (i.e., 30
+seconds). The resulting conversations are analyzed
+to evaluate how well the model performs in terms
+of naturalness, assessing its ability to approximate
+human-like dialogues. This method enables scal-
+able testing and generates diverse conversational
+data without extensive human intervention.
+Building on prior research (Nguyen et al., 2023),
+we evaluate conversational naturalness using met-
+rics such as overlap frequency, back-channels,
+pauses, and average gap durations. Figure 5 il-
+lustrates examples of these metrics. We first apply
+VAD on the generated speech for each speaker. An
+Inter-Pausal Unit (IPU) is defined as a continuous
+segment of speech from one speaker. Successive
+IPUs separated by silences of less than 400 ms
+from the same speaker are grouped into a single
+turn. Within each turn, pauses are identified as
+silent segments lasting longer than 200 ms. Overlap
+refers to segments where both speakers are talking
+simultaneously. A specific type of overlap, called
+back-channeling, occurs when one speaker’s short
+IPUs (less than 1 second) are entirely contained
+within the other speaker’s turn, such as brief ac-
+knowledgments ("mm-hmm," "okay"). Gaps are
+defined as the silent intervals between turns from
+two different speakers. Gaps are also interpreted
+as latency, representing the time it takes for the
+next speaker to respond after the current speaker
+completes their turn. For overlaps, back-channels,
+and pauses, we count their occurrences per minute
+of conversation. For gaps, we calculate the average
+duration in milliseconds. These metrics provide
+a comprehensive framework to quantify the con-
+versational dynamics and naturalness of chatbot
+interactions.
+5.2
+Baselines
+We use a traditional cascaded dialogue generation
+model for comparison. This model consists of three
+main components: (1) an ASR system, which tran-
+scribes spoken dialogue context into text; (2) a text-
+based response generation model, which produces
+a next response based on the transcribed context;
+and (3) a TTS model, which converts the gener-
+ated text responses back into speech. For the ASR
+system, we employ the state-of-the-art Whisper-
+Medium model (Radford et al., 2022). The text-to-
+speech component uses the multi-speaker VITS2
+model, which is the same model described in Sec-
+tion 4. The text-based response generation model is
+a transformer encoder-decoder, initially trained on
+synthetic conversational data and later fine-tuned
+on the Switchboard dataset.
+Details about the
+dataset are provided in Section 4.
+For single-turn evaluation, we assess the cas-
+caded model’s performance on response generation
+using semantic coherence and naturalness scores.
+In multi-turn evaluation, the cascaded model gen-
+erates self-chat conversations sequentially. This
+means that the second speaker begins responding
+only after the first speaker has completed their turn.
+To detect the end of a speaker’s turn, we apply a
+simple heuristic rule based on a fixed silence thresh-
+old of 800 ms, following the approach described in
+(Lin et al., 2022). Specifically, if there is a silence
+of 800 ms after a speaker finishes, it is considered
+the end of their turn, allowing the second speaker
+to proceed with generating their response.
+5.3
+Training configuration
+We used the Huggingface toolkit to train all the
+models. For the RTTL-RG model, the encoder
+was initialized with a pre-trained HuBERT model
+trained on the Fisher dataset (Nguyen et al., 2023),
+while the decoder was randomly initialized. The
+encoder and decoder were configured with 8 layers
+each. The hidden dimensions were set to 768 for
+the encoder and 1536 for the decoder. The same
+hyperparameters were applied to the cascaded text-
+based response generation model.
+Pretraining the RTTL-RG model on the synthetic
+dataset took approximately three days, and fine-
+tuning it on the Switchboard dataset required an
+additional day. Both processes were carried out
+using a single NVIDIA H100 GPU.
+6
+Experiment results
+We present a detailed analysis of the performance
+and behavior of our proposed dialogue models
+through comprehensive experiments. The evalu-
+ation encompasses several key aspects, including
+next action prediction, semantic coherence, and
+naturalness of generated responses and dialogues.
+Examples of the generated outputs are available in
+our repository2.
+2https://mailong25.github.io/rts2s-dg
+
+Figure 5: Multi-turn evaluation metrics: (IPU)-Interpausal Unit, (T)-Turn, (P)-Pause, (G)-Gap, (O)-Overlap, and
+(BC)-Backchannel.
+Next action
+Support
+Precision
+Recall
+F1-score
+Remain silent
+1751
+0.81
+0.89
+0.85
+Keep speaking
+1539
+0.94
+0.96
+0.95
+Initiate speaking
+112
+0.62
+0.43
+0.52
+Stop speaking
+42
+0.75
+0.53
+0.62
+Table 2: Next action prediction results for single-turn evaluation on Switchboard test set.
+6.1
+Next action prediction
+Table 2 shows the results for next action predic-
+tion on Switchboard test set. The Dialogue Man-
+ager demonstrates excellent performance in pre-
+dicting the "Remain Silent" and "Keep Speaking"
+actions, with F1-scores of 0.85 and 0.95, respec-
+tively. These results reflect the system’s proficiency
+in managing conversational continuity. The "Keep
+Speaking" action exhibits the highest F1-score, in-
+dicating the system excels at maintaining speech
+continuity when appropriate. The high precision
+(0.94) and recall (0.96) suggest the model effec-
+tively identifies when to continue speaking without
+unnecessary interruptions. This task is relatively
+straightforward, as the system often decides to keep
+speaking based on the presence of ongoing self-
+generated speech in recent intervals. Challenges
+primarily arise in scenarios with prolonged overlap-
+ping speech, y novel ideas are underrepresented the
+system must decide between continuing or halting.
+However, such scenarios are relatively rare in nat-
+ural conversations, mitigating their overall impact
+on performance. Similarly, the model performs
+well in predicting when to remain silent, achieving
+a strong recall of 0.89, indicating that it frequently
+identifies opportunities to withhold responses ap-
+propriately. However, its slightly lower precision
+(0.81) suggests occasional over-prediction of si-
+lence, where the chatbot remains silent even when
+a response might be warranted. This behavior could
+occasionally hinder conversational engagement.
+In contrast, the system struggles with predict-
+ing the "Initiate Speaking" and "Stop Speaking"
+actions, which are critical for maintaining adaptive
+and timely conversational responses. Predicting
+when to begin speaking is the most challenging
+task, with a precision of 0.62 and a recall of 0.43.
+When observing the confusion matrix, we found
+that a significant number of "Initiate Speaking" in-
+stances were misclassified as "Remain Silent," lead-
+ing to missed opportunities for initiating responses.
+This issue can create awkward conversational si-
+lences or delays in the chatbot’s contributions, neg-
+atively affecting conversational flow. Multiple fac-
+tors contribute to this challenge. The limited num-
+ber of training examples (only 112 instances per
+conversation) restricts the model’s ability to learn
+from these cases. Furthermore, open-domain con-
+versations lack definitive rules for when to begin
+speaking or provide backchannels, and individual
+differences in speaking styles further increase the
+variability and noise in ground-truth labels.
+Moderate performance is observed for the "Stop
+Speaking" action, with a precision of 0.75 and a
+recall of 0.53. While the system has some capacity
+to recognize when to halt speech, particularly in
+response to interruptions or overlapping dialogue,
+errors are prevalent in distinguishing "Stop Speak-
+ing" from "Keep Speaking." Such misclassifica-
+tions highlight the challenges of managing inter-
+ruptions effectively, which could lead to the chatbot
+
+Datasets
+Models
+Coherence
+Sensible responses
+Synthetic
+Cascaded
+6.6
+69%
+RTTL-DG
+5.2
+45%
+Switchboard
+Cascaded
+6.4
+69%
+RTTL-DG
+4.8
+48%
+Table 3: Response generation result for a single-turn evaluation
+Models
+Target response types
+Coherence
+Cascaded
+Speech units
+5.6
+Texts
+6.6
+RTTL-DG
+Speech units
+5.2
+Texts
+6.2
+Table 4: Performance of response generation with different target responses on a synthetic test set
+either talking over the user or stopping unnecessar-
+ily, both of which disrupt conversational fluidity.
+A major factor contributing to the system’s chal-
+lenges is the significant imbalance in class distri-
+bution. Actions like "Initiate Speaking" and "Stop
+Speaking" are underrepresented compared to the
+dominant "Remain Silent" and "Keep Speaking"
+classes. This imbalance limits the model’s ability
+to generalize effectively for the rarer actions, as
+evidenced by their lower performance metrics. Ad-
+dressing this imbalance through techniques such
+as advanced data augmentation techniques, resam-
+pling, or the use of loss functions tailored for imbal-
+anced datasets could improve model performance.
+6.2
+Semantic evaluation results
+Table 3 shows the semantic evaluation results for
+response generation task. As can be seen, both the
+Cascaded and RTTL-DG models achieve moder-
+ate coherence and sensible response scores, with
+room for improvement. The coherence scores for
+the Cascaded model are 6.6 and 6.4 for the syn-
+thetic and Switchboard datasets, respectively, while
+the RTTL-DG model achieves lower scores of 5.2
+and 4.8 for the same datasets. These scores are
+still relatively modest, which likely reflects the lim-
+ited size of the training data—both synthetic and
+real—which are far smaller in scale than the large
+datasets used for training recent state-of-the-art di-
+alogue models. This suggests that larger, more
+diverse datasets could improve the performance of
+both models.
+In terms of sensible responses, the Cascaded
+model consistently outperforms the RTTL-DG
+model, with scores of 69% and 69% on the syn-
+thetic and Switchboard datasets, respectively. The
+RTTL-DG model lags behind, with sensible re-
+sponse rates of 45% and 48% for the same datasets.
+The lower sensible response rates for RTTL-DG
+can be attributed to the complexity of the model,
+which generates speech units that include pauses,
+hesitations, and other dynamic speech features.
+This adds complexity to the generation process,
+which may impact coherence and the model’s abil-
+ity to produce contextually appropriate responses.
+Interestingly, both models perform better when
+trained and evaluated on synthetic data as opposed
+to real-world datasets like Switchboard. This is
+likely because synthetic data is cleaner, more struc-
+tured, and better organized, allowing the models to
+more easily learn patterns and generate coherent
+responses. In contrast, real-world data is inherently
+noisier, more variable, and often more challeng-
+ing for models to handle effectively, which can
+account for the lower performance on the Switch-
+board dataset.
+To understand why the cascaded model outper-
+forms the RTTL-DG model in terms of coherence,
+we conducted an ablation study on different types
+of target responses used to train the response gen-
+eration model on the synthetic dataset, as shown
+in Table 4. When using the same type of target re-
+sponse, the cascaded model outperforms the RTTL-
+DG model for both text-based and unit-based re-
+sponses. This suggests that using text as an inter-
+mediate representation enhances encoding perfor-
+mance, resulting in better coherence scores. How-
+ever, it should be noted that this approach may in-
+crease latency, as an external streaming ASR model
+must be used as a frontend, often causing signifi-
+cant delays.
+When comparing different types of target re-
+
+where are you
+Units 1
+45, 198, 117, 5, 61, 54, 44, 143, 196, 79, 37, 121, 40, 152, 97, 151, 175, 107, 88, 66, ..
+Units 2
+45, 198, 117, 44, 85, 115, 196, 79, 37, 121, 40, 186, 152, 97, 151, 175, 107, 88, 66, ..
+yeah i am sure
+Units 1
+45, 198, 5, 87, 61, 81, 115, 196, 97, 100, 68, 142, 28, 17, 75, 3, 101, 34, 126, 56, 121, ..
+Units 2
+45, 198, 117, 44, 85, 115, 154, 196, 100, 68, 142, 28, 17, 75, 3, 101, 34, 126, 121, 40, ..
+Table 5: Examples of speech unit representations from two different speakers when they utter the same sentence.
+PSTD
+ESTD
+WPM
+FWPM
+RPM
+LPM
+BPM
+SPM
+Cascaded
+30.40
+0.014
+213
+24.00
+1.30
+0.00
+0.00
+0.54s
+RTTL-DG
+32.20
+0.019
+172
+23.20
+6.40
+0.50
+0.22
+1.66s
+Ground Truth
+53.20
+0.022
+183
+21.10
+7.70
+1.08
+2.02
+4.17s
+Table 6: Comparison between RTTL-DG and Cascaded in terms of naturalness on the Switchboard test set. PSTD
+and ESTD refer to the standard deviation of pitch and energy, respectively. WPM, FWPM, RPM, LPM, BPM, and
+SPM represent the average number of words, filler words, repetitions, laughs, and breaths per minute, respectively.
+SPM also refers to the average silence duration (in seconds) per minute.
+sponses, we observed that switching from text-
+based to unit-based responses significantly reduces
+coherence scores—from 6.6 to 5.6 in the cascaded
+system. Similar results were observed in the RTTL-
+DG model. This indicates that the use of unit-
+based responses is the primary reason RTTL-DG
+underperforms compared to the cascaded model,
+as previously shown in Table 3. This discrepancy
+can be attributed to the variability in speech unit
+representations. Factors such as speaker identity,
+rhythm, pitch, and energy introduce acoustic vari-
+ability, making unit-based representations incon-
+sistent. Evidence for this is provided when we
+compare the unit error rate between two speakers
+saying the same content across 156 sample pairs.
+The unit error rate is notably high at 50%, indi-
+cating significant variability in the representations.
+This variability complicates modeling, especially
+when training data is limited. Table 5 shows exam-
+ples of variability in the speech units.
+6.3
+Naturalness evaluation results
+Tables 6 and Table 7 present the results of natu-
+ralness evaluations for dialogue generated by the
+cascaded model and the RTTL-DG model on real
+dataset. As shown in Table 6, RTTL-DG outper-
+forms the Cascaded model across all naturalness
+metrics in the single-turn evaluation. Specifically,
+RTTL-DG generates more natural speech varia-
+tions, with pitch and energy standard deviations
+closer to the ground truth. It also effectively repli-
+cates natural speech disfluencies such as repeti-
+tions, breathing, and laughter—features that the
+Cascaded model struggles to imitate. Additionally,
+RTTL-DG adjusts speech rate and pauses to bet-
+ter align with human speech, making its responses
+sound more natural and less robotic compared to
+the faster, more monotonous speech of the Cas-
+caded model. These improvements are largely due
+to RTTL-DG’s use of speech units as target re-
+sponses, which enables more natural outputs.
+In multi-turn evaluations, RTTL-DG also demon-
+strates superior performance compared to the cas-
+caded system across all metrics, closely aligning
+with results observed on real data. The cascaded
+model, by design, produces alternating speech turns
+without overlaps, back-channels, or pauses, result-
+ing in rigid, mechanical interactions. Furthermore,
+the cascaded system exhibits a significant average
+gap or latency of 800ms between turns. This delay
+can cause substantial user frustration and make the
+interaction feel unnatural when deployed in real-
+world scenarios. In contrast, the RTTL-DG model
+excels in generating overlaps, pauses, and back-
+channels—often at a frequency even higher than
+that of real conversations. The average gap duration
+in RTTL-DG-generated dialogues is notably lower
+at 393ms, compared to 518ms in real data. This
+suggests that responses are generated quickly and
+fluidly. This efficiency arises because RTTL-DG
+can begin formulating responses before the other
+speaker has finished speaking. Additionally, RTTL-
+DG-generated gaps are more stable and exhibit
+lower variance compared to those in real conversa-
+
+Conversations
+Number of occurrence per minute
+Average gap
+Overlaps
+Backchannels
+Pauses
+Cascaded
+0
+0
+0
+800ms
+RTTL-DG
+5.7
+2.1
+12.2
+393ms
+Ground-truth (Switchboard)
+4.3
+1.3
+4.4
+518ms
+Table 7: Naturalness evaluation results in a multi-turn setting
+Training set
+Next action prediction
+Response generation
+SIL
+SPK
+CON
+STP
+ACC
+Coherence
+Sensible
+Cascaded
+Switchboard
++ Pretraining
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+5.8
+6.6
+59%
+69%
+RTTL-DG
+Switchboard
++ Pretraining
+0.85
+0.85
+0.49
+0.52
+0.95
+0.95
+0.63
+0.63
+0.83
+0.85
+4.8
+5.2
+39%
+45%
+Table 8: Effectiveness of pretraining on next action prediction and response generation task. SIL, SPK, CON,
+STP, and ACC denote Remain Silent, Initiate Speaking, Keep Speaking, Stop Speaking, and Overall Accuracy,
+respectively
+tions, where gaps can range from extremely short
+to several seconds, skewing the average duration
+upward.
+6.4
+Effectiveness of pretraining on synthetic
+data
+We evaluated how pre-training on synthetic data
+impacts the overall performance for both the Cas-
+caded and RTTL-DG models. As shown in Table
+8, pre-training with synthetic data significantly im-
+proved the response generation task for the RTTL-
+DG model, increasing the coherence score from
+4.8 to 5.2. Notably, this improvement in response
+generation also enhanced the next action prediction
+task, with the accuracy score rising from 83% to
+85%. This suggests that understanding the conver-
+sation’s semantics plays a crucial role in turn-taking
+decisions.
+Similarly, a more substantial improvement was
+observed in the Cascaded model. This can be at-
+tributed to the fact that the Cascaded model uses
+text as the target response, which is the same for
+both the pre-training and fine-tuning stages. In con-
+trast, the RTTL-DG model uses speech units as
+the target response, leading to some discrepancies
+between pre-training and fine-tuning. This is be-
+cause the speech units in synthetic speech might
+not consistently align with the real speech units, as
+mentioned earlier.
+Overall, pre-training on synthetic data resulted in
+significant improvements for the RTTL-DG model,
+suggesting that expanding the training data or de-
+signing more effective synthetic data generation
+and augmentation techniques could lead to further
+advancements.
+7
+Related works
+Current spoken dialogue systems, while advanced
+in many aspects, still fall short of achieving the
+naturalness characteristic of human conversation.
+Their responses tend to lack the fluidity and spon-
+taneity of human speech, frequently sounding
+stilted and overly formal. As most spoken sys-
+tems are built on a cascaded design consisting
+of three separate components—ASR, DRG, and
+TTS—they have difficulty managing natural turn-
+taking, such as handling interruptions and inter-
+preting non-verbal cues, which disrupts the flow
+of interactions. Several approaches have been pro-
+posed to enhance conversational fluidity, and effec-
+tive turn-taking to improve the naturalness and user
+experience.
+7.1
+Turn-taking modeling
+Turn-taking is a fundamental aspect of human con-
+versation, enabling seamless and intuitive interac-
+tions. Nothdurft et al. (Nothdurft et al., 2014)
+emphasized the challenges involved in modeling
+turn-taking, exploring questions such as whether it
+is necessary, when it should be incorporated into
+ongoing interactions, and how it should be imple-
+mented. Traditional dialogue systems often rely on
+simplistic mechanisms such as fixed silence thresh-
+olds to determine turn shifts, which can result in
+awkward pauses, interruptions, or overly long re-
+sponses that disrupt the conversational flow. Turn-
+
+taking modeling refers to the process of predicting
+and managing when each participant in a conver-
+sation should speak or respond. Instead of relying
+solely on silence indicators, modern approaches in-
+corporate a variety of cues to enhance turn-taking
+accuracy. Lexico-syntactic cues involve analyzing
+the structure and choice of words to predict when a
+speaker is about to finish their turn (Gravano and
+Hirschberg, 2011). Schlangen et al. (Schlangen,
+2006) identify word-final pitch and intensity lev-
+els, along with N-grams-based features, as potent
+predictors for turn-taking. Building on this foun-
+dation, Atterer et al. (Atterer et al., 2008) enhance
+the accuracy of classifying words as utterance-final
+or non-final. They highlight features, specifically
+word and part-of-speech n-grams, as the most im-
+portant features. Prosody, namely, the rhythm and
+intonation of speech, provides crucial information
+about the speaker’s emotional state and intent, help-
+ing the system to determine natural points for turn
+transitions. Erik et al. (Ekstedt and Skantze, 2022)
+train voice activity projection models using an ex-
+tensive dataset of two-person conversations to cap-
+ture prosodic features relevant to turn-taking. They
+also conduct various analyses to show when and
+how prosodic information is crucial for predicting
+turn-taking. Gaze direction and other non-verbal
+cues, such as facial expressions and gestures (Ishii
+et al., 2016), also play a significant role in human
+communication and are increasingly being used to
+inform turn-taking decisions in dialogue systems.
+7.2
+Back-channel generation
+In human conversations, back-channel responses
+are crucial because they provide real-time feed-
+back to the speaker, indicating that the listener
+is attentive, understanding, and emotionally en-
+gaged. Examples of back-channel cues include
+short phrases like "mm-hmm," "yeah," and other
+non-verbal sounds of acknowledgment. Without
+these signals, conversations can feel one-sided and
+mechanical, significantly diminishing the overall
+user experience.
+Backchannel (BC) prediction is the task of identi-
+fying appropriate moments for a listener to provide
+feedback and determining the type of feedback to
+be given. This involves two tasks: Backchannel
+Opportunity Prediction (BOP) and Backchannel
+Category Prediction (BCP). BOP identifies when
+a backchannel response is appropriate, while BCP
+classifies the type of response. Approaches have
+evolved from rule-based systems to advanced neu-
+ral networks. Early influential work by Ward et al.
+(Ward and Tsukahara, 2000) and Fujie et al. (Fujie
+et al., 2005) relied on acoustic features like pitch
+and pause length, with Mel Frequency Cepstral
+Coefficients (MFCCs) becoming standard mea-
+sures. The integration of lexical features, initially
+through simple embeddings like Word2Vec, led to
+state-of-the-art performance (Ortega et al., 2020).
+Combining acoustic and lexical features, especially
+with pre-trained models like BERT, has further im-
+proved accuracy (Jang et al., 2021). Multi-task
+learning approaches (Hara et al., 2018; Ishii et al.,
+2021), which combine BC prediction with related
+tasks like emotion classification and turn-taking
+prediction, have highlighted the benefits of lever-
+aging the multifaceted nature of dialogue for more
+accurate BC prediction.
+7.3
+Duplex conversation modeling
+Duplex conversation modeling integrates turn-
+taking and back-channel generation, which aims to
+make the conversational experience as seamless as
+possible, allowing people to speak as they would
+with another person. For instance, Google Duplex
+integrates back-channel responses like "um-hum"
+and "well..." into its dialogue system for booking
+restaurants, which greatly improves the natural flow
+of conversations. Jin et al. (Jin et al., 2021) present
+an outbound agent that can detect user interruptions
+and fragmented speech, while Microsoft Xiaoice
+(Zhou et al., 2020) features a rhythm control mod-
+ule to enhance turn-taking in intelligent assistants.
+Similarly, Alibaba’s Duplex Conversation system
+(Lin et al., 2022), a multi-turn, multimodal spo-
+ken dialogue system, facilitates smooth telephone-
+based interactions through three key subtasks: user
+state detection, back-channel selection, and barge-
+in detection.
+7.4
+End-to-end duplex dialogue systems
+A cascaded duplex conversation model compris-
+ing multiple modules—such as ASR, DG, TTS,
+turn-taking prediction, and BC generation—can
+encounter several weaknesses. These include in-
+creased latency from processing delays in each
+module, error propagation where mistakes in one
+component affect the entire system, and complex-
+ity in coordinating between modules. Addition-
+ally, since each module is typically trained inde-
+pendently using different datasets, there can be
+significant inconsistencies and discrepancies in dis-
+tribution when integrating them together, especially
+
+when the output of one model serves as the input
+for another module. Finally, the model can be
+resource-intensive and inflexible, demanding sub-
+stantial computational power, memory, and storage,
+which can lead to overhead in system development
+and maintenance.
+Recent approaches have focused on integrating
+all modules into a single, unified model, trained in
+an end-to-end fashion whereby all tasks are opti-
+mized jointly. In task-oriented dialogue systems,
+end-to-end spoken language understanding systems
+predict utterance semantics directly from speech
+using a single model, eliminating the need for a
+separate speech recognition model. The Speech
+and Language Model (SLM) integrates a pretrained
+speech model with a LLM into a unified frame-
+work, enabling direct processing of audio inputs
+and language outputs. A retrieval-augmented SLM
+builds on the SLM by incorporating a retrieval
+mechanism to address the challenge of recognizing
+domain-specific entities, allowing dialogue states
+to be inferred directly from the audio signal. These
+end-to-end models reduce latency, minimize er-
+ror propagation, and simplify system coordination.
+In open-domain dialogue systems, Tu et al. in-
+troduced dGSLM (Nguyen et al., 2023), the first
+"textless" model capable of generating naturalis-
+tic spoken dialogue from a conversation prompt
+between two speakers. The model leverages re-
+cent advancements in unsupervised spoken unit
+discovery (Lakhotia et al., 2021). It employs a dual-
+tower transformer architecture and is trained on
+2,000 hours of two-channel raw conversational au-
+dio from the Fisher dataset (Cieri et al., 2004), with-
+out any accompanying text or labels. The trained
+model generates speech, laughter, and other par-
+alinguistic signals in both channels simultaneously,
+producing more natural and fluid turn-taking com-
+pared to text-based cascaded models. However,
+the semantic coherence of the generated dialogue
+remains low, and the model can only produce re-
+sponses offline. This limitation makes it challeng-
+ing to deploy in real-world chatbot applications
+that require real-time response generation based on
+the user’s audio input.
+To address these challenges, many recent meth-
+ods (Défossez et al., 2024; Xie and Wu, 2024;
+Wang et al., 2024; Zeng et al., 2024; Zhang et al.,
+2024; Meng et al.; Chen et al., 2024) have been pro-
+posed, leveraging powerful pretrained LLMs to en-
+hance the semantic quality of responses. These ap-
+proaches also integrate speech or acoustic tokens to
+improve the naturalness and expressiveness of gen-
+erated speech. Additionally, these next-generation
+models demonstrate full-duplex capabilities, en-
+abling seamless turn-taking and significantly lower
+latency compared to traditional cascaded models.
+8
+Conclusion
+This paper focuses on improving the responsive-
+ness and expressiveness of spoken dialogue genera-
+tion. Unlike traditional cascaded dialogue systems,
+which generate conversations in a turn-by-turn man-
+ner, we introduce a real-time textless dialogue gen-
+eration model. This model is designed to produce
+faster, more natural responses by incorporating con-
+versational elements such as pauses, hesitations,
+backchannels, and overlaps. Experimental results
+show that while the RTTL-DG model underper-
+forms the cascaded model in terms of semantic
+coherence, it significantly better in naturalness as-
+pect. Specifically, the dialogues generated by the
+RTTL-DG model closely mimic real human conver-
+sations. We believe this represents a vital step to-
+ward the creation of more human-like dialogue sys-
+tems, with potential applications that could greatly
+enhance user experiences in conversational AI.
+Acknowledgements
+This publication has emanated from research sup-
+ported in part by a grant from Science Foundation
+Ireland under Grant number 18/CRT/6183. For the
+purpose of Open Access, the author has applied
+a CC BY public copyright licence to any Author
+Accepted Manuscript version arising from this sub-
+mission.
+References
+Michaela Atterer, Timo Baumann, and David Schlangen.
+2008. Towards incremental end-of-utterance detec-
+tion in dialogue systems. In Coling 2008: Compan-
+ion volume: Posters, pages 11–14.
+CharacterAI.
+Character
+ai.
+https://beta.
+character.ai/.
+Wenxi Chen, Ziyang Ma, Ruiqi Yan, Yuzhe Liang,
+Xiquan Li, Ruiyang Xu, Zhikang Niu, Yanqiao
+Zhu, Yifan Yang, Zhanxun Liu, et al. 2024. Slam-
+omni: Timbre-controllable voice interaction sys-
+tem with single-stage training.
+arXiv preprint
+arXiv:2412.15649.
+Christopher Cieri, David Miller, and Kevin Walker.
+2004. The fisher corpus: A resource for the next
+
+generations of speech-to-text. In LREC, volume 4,
+pages 69–71.
+Alexandre Défossez, Laurent Mazaré, Manu Orsini,
+Amélie Royer, Patrick Pérez, Hervé Jégou, Edouard
+Grave, and Neil Zeghidour. 2024. Moshi: a speech-
+text foundation model for real-time dialogue. arXiv
+preprint arXiv:2410.00037.
+Emily Dinan, Stephen Roller, Kurt Shuster, Angela
+Fan, Michael Auli, and Jason Weston. 2018. Wizard
+of wikipedia: Knowledge-powered conversational
+agents. arXiv preprint arXiv:1811.01241.
+Erik Ekstedt and Gabriel Skantze. 2022. How much
+does prosody help turn-taking? investigations us-
+ing voice activity projection models. arXiv preprint
+arXiv:2209.05161.
+Shinya Fujie,
+Kenta Fukushima,
+and Tetsunori
+Kobayashi. 2005. Back-channel feedback genera-
+tion using linguistic and nonlinguistic information
+and its application to spoken dialogue system. In
+INTERSPEECH, pages 889–892.
+Zhifu Gao, Z Li, J Wang, H Luo, X Shi, M Chen, Y Li,
+L Zuo, Z Du, Z Xiao, et al. Funasr: A fundamental
+end-to-end speech recognition toolkit. arxiv 2023.
+arXiv preprint arXiv:2305.11013.
+John J Godfrey, Edward C Holliman, and Jane Mc-
+Daniel. 1992. Switchboard: Telephone speech cor-
+pus for research and development.
+In Acoustics,
+speech, and signal processing, ieee international con-
+ference on, volume 1, pages 517–520. IEEE Com-
+puter Society.
+Karthik Gopalakrishnan, Behnam Hedayatnia, Qin-
+lang Chen, Anna Gottardi, Sanjeev Kwatra, Anu
+Venkatesh, Raefer Gabriel, and Dilek Hakkani-
+Tur. 2023.
+Topical-chat:
+Towards knowledge-
+grounded open-domain conversations. arXiv preprint
+arXiv:2308.11995.
+Agustín Gravano and Julia Hirschberg. 2011. Turn-
+taking cues in task-oriented dialogue.
+Computer
+Speech & Language, 25(3):601–634.
+Kohei Hara, Koji Inoue, Katsuya Takanashi, and Tatsuya
+Kawahara. 2018. Prediction of turn-taking using
+multitask learning with prediction of backchannels
+and fillers. Listener, 162:364.
+Shawn Hershey, Sourish Chaudhuri, Daniel PW Ellis,
+Jort F Gemmeke, Aren Jansen, R Channing Moore,
+Manoj Plakal, Devin Platt, Rif A Saurous, Bryan Sey-
+bold, et al. 2017. Cnn architectures for large-scale
+audio classification. In 2017 ieee international con-
+ference on acoustics, speech and signal processing
+(icassp), pages 131–135. IEEE.
+Wei-Ning Hsu, Benjamin Bolte, Yao-Hung Hubert Tsai,
+Kushal Lakhotia, Ruslan Salakhutdinov, and Abdel-
+rahman Mohamed. 2021. Hubert: Self-supervised
+speech representation learning by masked prediction
+of hidden units. IEEE/ACM transactions on audio,
+speech, and language processing, 29:3451–3460.
+Ryo Ishii, Kazuhiro Otsuka, Shiro Kumano, and Junji
+Yamato. 2016. Prediction of who will be the next
+speaker and when using gaze behavior in multiparty
+meetings. ACM Transactions on Interactive Intelli-
+gent Systems (TIIS), 6(1):1–31.
+Ryo Ishii, Xutong Ren, Michal Muszynski, and Louis-
+Philippe Morency. 2021. Multimodal and multitask
+approach to listener’s backchannel prediction: Can
+prediction of turn-changing and turn-management
+willingness improve backchannel modeling? In Pro-
+ceedings of the 21st ACM International Conference
+on Intelligent Virtual Agents, pages 131–138.
+Jin Yea Jang, San Kim, Minyoung Jung, Saim Shin,
+and Gahgene Gweon. 2021. Bpm_mt: Enhanced
+backchannel prediction model using multi-task learn-
+ing. In Proceedings of the 2021 Conference on Em-
+pirical Methods in Natural Language Processing,
+pages 3447–3452.
+Chunxiang Jin, Minghui Yang, and Zujie Wen. 2021.
+Duplex conversation in outbound agent system. In
+Interspeech, pages 4866–4867.
+Jungil Kong, Jihoon Park, Beomjeong Kim, Jeongmin
+Kim, Dohee Kong, and Sangjin Kim. 2023. Vits2:
+Improving quality and efficiency of single-stage text-
+to-speech with adversarial learning and architecture
+design. arXiv preprint arXiv:2307.16430.
+Kushal Lakhotia, Eugene Kharitonov, Wei-Ning Hsu,
+Yossi Adi, Adam Polyak, Benjamin Bolte, Tu-Anh
+Nguyen, Jade Copet, Alexei Baevski, Abdelrahman
+Mohamed, et al. 2021. On generative spoken lan-
+guage modeling from raw audio. Transactions of the
+Association for Computational Linguistics, 9:1336–
+1354.
+Ting-En Lin, Yuchuan Wu, Fei Huang, Luo Si, Jian
+Sun, and Yongbin Li. 2022. Duplex conversation:
+Towards human-like interaction in spoken dialogue
+systems. In Proceedings of the 28th ACM SIGKDD
+Conference on Knowledge Discovery and Data Min-
+ing, pages 3299–3308.
+Varvara Logacheva, Mikhail Burtsev, Valentin Malykh,
+Vadim Polulyakh, and Aleksandr Seliverstov. 2018.
+Convai dataset of topic-oriented human-to-chatbot
+dialogues. In The NIPS’17 Competition: Building
+Intelligent Systems, pages 47–57. Springer.
+Ziqiao Meng, Qichao Wang, Wenqian Cui, Yifei Zhang,
+Bingzhe Wu, Irwin King, Liang Chen, and Peilin
+Zhao. Parrot: Autoregressive spoken dialogue lan-
+guage modeling with decoder-only transformers. In
+Audio Imagination: NeurIPS 2024 Workshop AI-
+Driven Speech, Music, and Sound Generation.
+Tu Anh Nguyen, Eugene Kharitonov, Jade Copet, Yossi
+Adi, Wei-Ning Hsu, Ali Elkahky, Paden Tomasello,
+Robin Algayres, Benoit Sagot, Abdelrahman Mo-
+hamed, et al. 2023. Generative spoken dialogue lan-
+guage modeling. Transactions of the Association for
+Computational Linguistics, 11:250–266.
+
+Florian Nothdurft, Stefan Ultes, and Wolfgang Minker.
+2014. Finding appropriate interaction strategies for
+proactive dialogue systems—an open quest. In Pro-
+ceedings of the 2nd European and the 5th Nordic
+Symposium on Multimodal Communication, volume
+110, pages 73–80. Citeseer.
+Daniel Ortega, Chia-Yu Li, and Ngoc Thang Vu. 2020.
+Oh, jeez! or uh-huh? a listener-aware backchannel
+predictor on asr transcriptions. In ICASSP 2020-2020
+IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP), pages 8064–8068.
+IEEE.
+Alec Radford, Jong Wook Kim, Tao Xu, Greg Brock-
+man, Christine McLeavey, and Ilya Sutskever. 2022.
+Robust speech recognition via large-scale weak su-
+pervision. arXiv preprint arXiv:2212.04356.
+Hannah Rashkin, Eric Michael Smith, Margaret Li, and
+Y-Lan Boureau. 2018. Towards empathetic open-
+domain conversation models: A new benchmark and
+dataset. arXiv preprint arXiv:1811.00207.
+Replika. Replika ai. https://replika.com/.
+Stephen Roller, Emily Dinan, Naman Goyal, Da Ju,
+Mary Williamson, Yinhan Liu, Jing Xu, Myle Ott,
+Kurt Shuster, Eric M Smith, et al. 2020. Recipes
+for building an open-domain chatbot. arXiv preprint
+arXiv:2004.13637.
+David Schlangen. 2006. From reaction to prediction:
+Experiments with computational models of turn-
+taking. In Ninth International Conference on Spoken
+Language Processing.
+Peng Wang, Songshuo Lu, Yaohua Tang, Sijie Yan, Wei
+Xia, and Yuanjun Xiong. 2024. A full-duplex speech
+dialogue scheme based on large language models.
+arXiv preprint arXiv:2405.19487.
+Nigel Ward and Wataru Tsukahara. 2000. Prosodic
+features which cue back-channel responses in english
+and japanese. Journal of pragmatics, 32(8):1177–
+1207.
+Zhifei Xie and Changqiao Wu. 2024. Mini-omni2: To-
+wards open-source gpt-4o with vision, speech and du-
+plex capabilities. arXiv preprint arXiv:2410.11190.
+Aohan Zeng, Zhengxiao Du, Mingdao Liu, Kedong
+Wang, Shengmin Jiang, Lei Zhao, Yuxiao Dong, and
+Jie Tang. 2024. Glm-4-voice: Towards intelligent
+and human-like end-to-end spoken chatbot. arXiv
+preprint arXiv:2412.02612.
+Qinglin Zhang, Luyao Cheng, Chong Deng, Qian Chen,
+Wen Wang, Siqi Zheng, Jiaqing Liu, Hai Yu, and
+Chaohong Tan. 2024. Omniflatten: An end-to-end
+gpt model for seamless voice conversation. arXiv
+preprint arXiv:2410.17799.
+Li Zhou, Jianfeng Gao, Di Li, and Heung-Yeung Shum.
+2020. The design and implementation of xiaoice, an
+social chatbot. Computational Linguistics, 46(1):53–
+93.

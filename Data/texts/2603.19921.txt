@@ -1,0 +1,2641 @@
+Span-Level Machine Translation Meta-Evaluation
+Stefano Perrella*
+Sapienza University of Rome
+perrella@diag.uniroma1.it
+Eric Morales Agostinho
+Amazon
+ericmrls@amazon.com
+Hugo Zaragoza
+Amazon
+hugzarag@amazon.com
+Abstract
+Machine Translation (MT) and automatic MT
+evaluation have improved dramatically in re-
+cent years, enabling numerous novel applica-
+tions. Automatic evaluation techniques have
+evolved from producing scalar quality scores
+to precisely locating translation errors and as-
+signing them error categories and severity lev-
+els. However, it remains unclear how to re-
+liably measure the evaluation capabilities of
+auto-evaluators that do error detection, as no es-
+tablished technique exists in the literature. This
+work investigates different implementations of
+span-level precision, recall, and F-score, show-
+ing that seemingly similar approaches can yield
+substantially different rankings, and that cer-
+tain widely-used techniques are unsuitable for
+evaluating MT error detection. We propose
+“match with partial overlap and partial credit”
+(MPP) with micro-averaging as a robust meta-
+evaluation strategy and release code for its use
+publicly. Finally, we use MPP to assess the state
+of the art in MT error detection.
+1
+Introduction
+Machine Translation (MT) evaluation involves as-
+sessing the quality of translated text, and automatic
+evaluation techniques (hereafter, auto-evaluators1)
+assess translation quality without human interven-
+tion.
+Automatic evaluation enables faster and
+cheaper experimentation when developing trans-
+lation models compared to human evaluation; also,
+high-accuracy auto-evaluators are used for vari-
+ous downstream applications such as data filtering,
+translation re-ranking, and translation difficulty es-
+timation (Freitag et al., 2022a; Fernandes et al.,
+2022; Perrella et al., 2024a; Hrabal et al., 2025b;
+*Work conducted while the author was at Amazon.
+1Automatic MT evaluation techniques are often referred
+to as MT metrics. However, to prevent confusion with the
+precision, recall, and F-score metrics, we refer to automatic
+evaluation techniques exclusively as auto-evaluators.
+Micro
+Macro
+Auto-evaluator
+EM
+MP
+MPP
+W25
+EM
+MP
+MPP
+W25
+Qwen3 235b
+5
+1
+1
+1
+12
+12
+10
+12
+GemSpanEval.sec
+3
+2
+2
+2
+4
+4
+4
+4
+Sonnet 4.5
+2
+5
+3
+6
+8
+11
+7
+9
+GemSpanEval.pri
+4
+4
+4
+5
+6
+5
+5
+5
+XCOMET-XXL
+11
+3
+5
+4
+11
+7
+11
+7
+AIP.sec
+1
+7
+6
+12
+3
+3
+3
+3
+Haiku 4.5
+7
+9
+7
+7
+5
+6
+6
+6
+XCOMET-XL
+12
+6
+8
+3
+13
+10
+13
+10
+gpt-oss 120b
+6
+10
+9
+8
+10
+13
+12
+13
+AIP.pri
+8
+8
+10
+13
+2
+2
+2
+2
+AutoLQA.pri
+9
+11
+11
+9
+9
+9
+9
+11
+AutoLQAESA.sec
+10
+12
+12
+10
+7
+8
+8
+8
+AutoLQA41.sec
+13
+13
+13
+11
+1
+1
+1
+1
+Table 1: Ranking of auto-evaluators on the MQM split
+of the WMT 2025 Automated Translation Quality Eval-
+uation Systems Shared Task under the measures defined
+in Section 2 (EM, MP, and MPP), alongside W25, that is,
+the measure used at WMT25 (illustrated in Section C.2),
+both micro- and macro-averaging results. We run the
+auto-evaluators highlighted in gray, the others are sub-
+missions to WMT.
+Kocmi et al., 2025a; Finkelstein et al., 2025; Tan,
+2025; Garcia Gilabert et al., 2025; Proietti et al.,
+2025b), or as a proxy to fine-tune MT models us-
+ing Reinforcement Learning objectives (He et al.,
+2024; Xu et al., 2024; Hrabal et al., 2025b; Zheng
+et al., 2025; Finkelstein et al., 2025).
+Early auto-evaluators assessed translation qual-
+ity using heuristics based on word n-grams and
+character-based overlap between a translation and
+one or more manually curated references (Papineni
+et al., 2002; Banerjee and Lavie, 2005; Popovi´c,
+2015). Later, neural auto-evaluators enabled assess-
+ing translation quality at a deeper semantic level
+(Rei et al., 2020; Wan et al., 2022; Rei et al., 2022;
+Juraska et al., 2023; Proietti et al., 2026). How-
+ever, most auto-evaluators return their evaluation
+as a scalar quality score, which can be difficult
+to interpret (Perrella et al., 2024a). To mitigate
+this issue, recent auto-evaluators have been devel-
+oped to locate translation errors, optionally also
+1
+arXiv:2603.19921v2 [cs.CL] 17 Oct 2026
+
+T
+T
+h
+h
+e
+e
+q
+q
+u
+u
+i
+i
+c
+c
+k
+k
+b
+b
+r
+r
+o
+o
+w
+w
+n
+n
+f
+f
+o
+o
+x
+x
+j
+j
+u
+u
+m
+m
+p
+p
+s
+s
+s1
+s2
+ˆs1
+ˆs2
+Figure 1: Span-level annotations for the translation x =
+“The quick brown fox jumps”. ˆs1, ˆs2 ∈ˆS are hypothesis
+error spans, while s1, s2 ∈S are the ground-truth ones.
+classifying them based on category and severity
+(Perrella et al., 2022; Kocmi and Federmann, 2023;
+Guerreiro et al., 2024; Juraska et al., 2025; Yeom
+et al., 2025; Hrabal et al., 2025a). However, due to
+the lack of established span-level meta-evaluation
+strategies – that is, techniques for evaluating the
+ability of auto-evaluators to detect translation er-
+rors – prior work has adopted disparate approaches,
+making results difficult to compare across studies.
+Furthermore, no previous work has systematically
+examined the effectiveness and fairness of these
+approaches, leaving it unclear whether they are
+equivalent or, most importantly, whether they can
+be reliably applied to MT error detection.2
+This work examines different implementations
+of span-level precision, recall, and F-score, demon-
+strating that apparently similar approaches con-
+ceal arbitrary methodological choices that can
+lead to drastic differences in the results (Ta-
+ble 1). Moreover, we find that some commonly
+employed techniques are unsuitable for evaluat-
+ing error detection capabilities, resulting in con-
+founded results.
+We identify “match with par-
+tial overlap and partial credit” (MPP), paired
+with micro-averaging results across data sam-
+ples, as a robust strategy for span-level MT meta-
+evaluation, and use it to assess the state of the
+art in MT error detection. We release code for
+reproducing our results at https://github.com/
+amazon-science/span-mt-metaeval, as well as
+code for using MPP at https://github.com/
+sted19/span-mt-metrics-eval.
+2
+Span-level MT Meta-Evaluation
+We formulate MT error detection as a structured
+prediction task in which auto-evaluators and hu-
+man annotators identify sequences of characters
+corresponding to translation errors. Accordingly,
+span-level MT meta-evaluation aims to quantify the
+2We provide an overview of the approaches used in previ-
+ous works in Section 6.
+agreement between auto-evaluators and humans by
+estimating the similarity between their respective
+error sequences (or error spans). However, method-
+ological choices regarding how this similarity is
+defined and computed can give rise to metrics that
+are fundamentally different or, in some cases, even
+unsuitable for MT error detection. This work fo-
+cuses on implementations of precision, recall, and
+F-score, as these metrics are widely used to evalu-
+ate MT error detection performance. Nevertheless,
+most of our observations are broadly applicable
+and extend to other evaluation measures as well.
+Let x
+=
+(x1, x2, . . . , xn) denote a trans-
+lation consisting of n characters.
+A span
+s = (is, js) denotes the character subsequence
+(xis, xis+1, . . . , xjs), and we denote with [[s]] =
+{is, is + 1, . . . , js} the set of character positions
+covered by s. We define the length of s as |s| :=
+|[[s]]|. For two spans s1 and s2, we define their
+intersection and union lengths as:
+|s1 ∩s2| := |[[s1]] ∩[[s2]]|,
+|s1 ∪s2| := |[[s1]] ∪[[s2]]|
+Let In = {(i, j) ∈N2 : 1 ≤i ≤j ≤n} denote
+the set of all valid spans in x, and let ˆS ⊆In
+denote the set of hypothesis error spans – e.g., the
+spans detected by an auto-evaluator – while S ⊆
+In is the set of ground-truth error spans.
+We wish to compute the precision, recall, and
+F-score of ˆS with respect to S. However, a hypoth-
+esis span may overlap with multiple ground-truth
+spans, and vice versa, so the correspondence be-
+tween hypothesis and ground-truth error spans is
+not unique. We resolve this ambiguity by finding
+the one-to-one matching between hypothesis and
+ground-truth error spans that maximizes F-score.3
+This way, we also avoid underestimating F-score
+due to an unfavorable alignment between hypothe-
+sis and ground-truth spans. Formally, we define the
+set of all one-to-one matchings between ˆS and S:
+M =
+n
+M ⊆ˆS × S
+ ∀ˆs∈ˆS: |{s:(ˆs,s)∈M}|≤1
+∀s∈S: |{ˆs:(ˆs,s)∈M}|≤1
+o
+We then select M∗∈M as the matching that
+maximizes F-score.
+In the following sections, we define several vari-
+ants of precision, recall, and F-score, which dif-
+fer in what qualifies as a valid match and whether
+matches receive binary credit (either full or zero)
+or may instead be assigned partial credit.
+3We refer the reader to Appendix D for a discussion about
+the effects of enforcing a one-to-one matching.
+2
+
+2.1
+Exact Match (EM)
+Under exact match (EM), ˆs matches s only if the
+two spans have the same start and end character
+indices; equivalently, if ˆs = s. We define the set of
+one-to-one exact-match matchings as follows:
+MEM = {M ∈M | ∀(ˆs, s) ∈M : ˆs = s}
+Then, given any M ∈MEM, we define precision,
+recall, and F-score as follows:
+PEM =
+(
+tp
+tp+fp = |M|
+| ˆS| ,
+if ˆS̸ = ∅
+1
+otherwise.
+(1)
+REM =
+(
+tp
+tp+fn = |M|
+|S| ,
+if S̸ = ∅
+1
+otherwise.
+(2)
+FEM =
+(
+2PEMREM
+PEM+REM ,
+if PEM + REM > 0
+0
+otherwise.
+(3)
+By setting P = 1 when ˆS = ∅and R = 1 when
+S = ∅, we ensure that an auto-evaluator receives
+F = 1 when it detects zero errors in a translation
+containing no ground-truth errors, while receiving
+F = 0 when only one of ˆS and S is empty. Finally,
+we select M∗
+EM ∈MEM as the one that maximizes
+FEM.
+Let us consider the example in Figure 1. | ˆS| =
+|S| = 2, since there are two hypothesis spans
+and two ground-truth spans. Moreover, MEM =
+{∅, {(ˆs2, s2)}}, because there are two exact-match
+one-to-one error matchings. For M1 = ∅, we
+have PEM = REM = FEM = 0, while for M2 =
+{(ˆs2, s2)}, PEM = REM = FEM = 1
+2. Thus, we
+select M∗
+EM = M2 as the matching that maximizes
+FEM.
+2.2
+Match with Partial Overlap (MP)
+Exact Match might be too strict. We allow matches
+between error spans that overlap by at least τ char-
+acters by defining the set of one-to-one partial-
+overlap matchings:
+Mτ
+MP = {M ∈M | ∀(ˆs, s) ∈M : |ˆs ∩s| ≥τ}
+Then, given any M ∈Mτ
+MP, we define PMP, RMP,
+and FMP as in Equations 1, 2, and 3, and select
+Mτ,∗
+MP as the one that maximizes FMP.
+Returning to the example in Figure 1, with
+τ = 1, then |M1,∗
+MP | = | ˆS| = |S| = 2, as both
+hypothesis spans “The quick” and “fox” overlap
+with ground-truth spans by at least one character.
+As a consequence, PMP = RMP = FMP = 1.
+2.3
+Match with Partial Overlap and Partial
+Credit (MPP)
+Both exact match and match with partial overlap
+might be too rigid: they count one true positive
+when two spans match, and nothing at all when
+spans go unmatched. Another option is to give
+partial credit when two spans overlap by a subset
+of characters.
+We define MMPP = MMP
+
+τ=1 as the set of one-
+to-one partial-overlap matchings where τ = 1.
+Given any M ∈MMPP, one option is to define
+precision and recall as follows:4
+P≈W25 =
+P
+(ˆs,s)∈M |ˆs ∩s|
+P
+ˆs∈ˆS |ˆs|
+(4)
+R≈W25 =
+P
+(ˆs,s)∈M |ˆs ∩s|
+P
+s∈S |s|
+(5)
+We dub this strategy ≈W25 because this is very
+similar to the strategy adopted by Lavie et al. (2025)
+at the WMT25 Automated Translation and Evalua-
+tion shared task, with the main difference that they
+do not enforce a one-to-one matching M between
+hypothesis and ground-truth spans.5 However, we
+argue that this strategy is unsuitable for computing
+precision and recall in MT error detection because
+longer error spans weigh more than shorter ones.
+Indeed, precision and recall are computed from
+character counts, with error spans contributing to
+the final values in proportion to their length. How-
+ever, the human evaluation protocols typically used
+as the ground-truth in MT evaluation are Multidi-
+mensional Quality Metrics (MQM, Lommel et al.,
+2014; Freitag et al., 2021) and Error Span Annota-
+tion (ESA, Kocmi et al., 2024b). In both annotation
+protocols, each error span identifies a single trans-
+lation error and gets assigned a severity level that
+is irrespective of its length. Thus, we argue that a
+meta-evaluation strategy that uses MQM or ESA
+annotations as the ground truth should treat error
+spans of different length in the same way.
+We enforce this constraint by calculating
+character-based precision and recall for each pair
+of matched spans in isolation, rather than for a full
+translation at once, and then averaging across er-
+ror spans. Formally, given M ∈MMPP, we define
+4Throughout the paper, edge cases of precision and recall
+( ˆS = ∅or S = ∅) are handled as in Equations 1 and 2.
+5We define formally the implementation used at WMT25
+in Appendix C.2.
+3
+
+precision and recall for each pair (ˆs, s) ∈M:
+PMPP(ˆs, s) = |ˆs ∩s|
+|ˆs|
+RMPP(ˆs, s) = |ˆs ∩s|
+|s|
+Then, sample-level precision and recall are:
+PMPP = 1
+| ˆS|
+X
+(ˆs,s)∈M
+PMPP(ˆs, s)
+(6)
+RMPP = 1
+|S|
+X
+(ˆs,s)∈M
+RMPP(ˆs, s)
+(7)
+By averaging across error spans, we ensure that
+each span has the same weight in span-level preci-
+sion and recall, while still assigning partial credit
+based on character counts. Finally, FMPP is com-
+puted as the harmonic mean of PMPP and RMPP,
+and the optimal M∗
+MPP ∈MMPP is the one-to-one
+matching that maximizes FMPP.
+2.4
+Averaging Results Across Data Samples
+Above, we illustrated several ways to compute pre-
+cision, recall, and F-score for the evaluation of a
+single translation. Typically, however, we are in-
+terested in measuring performance across all sam-
+ples in a given test set, which can be achieved
+either by macro-averaging or micro-averaging re-
+sults. Formally, given a set of translations D =
+{x1, x2, ..., xN}, we want to measure the preci-
+sion, recall, and F-score of auto-evaluators on D.
+Macro-averaging.
+This strategy involves aver-
+aging the values of precision, recall, and F-score
+across all x ∈D.
+Micro-averaging.
+This strategy involves collect-
+ing statistics (e.g., true positives, false positives,
+and false negatives) across all samples, to later cal-
+culate precision, recall, and F-score over the entire
+test set once.6 This procedure is equivalent to con-
+catenating all translations in the test set and comput-
+ing precision, recall, and F-score over the result-
+ing sets of hypothesis and ground truth error spans.
+Accordingly, we construct x = x1||x2||...||xN –
+where we use || for string concatenation – and com-
+pute precision, recall, and F-score using the ˆSx
+and Sx, i.e., the sets of all hypothesis and ground-
+truth error spans in x.
+6For MPP, micro-averaging involves averaging span-level
+precision and recall across all spans in the test set, rather
+than accumulating true positives, false positives, and false
+negatives. This follows from precision and recall being already
+defined as averages in MPP’s sample-level version.
+3
+Methodology
+Unlike MT, where the ground truth is typically a ref-
+erence translation produced by professional human
+translators, or MT evaluation, where the ground
+truth is given by human annotations of translation
+quality, in MT meta-evaluation the ground-truth
+ranking of auto-evaluators is unknown. This makes
+it challenging to determine which meta-evaluation
+strategy is most appropriate, since we do not know
+which ranking of evaluators such a strategy should
+produce. Moreover, different variants of precision,
+recall, and F-score yield auto-evaluator rankings
+that differ drastically from one another (Table 1).
+Addressing a similar issue in score-level MT
+meta-evaluation, Perrella et al. (2024b) introduced
+the concept of sentinel auto-evaluators,7 i.e., auto-
+evaluators that serve as probes to identify pitfalls
+in the meta-evaluation process.
+Sentinel auto-
+evaluators are designed such that assumptions can
+be made about where they should rank under a
+fair meta-evaluation, enabling the identification
+of meta-evaluation measures that rank them incor-
+rectly. In this work, we design span-level sentinel
+auto-evaluators to test the robustness of span-level
+meta-evaluation measures.
+3.1
+Imprecise Sentinel Auto-Evaluators
+We extend the error spans detected by our auto-
+evaluators to test the robustness of different im-
+plementations of precision, recall, and F-score to
+span length. Extended error spans are centered
+on the original error spans, but are less precise in
+pinpointing the exact error location.
+3.2
+Low-recall Sentinel Auto-Evaluators
+MT error detection is sparse, with many samples
+featuring no ground-truth error spans. In MQM
+test sets, the proportion of translations annotated
+with zero errors ranges from 18.9% to 77%, with
+the highest value observed in the WMT24 EN→ES
+test set (full statistics are reported in Table 4).
+One consequence of this sparsity is that, under
+macro-averaging, many samples feature R = 1
+because recall’s denominator is 0 in Equation 2.
+We hypothesize that this phenomenon may lead
+macro-averaging to favor auto-evaluators that in-
+flate precision, predicting fewer errors to maximize
+the chance of getting F = 1 on samples with no
+ground-truth errors.
+7Perrella et al. (2024b) refer to them as sentinel metrics
+but we use “auto-evaluator” in place of “metric”.
+4
+
+To test this hypothesis, we create low-recall sen-
+tinel auto-evaluators by randomly deleting some
+of the errors detected by auto-evaluators. Varying
+the probability with which we delete each error, we
+measure the robustness of different meta-metrics
+to task sparsity.
+4
+Experimental Setup
+We demonstrate that some meta-evaluation strate-
+gies are unsuitable for MT error detection by mea-
+suring the performance of sentinel auto-evaluators
+alongside normal auto-evaluators.
+Data
+We conduct our experiments on the con-
+catenation of MQM test sets released from 2022
+to 2024 (Freitag et al., 2022b, 2023; Riley et al.,
+2024; Freitag et al., 2024). Table 4 in Appendix A
+reports statistics about the test sets and language
+directions employed in this work.
+Models
+Our auto-evaluators consist of four Large
+Language Models (LLMs) prompted for error
+detection: Claude Sonnet 4.5, Claude Haiku 4.5,
+Qwen3 235b, and gpt-oss 120b. This selection of
+models includes closed-source and open-weights
+models of varying sizes and families.8
+5
+Results
+We measure the performance of our imprecise
+and low-recall sentinels alongside normal auto-
+evaluators under the implementations of precision,
+recall, and F-score illustrated in Section 2, i.e., EM,
+MP, and MPP, with micro- and macro-averaging.
+MP uses τ = 1, matching spans that overlap by 1
+or more characters. We chose the minimum value
+for τ for two main reasons: (1) it does not affect the
+generalization of our results while representing the
+most extreme case, which facilitates visualization
+of results, and (2) several previous works have used
+variants of MP with τ = 1 (Section 6).
+5.1
+Performance of Imprecise Sentinels
+We extend the error spans produced by our auto-
+evaluators by progressively adding leading and
+trailing characters, and report results under EM,
+MP, and MPP, using micro- (Figure 2, left) and
+macro-averaging (Figure 2, right).
+Performance under EM and MPP appropriately
+decreases as span length increases, whereas per-
+formance under MP improves. By assigning full
+8Implementation details are reported in Appendix B.
+credit to spans whose overlap exceeds τ charac-
+ters, MP inflates the precision, recall, and F-score
+of auto-evaluators that produce longer spans, as
+longer spans are more likely to yield a match. As
+a result, MP is unsuitable for span-level MT meta-
+evaluation because it can be easily gamed by re-
+turning artificially long error spans. Even in the
+absence of deliberate metric manipulation, our re-
+sults show that MP is biased toward auto-evaluators
+that produce longer spans, thereby confounding
+evaluations.
+Additionally, we observe that F-scoreEM drops
+abruptly to near zero for all auto-evaluators when
+span length is increased by even a small number
+of characters. This behavior is expected, as EM
+requires exact span overlap. Nonetheless, it further
+highlights that EM may be too strict for error detec-
+tion evaluation, an inherently noisy task in which
+human annotators often disagree on the precise lo-
+cations and boundaries of translation errors.9
+5.2
+Performance of Low-Recall Sentinels
+We delete errors detected by our auto-evaluators
+uniformly at random with progressively higher
+probability and report results under EM, MP, and
+MPP, with micro- (Figure 3, left) and macro-
+averaging (Figure 3, right).
+Despite differing solely in how results are aver-
+aged, micro- and macro-averaging produce dras-
+tically different outcomes.
+Specifically, under
+micro-averaging, performance decreases as the re-
+moval probability increases, whereas under macro-
+averaging it increases, highlighting its lack of ro-
+bustness to task sparsity. Indeed, because many
+samples contain no ground-truth errors (Table 4),
+low-recall sentinels yield higher F-score under
+macro-averaging by maximizing the number of
+samples assigned with zero errors.
+We further exploit this limitation of macro-
+averaging by deleting all errors detected by an
+auto-evaluator in samples where it detected ≤1
+errors, and denote the F-score of these modified
+sentinel auto-evaluators with “Remove-1” in Fig-
+ure 3. For each sample, these sentinels return ei-
+ther 0 or ≥2 error spans. As shown in the fig-
+ure, Remove-1 sentinels further increase macro-
+averaged F-score. In contrast, micro-averaging is
+robust to task sparsity: F-score progressively de-
+creases as the error removal probability increases,
+and “Remove-1” sentinels do not achieve inflated
+9We refer the reader to Section 7.2, where we measure
+agreement between human evaluators.
+5
+
+Claude Haiku 4.5
+Claude Sonnet 4.5
+gpt-oss 120b
+Qwen3 235b
+EM
+MP
+MPP
+0
+20
+40
+60
+80
+100
+Span Length (#additional leading and trailing chars per span)
+0
+10
+20
+30
+40
+50
+F-Score (Micro-averaged)
+0
+20
+40
+60
+80
+100
+Span Length (#additional leading and trailing chars per span)
+15
+20
+25
+30
+35
+40
+45
+50
+F-Score (Macro-averaged)
+Figure 2: Performance of auto-evaluators and imprecise sentinels at varying span length, with micro (left) and
+macro (right) averaging, under all meta-metrics defined in Section 2. x = 0 shows the performance of the base
+auto-evaluators before their spans were extended.
+Claude Haiku 4.5
+Remove-1 (EM)
+Claude Sonnet 4.5
+Remove-1 (MP)
+gpt-oss 120b
+Remove-1 (MPP)
+Qwen3 235b
+EM
+MP
+MPP
+0
+20
+40
+60
+80
+Error removal probability (%)
+5
+10
+15
+20
+25
+30
+35
+F-Score (Micro-averaged)
+0
+20
+40
+60
+80
+Error removal probability (%)
+25
+30
+35
+40
+45
+50
+F-Score (Macro-averaged)
+Figure 3: Performance of auto-evaluators and low-recall sentinels at varying error removal probabilities, with micro
+(left) and macro (right) averaging, under all meta-metrics defined in Section 2. x = 0 shows the performance of the
+base auto-evaluators before any span was removed from their predictions.
+scores, as their F-score lies close to the correspond-
+ing auto-evaluator’s curve.
+5.3
+Impact on Auto-Evaluator Ranking
+Previous results establish that MP and macro-
+averaging are biased to prefer auto-evaluators that
+return longer error spans and under-detect trans-
+lation errors, respectively. Additionally, in pre-
+vious sections we also argued that EM might be
+too strict for span-level MT meta-evaluation, and
+that the approach adopted in the WMT 2025 Auto-
+mated Translation Evaluation Systems shared task –
+which we dub W25 – is misaligned with the MQM
+and ESA annotations that serve as ground truth
+in MT evaluation (Section 2.3). In this section,
+we ask whether these factors also translate into
+differences in auto-evaluator rankings in realistic
+evaluation scenarios and, if so, to what extent. To
+investigate this question, we compute the ranking
+of auto-evaluators on the MQM split of the WMT
+2025 shared task using all the metrics discussed
+above, including W25, which we discuss in more
+detail and formally define in Appendix C.2. We
+present the resulting auto-evaluator rankings in Ta-
+ble 1, whereas Table 7 in Appendix E reports the
+corresponding F-scores.
+The most noticeable difference is between the
+micro- and macro-averaged results: the ranking
+is almost entirely reversed, with auto-evaluators
+moving from the top to the bottom of the rank-
+ing, and vice versa, when switching from micro- to
+macro-averaging. Notably, AutoLQA41.sec moves
+from last overall to first overall, while Qwen3 235b
+moves from first overall to near the bottom of the
+6
+
+ranking. As shown in Table 6, AutoLQA41.sec is
+the model that identifies the fewest translation er-
+rors, while Qwen3 235b is among those that iden-
+tify the most. This further supports our finding
+that macro-averaging is biased toward low-recall
+auto-evaluators. Moreover, these results provide an
+indication of how strongly this bias can affect the
+final auto-evaluator rankings.
+Substantial ranking differences also emerge
+when comparing measures that use the same av-
+eraging strategy. Focusing on micro-averaging, the
+positions of individual auto-evaluators vary con-
+siderably across measures in several cases. For
+example, XCOMET-XL ranks 12th, 6th, 8th, and
+3rd under EM, MP, MPP, and W25, respectively.
+Similarly, AIP.sec ranks 1st, 7th, 6th, and 12th.
+These large differences in auto-evaluator rankings
+underscore the importance of establishing a ro-
+bust approach to span-level meta-evaluation: seem-
+ingly small methodological choices can not only
+introduce evaluation biases, but these biases can
+also substantially affect the resulting auto-evaluator
+rankings when the measures are applied in realistic
+evaluation settings.
+6
+Approaches Used in Previous Work
+Previous work has adopted disparate approaches.
+In the 2019 and 2020 editions of the WMT Qual-
+ity Estimation shared tasks (Fonseca et al., 2019;
+Specia et al., 2020), the organizers used versions of
+span-level precision, recall, and F-score similar to
+MPP (we refer to this measure as W19 and formally
+define it in Appendix C.1). However, they com-
+pute the final F-score via macro-averaging, which
+favors low-recall auto-evaluators, as shown in Sec-
+tion 5.2. In the WMT Quality Estimation shared
+tasks in 2023 and 2024 (Blain et al., 2023; Zerva
+et al., 2024), as well as in the WMT shared task
+on Automated Translation Quality Evaluation Sys-
+tems in 2025 (Lavie et al., 2025), the organizers
+adopted different evaluation strategies, which we
+denote by W23 and W25, and define formally in
+Appendix C.2. However, both strategies assign
+greater weight to longer errors than shorter ones,
+which is not aligned with how severity is defined in
+the ESA and MQM protocols. Furthermore, Lavie
+et al. (2025) report findings based on both micro-
+and macro-averaged results.
+Beyond the WMT shared tasks, other previous
+work has adopted one or the other approach. Per-
+rella et al. (2022) evaluate their MaTESe metrics
+using the Span Hit Metrics – roughly equivalent to
+MP with τ = 1. Similarly, Kocmi et al. (2024b)
+measure inter-annotator agreement between differ-
+ent human evaluation protocols in terms of how
+much protocol A covers protocol B, a measure sim-
+ilar to RMP with τ = 1. However, as shown in
+Section 5.1, MP is biased toward auto-evaluators
+(or human annotators) that produce longer spans.
+Guerreiro et al. (2024) evaluate XCOMET using
+W23. Fernandes et al. (2023) evaluate AutoMQM
+by defining custom meta-metrics similar to W23,
+where span overlap is computed based on word
+counts rather than character counts. Finally, Kas-
+ner et al. (2026) use the measures defined by
+Da San Martino et al. (2019) for propaganda detec-
+tion, which closely resemble W19, but they do not
+clarify whether micro- or macro-averaging is used
+to derive corpus-level statistics.
+6.1
+Summary of Findings
+• “Match with partial overlap” (MP) favors auto-
+evaluators that produce longer error spans.
+• Macro-averaging across data samples favors
+auto-evaluators that under-detect translation
+errors.
+• “Exact match” (EM) may be too strict for span-
+level MT meta-evaluation.
+• Auto-evaluator rankings change drastically
+when switching from micro- to macro-
+averaging, as well as across different imple-
+mentations of span-level precision, recall, and
+F-score.
+• We recommend “match with partial over-
+lap and partial credit” (MPP) combined
+with micro-averaging. Among the measures
+studied, this approach is the most robust to
+variations in span length and task sparsity,
+while remaining flexible enough to account
+for partially detected errors.
+7
+Assessing the State of the Art
+Having established MPP with micro averaging as
+the recommended span-level MT meta-evaluation
+strategy, we use it for two research purposes: In
+Section 7.1, we evaluate auto-evaluators and rank
+them according to their capabilities; In Section 7.2,
+we assess the state of progress in MT error detec-
+tion by measuring the gap between auto-evaluators
+and human annotators.
+7
+
+Metric
+P
+R
+F1
+Qwen3 235b
+17.36
+31.45
+22.37
+GemSpanEval-QE.sec
+16.33
+28.61
+20.60
+Claude Sonnet-4.5
+21.47
+18.58
+19.92
+GemSpanEval.pri
+16.60
+25.34
+19.84
+XCOMET-XXL.bas
+16.38
+21.39
+18.33
+AIP.sec
+37.34
+11.99
+18.16
+Claude Haiku 4.5
+21.95
+14.82
+17.69
+XCOMET-XL.bas
+15.46
+21.10
+17.47
+gpt-oss 120b
+19.57
+15.78
+17.45
+AIP.pri
+35.18
+10.30
+15.93
+AutoLQA.pri
+16.00
+14.99
+14.95
+AutoLQAESA.sec
+16.46
+13.00
+14.01
+AutoLQA41.sec
+24.42
+5.79
+9.30
+Table 2: MPP with micro averaging on the MQM split
+of WMT25. We run the auto-evaluators highlighted in
+grey, the others are submissions to WMT25 (Lavie et al.,
+2025).
+7.1
+WMT25 Ranking
+Table 2 presents the auto-evaluator ranking on the
+MQM split of WMT25 – including the English-to-
+Korean and Japanese-to-Chinese translation direc-
+tions – using MPP with micro-averaging. We also
+compute the auto-evaluator ranking on the ESA
+split of WMT25 and report results in Table 8 in
+Appendix E. Results are aggregated across transla-
+tion directions by averaging language pair-specific
+precision, recall, and F-score.10
+The first and third positions are obtained by
+Qwen3 235b and Claude Sonnet 4.5, respectively,
+which are based on our reference-less, zero-
+shot, LLM-as-a-Judge approach illustrated in Ap-
+pendix B. The second and fourth positions are
+achieved by GemSpanEval models, which are
+based on the Gemma-3 27b model (Gemma Team
+et al., 2025) fine-tuned for error detection (Juraska
+et al., 2025).
+Interestingly, GemSpanEval-QE,
+which operates without relying on reference trans-
+lations, slightly outperforms GemSpanEval.
+We also note that results differ substantially
+when ESA is used as the ground-truth, both in
+terms of ranking and absolute scores (Table 8). In
+particular, we observe that average F-scores are
+substantially lower with ESA. While this might be
+attributed to the different translation directions cov-
+ered by the two test sets, it might also stem from the
+fact that ESA annotators have been shown to detect
+fewer errors compared to the MQM annotations
+10Unlike WMT25, we do not apply any severity penalty,
+meaning that matches between errors of any severity are
+treated equally. Our work focuses on evaluating error de-
+tection capabilities, and our meta-evaluation strategies are
+orthogonal to the application of severity penalties.
+conducted at WMT (Kocmi et al., 2024b). Indeed,
+the average precision of auto-evaluators is 21.57
+for MQM error detection, whereas it is only 10.19
+with ESA; conversely, average recall is higher with
+ESA than with MQM (20.55 vs 16.95).11
+7.2
+State of Progress
+To get a sense of the state of progress in MT er-
+ror detection, we measure the performance gap
+between human annotators and auto-evaluators, us-
+ing inter-annotator agreement as a reference for
+human performance. We adopt the same approach
+as Proietti et al. (2025a), who assess whether hu-
+man parity has been achieved in score-level MT
+evaluation. Specifically, we evaluate humans and
+auto-evaluators jointly under the same evaluation
+measure (MPP with micro-averaging).
+We use the MQM test sets released at the WMT
+Metrics Shared Task in 2022 and 2023 (Freitag
+et al., 2022b, 2023), alongside the MQM test set
+released by Riley et al. (2024). Translations in
+these test sets were each annotated three times by
+distinct human evaluators. This redundancy allows
+us to select one set of annotations as the ground-
+truth and use the others to estimate human perfor-
+mance.12 For this experiment, we cannot use the
+WMT24 (Kocmi et al., 2024a; Freitag et al., 2024)
+and WMT25 test sets (Kocmi et al., 2025b; Lavie
+et al., 2025). In the 2024 ESA and MQM test sets,
+as well as in the WMT25 MQM test set, each trans-
+lation was annotated only once. Regarding the ESA
+split of WMT25, although many translations were
+annotated multiple times, there is no guarantee that
+the annotations were produced by distinct annota-
+tors, which would inflate our estimate of human
+reference performance.
+We report results in Table 3. On average, MQM
+human evaluators have higher performance than
+auto-evaluators, especially for EN→DE, where the
+F-scores achieved by humans are as much as 10
+points higher than those of auto-evaluators. Only
+twice is a human evaluator surpassed by automatic
+systems: MQM #1 ranks below Qwen3 235b in
+EN→ZH, and below Claude Sonnet 4.5 in ZH→EN.
+In contrast, MQM #2 consistently ranks above auto-
+evaluators; only in EN→ZH Qwen3 235b achieves
+11We compute averages excluding the auto-evaluators run
+by us because they were not evaluated on the ESA test set.
+12We note that each human evaluator does not correspond
+to a single annotator, but rather to the combination of multiple
+annotators, because WMT evaluation campaigns typically
+collect annotations from a pool of annotators. Nonetheless,
+each sample is annotated by three distinct annotators.
+8
+
+Metric
+EN→DE (2022)
+EN→ZH (2022)
+EN→DE (2023)
+ZH→EN (2023)
+P
+R
+F1
+P
+R
+F1
+P
+R
+F1
+P
+R
+F1
+MQM #1
+42.66
+44.62
+43.62
+29.88
+25.49
+27.51
+38.04
+35.51
+36.73
+40.17
+39.48
+39.82
+MQM #2
+39.22
+43.56
+41.28
+35.95
+25.68
+29.96
+39.02
+37.47
+38.23
+44.57
+39.82
+42.06
+Sonnet 4.5
+32.61
+29.75
+31.12
+34.31
+21.57
+26.49
+38.92
+27.80
+32.44
+48.82
+33.94
+40.04
+Qwen3 235b
+23.62
+38.87
+29.39
+28.88
+30.92
+29.87
+31.18
+30.41
+30.79
+40.12
+39.50
+39.81
+gpt-oss 120b
+24.08
+31.04
+27.12
+28.89
+21.42
+24.60
+32.33
+24.60
+27.94
+44.55
+29.10
+35.20
+Haiku 4.5
+30.07
+19.89
+23.94
+29.88
+15.15
+20.11
+37.79
+18.54
+24.87
+50.25
+25.66
+33.97
+Table 3: Results on the EN→DE MQM test set from WMT 2022 (Kocmi et al., 2022; Freitag et al., 2022b), the
+EN→ZH MQM annotations released by Riley et al. (2024), and the EN→DE and ZH→EN MQM test sets from WMT
+2023 (Kocmi et al., 2023; Freitag et al., 2023). “MQM #1” and “MQM #2” are human evaluators.
+an F-score that matches its performance.
+These results paint a different picture from the
+findings of Proietti et al. (2025a). They measure
+human and auto-evaluator performance at the score
+level, using the same test sets and human annota-
+tions used in this work, and find that human evalu-
+ators are consistently matched or surpassed by au-
+tomatic systems, raising concerns about our ability
+to measure progress in score-level MT evaluation.
+In their discussion, they attribute these findings to
+limitations in meta-evaluation measures, annota-
+tion quality, and benchmark difficulty, urging the
+research community to address these issues to en-
+sure progress in MT evaluation remains measurable.
+While some of these issues also extend to span-
+level meta-evaluation, we hypothesize that, by fac-
+toring in error location, the span-level setting may
+enable more precise estimates of auto-evaluator ca-
+pabilities, thereby increasing meta-evaluation res-
+olution. For example, consider an auto-evaluator
+that incorrectly detects an error at one location
+while simultaneously missing a true error at another
+location. The MQM-based score assigned to the
+translation would remain unchanged compared to
+the case where the correct error had been detected
+instead. This additional noise in score-level meta-
+evaluation may partly explain why human evalua-
+tors are consistently matched by auto-evaluators,
+whereas they still rank higher at the span-level.
+8
+Conclusions
+This work investigates strategies for reliably as-
+sessing the performance of machine translation
+error detection.
+We evaluate the robustness of
+three versions of span-level precision, recall, and
+F-score, both micro- and macro-averaging results
+across data samples. Our results show that differ-
+ent measures yield substantially different rankings
+of auto-evaluators and that several widely used ap-
+proaches introduce systematic unfairness into the
+meta-evaluation, favoring auto-evaluators that pro-
+duce longer error spans or that under-detect trans-
+lation errors. Based on these findings, we recom-
+mend “match with partial overlap and partial credit”
+(MPP) combined with micro-averaging as a robust
+strategy for span-level machine translation meta-
+evaluation. Finally, using MPP, we establish the
+state of the art in MT error detection and measure
+the gap between state-of-the-art auto-evaluators
+and human performance.
+Limitations
+Characters vs words vs tokens
+Both “match
+with partial overlap” (MP) and “match with partial
+overlap and partial credit” (MPP) rely on character-
+based overlap to derive a one-to-one matching.
+Specifically, two spans can match only if they over-
+lap by at least one character (or τ characters, for
+MP). Similarly, the partial credit assigned by MPP
+to valid matches corresponds to the proportion of
+overlapping characters. We selected characters as
+the unit of overlap because this makes our measures
+tokenization-agnostic while still working well with
+scripts that do not rely on spaces to separate words,
+such as Chinese or Japanese. A consequence of this
+choice is that long words contribute more to preci-
+sion and recall than short ones. While we believe
+that the impact of this phenomenon is negligible,
+our work does not investigate whether alternative
+choices would significantly change results.
+Severity weighting
+This work does not investi-
+gate weighting precision and recall according to
+error severity, which is arguably orthogonal to our
+discussion of evaluation measures for error detec-
+tion. Recent editions of the WMT Quality Estima-
+tion shared task (Blain et al., 2023; Zerva et al.,
+2024) and the Automated Translation Evaluation
+Systems shared task (Lavie et al., 2025) apply a
+0.5 penalty to error spans with mismatched sever-
+9
+
+ity. However, as also noted by Lyu et al. (2025),
+this strategy penalizes precision and recall when
+predicted and ground-truth severities differ, but
+does not account for the fact that predicting a
+minor error where there is no ground-truth error
+is less severe than predicting a major error. Aur
+et al. (2026) adapt MPP to incorporate a severity-
+weighting scheme that addresses this issue: severity
+mismatches remain penalized, while errors of dif-
+ferent severities contribute to the final F-score in
+proportion to their respective weights. Our im-
+plementation at https://github.com/sted19/
+span-mt-metrics-eval includes options for us-
+ing MPP with this severity weighting.
+Acknowledgments
+The authors thank Pablo Castells, Ronald Denaux,
+Michael Denkowski, Javier Ferrando, and Esther
+López Ramos for their valuable feedback.
+References
+Marina Iuliana Aur, Stefano Perrella, and Roberto Nav-
+igli. 2026. Exploring the impact of document context
+on LLM-based machine translation evaluation. In
+Findings of the Association for Computational Lin-
+guistics: EMNLP 2026, Budapest, Hungary. Associa-
+tion for Computational Linguistics.
+Satanjeev Banerjee and Alon Lavie. 2005. METEOR:
+An automatic metric for MT evaluation with im-
+proved correlation with human judgments. In Pro-
+ceedings of the ACL Workshop on Intrinsic and Ex-
+trinsic Evaluation Measures for Machine Transla-
+tion and/or Summarization, pages 65–72, Ann Arbor,
+Michigan. Association for Computational Linguis-
+tics.
+Frederic Blain, Chrysoula Zerva, Ricardo Rei, Nuno M.
+Guerreiro, Diptesh Kanojia, José G. C. de Souza,
+Beatriz Silva, Tânia Vaz, Yan Jingxuan, Fatemeh
+Azadi, Constantin Orasan, and André Martins. 2023.
+Findings of the WMT 2023 shared task on quality
+estimation. In Proceedings of the Eighth Conference
+on Machine Translation, pages 629–653, Singapore.
+Association for Computational Linguistics.
+Giovanni Da San Martino, Seunghak Yu, Alberto
+Barrón-Cedeño, Rostislav Petrov, and Preslav Nakov.
+2019. Fine-grained analysis of propaganda in news
+articles. In Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natu-
+ral Language Processing (EMNLP-IJCNLP), pages
+5636–5646, Hong Kong, China. Association for Com-
+putational Linguistics.
+Patrick Fernandes, Daniel Deutsch, Mara Finkel-
+stein, Parker Riley, André Martins, Graham Neubig,
+Ankush Garg, Jonathan Clark, Markus Freitag, and
+Orhan Firat. 2023. The devil is in the errors: Leverag-
+ing large language models for fine-grained machine
+translation evaluation. In Proceedings of the Eighth
+Conference on Machine Translation, pages 1066–
+1083, Singapore. Association for Computational Lin-
+guistics.
+Patrick Fernandes, António Farinhas, Ricardo Rei,
+José G. C. de Souza, Perez Ogayo, Graham Neubig,
+and Andre Martins. 2022. Quality-aware decoding
+for neural machine translation. In Proceedings of
+the 2022 Conference of the North American Chap-
+ter of the Association for Computational Linguistics:
+Human Language Technologies, pages 1396–1412,
+Seattle, United States. Association for Computational
+Linguistics.
+Mara Finkelstein, Geza Kovacs, Isaac Caswell, Tobias
+Domhan, Jan-Thorsten Peter, Juraj Juraska, Markus
+Freitag, and David Vilar. 2025. Google Translate’s
+research submission to WMT2025. In Proceedings of
+the Tenth Conference on Machine Translation, pages
+723–731, Suzhou, China. Association for Computa-
+tional Linguistics.
+Erick Fonseca, Lisa Yankovskaya, André F. T. Mar-
+tins, Mark Fishel, and Christian Federmann. 2019.
+Findings of the WMT 2019 shared tasks on quality
+estimation. In Proceedings of the Fourth Conference
+on Machine Translation (Volume 3: Shared Task Pa-
+pers, Day 2), pages 1–10, Florence, Italy. Association
+for Computational Linguistics.
+Markus Freitag, George Foster, David Grangier, Viresh
+Ratnakar, Qijun Tan, and Wolfgang Macherey. 2021.
+Experts, errors, and context: A large-scale study of
+human evaluation for machine translation. Transac-
+tions of the Association for Computational Linguis-
+tics, 9:1460–1474.
+Markus Freitag, David Grangier, Qijun Tan, and Bowen
+Liang. 2022a. High quality rather than high model
+probability: Minimum bayes risk decoding with neu-
+ral metrics. Transactions of the Association for Com-
+putational Linguistics, 10:811–825.
+Markus Freitag, Nitika Mathur, Daniel Deutsch, Chi-
+Kiu Lo, Eleftherios Avramidis, Ricardo Rei, Brian
+Thompson, Frederic Blain, Tom Kocmi, Jiayi Wang,
+David Ifeoluwa Adelani, Marianna Buchicchio,
+Chrysoula Zerva, and Alon Lavie. 2024. Are LLMs
+breaking MT metrics? results of the WMT24 metrics
+shared task. In Proceedings of the Ninth Confer-
+ence on Machine Translation, pages 47–81, Miami,
+Florida, USA. Association for Computational Lin-
+guistics.
+Markus Freitag, Nitika Mathur, Chi-kiu Lo, Elefthe-
+rios Avramidis, Ricardo Rei, Brian Thompson, Tom
+Kocmi, Frederic Blain, Daniel Deutsch, Craig Stew-
+art, Chrysoula Zerva, Sheila Castilho, Alon Lavie,
+and George Foster. 2023. Results of WMT23 metrics
+shared task: Metrics might be guilty but references
+10
+
+are not innocent. In Proceedings of the Eighth Con-
+ference on Machine Translation, pages 578–628, Sin-
+gapore. Association for Computational Linguistics.
+Markus Freitag, Ricardo Rei, Nitika Mathur, Chi-kiu Lo,
+Craig Stewart, Eleftherios Avramidis, Tom Kocmi,
+George Foster, Alon Lavie, and André F. T. Martins.
+2022b. Results of WMT22 metrics shared task: Stop
+using BLEU – neural metrics are better and more
+robust. In Proceedings of the Seventh Conference
+on Machine Translation (WMT), pages 46–68, Abu
+Dhabi, United Arab Emirates (Hybrid). Association
+for Computational Linguistics.
+Javier Garcia Gilabert, Xixian Liao, Severino Da Dalt,
+Ella Bohman, Audrey Mash, Francesca De Luca For-
+naciari, Irene Baucells, Joan Llop, Miguel Clara-
+munt, Carlos Escolano, and Maite Melero. 2025.
+From SALAMANDRA to SALAMANDRATA: BSC
+submission for WMT25 general machine translation
+shared task. In Proceedings of the Tenth Conference
+on Machine Translation, pages 614–637, Suzhou,
+China. Association for Computational Linguistics.
+Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya
+Pathak, Nino Vieillard, Ramona Merhej, Sarah Perrin,
+Tatiana Matejovicova, Alexandre Ramé, Morgane
+Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey
+Cideron, Jean bastien Grill, Sabela Ramos, Edouard
+Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev,
+and 197 others. 2025. Gemma 3 technical report.
+Preprint, arXiv:2503.19786.
+Nuno M. Guerreiro, Ricardo Rei, Daan van Stigt, Luisa
+Coheur, Pierre Colombo, and André F. T. Mar-
+tins. 2024. xCOMET: Transparent machine trans-
+lation evaluation through fine-grained error detection.
+Transactions of the Association for Computational
+Linguistics, 12:979–995.
+Zhiwei He, Xing Wang, Wenxiang Jiao, Zhuosheng
+Zhang, Rui Wang, Shuming Shi, and Zhaopeng Tu.
+2024. Improving machine translation with human
+feedback: An exploration of quality estimation as a
+reward model. In Proceedings of the 2024 Confer-
+ence of the North American Chapter of the Associ-
+ation for Computational Linguistics: Human Lan-
+guage Technologies (Volume 1: Long Papers), pages
+8164–8180, Mexico City, Mexico. Association for
+Computational Linguistics.
+Miroslav Hrabal, Ondrej Glembek, Aleš Tamchyna, Al-
+mut Silja Hildebrand, Alan Eckhard, Miroslav Štola,
+Sergio Penkale, Zuzana Šimeˇcková, Ondˇrej Bojar,
+Alon Lavie, and Craig Stewart. 2025a. CUNI and
+phrase at WMT25 MT evaluation task. In Proceed-
+ings of the Tenth Conference on Machine Translation,
+pages 934–944, Suzhou, China. Association for Com-
+putational Linguistics.
+Miroslav Hrabal, Josef Jon, Martin Popel, and Ondˇrej
+Bojar. 2025b. CUNI at WMT25 general translation
+task. In Proceedings of the Tenth Conference on
+Machine Translation, pages 680–687, Suzhou, China.
+Association for Computational Linguistics.
+Juraj Juraska, Tobias Domhan, Mara Finkelstein, Tetsuji
+Nakagawa, Geza Kovacs, Daniel Deutsch, Pidong
+Wang, and Markus Freitag. 2025. MetricX-25 and
+GemSpanEval: Google Translate submissions to the
+WMT25 evaluation shared task. In Proceedings of
+the Tenth Conference on Machine Translation, pages
+957–968, Suzhou, China. Association for Computa-
+tional Linguistics.
+Juraj Juraska, Mara Finkelstein, Daniel Deutsch, Aditya
+Siddhant, Mehdi Mirzazadeh, and Markus Freitag.
+2023. MetricX-23: The Google submission to the
+WMT 2023 metrics shared task.
+In Proceedings
+of the Eighth Conference on Machine Translation,
+pages 756–767, Singapore. Association for Compu-
+tational Linguistics.
+Zdenˇek Kasner, Vilém Zouhar, Patrícia Schmidtová,
+Ivan Kartáˇc, Kristýna Onderková, Ondˇrej Plátek,
+Dimitra Gkatzia, Saad Mahamood, Ondˇrej Dušek,
+and Simone Balloccu. 2026. Llms as span annotators:
+A comparative study of llms and humans. Preprint,
+arXiv:2504.08697.
+Tom Kocmi, Arkady Arkhangorodsky, Alexandre Be-
+rard, Phil Blunsom, Samuel Cahyawijaya, Théo De-
+haze, Marzieh Fadaee, Nicholas Frosst, Matthias
+Galle, Aidan Gomez, Nithya Govindarajan, Wei-
+Yin Ko, Julia Kreutzer, Kelly Marchisio, Ahmet
+Üstün, Sebastian Vincent, and Ivan Zhang. 2025a.
+Command-a-translate: Raising the bar of machine
+translation with difficulty filtering. In Proceedings of
+the Tenth Conference on Machine Translation, pages
+789–799, Suzhou, China. Association for Computa-
+tional Linguistics.
+Tom
+Kocmi,
+Ekaterina
+Artemova,
+Eleftherios
+Avramidis, Rachel Bawden, Ondˇrej Bojar, Kon-
+stantin Dranch, Anton Dvorkovich, Sergey Dukanov,
+Mark Fishel, Markus Freitag, Thamme Gowda,
+Roman Grundkiewicz, Barry Haddow, Marzena
+Karpinska,
+Philipp Koehn,
+Howard Lakougna,
+Jessica Lundin, Christof Monz, Kenton Murray,
+and 10 others. 2025b.
+Findings of the WMT25
+general machine translation shared task: Time to
+stop evaluating on easy test sets. In Proceedings
+of the Tenth Conference on Machine Translation,
+pages 355–413, Suzhou, China. Association for
+Computational Linguistics.
+Tom Kocmi, Eleftherios Avramidis, Rachel Bawden,
+Ondˇrej Bojar, Anton Dvorkovich, Christian Feder-
+mann, Mark Fishel, Markus Freitag, Thamme Gowda,
+Roman Grundkiewicz, Barry Haddow, Marzena
+Karpinska, Philipp Koehn, Benjamin Marie, Christof
+Monz, Kenton Murray, Masaaki Nagata, Martin
+Popel, Maja Popovi´c, and 3 others. 2024a. Findings
+of the WMT24 general machine translation shared
+task: The LLM era is here but MT is not solved yet.
+In Proceedings of the Ninth Conference on Machine
+Translation, pages 1–46, Miami, Florida, USA. As-
+sociation for Computational Linguistics.
+Tom Kocmi, Eleftherios Avramidis, Rachel Bawden,
+Ondˇrej Bojar, Anton Dvorkovich, Christian Fed-
+ermann, Mark Fishel, Markus Freitag, Thamme
+11
+
+Gowda, Roman Grundkiewicz, Barry Haddow,
+Philipp Koehn, Benjamin Marie, Christof Monz,
+Makoto Morishita, Kenton Murray, Masaaki Nagata,
+Toshiaki Nakazawa, Martin Popel, and 3 others. 2023.
+Findings of the 2023 conference on machine transla-
+tion (WMT23): LLMs are here but not quite there yet.
+In Proceedings of the Eighth Conference on Machine
+Translation, pages 1–42, Singapore. Association for
+Computational Linguistics.
+Tom Kocmi, Rachel Bawden, Ondˇrej Bojar, Anton
+Dvorkovich, Christian Federmann, Mark Fishel,
+Thamme Gowda, Yvette Graham, Roman Grund-
+kiewicz, Barry Haddow, Rebecca Knowles, Philipp
+Koehn, Christof Monz, Makoto Morishita, Masaaki
+Nagata, Toshiaki Nakazawa, Michal Novák, Martin
+Popel, and Maja Popovi´c. 2022. Findings of the 2022
+conference on machine translation (WMT22). In
+Proceedings of the Seventh Conference on Machine
+Translation (WMT), pages 1–45, Abu Dhabi, United
+Arab Emirates (Hybrid). Association for Computa-
+tional Linguistics.
+Tom Kocmi and Christian Federmann. 2023. GEMBA-
+MQM: Detecting translation quality error spans with
+GPT-4. In Proceedings of the Eighth Conference
+on Machine Translation, pages 768–775, Singapore.
+Association for Computational Linguistics.
+Tom Kocmi, Vilém Zouhar, Eleftherios Avramidis,
+Roman Grundkiewicz, Marzena Karpinska, Maja
+Popovi´c, Mrinmaya Sachan, and Mariya Shmatova.
+2024b. Error span annotation: A balanced approach
+for human evaluation of machine translation.
+In
+Proceedings of the Ninth Conference on Machine
+Translation, pages 1440–1453, Miami, Florida, USA.
+Association for Computational Linguistics.
+Alon Lavie, Greg Hanneman, Sweta Agrawal, Diptesh
+Kanojia, Chi-Kiu Lo, Vilém Zouhar, Frederic Blain,
+Chrysoula Zerva, Eleftherios Avramidis, Sourabh De-
+oghare, Archchana Sindhujan, Jiayi Wang, David Ife-
+oluwa Adelani, Brian Thompson, Tom Kocmi,
+Markus Freitag, and Daniel Deutsch. 2025. Findings
+of the WMT25 shared task on automated translation
+evaluation systems: Linguistic diversity is challeng-
+ing and references still help. In Proceedings of the
+Tenth Conference on Machine Translation, pages 436–
+483, Suzhou, China. Association for Computational
+Linguistics.
+Arle Lommel, Aljoscha Burchardt, and Hans Uszkor-
+eit. 2014. Multidimensional quality metrics (mqm):
+A framework for declaring and describing transla-
+tion quality metrics. Tradumàtica: tecnologies de la
+traducció, 0:455–463.
+Boxuan Lyu, Haiyue Song, Hidetaka Kamigaito,
+Chenchen Ding, Hideki Tanaka, Masao Utiyama, Ko-
+taro Funakoshi, and Manabu Okumura. 2025. Mini-
+mum bayes risk decoding for error span detection in
+reference-free automatic machine translation evalua-
+tion. Preprint, arXiv:2512.07540.
+OpenAI, Sandhini Agarwal, Lama Ahmad, Jason
+Ai, Sam Altman, Andy Applebaum, Edwin Ar-
+bus, Rahul K. Arora, Yu Bai, Bowen Baker, Haim-
+ing Bao, Boaz Barak, Ally Bennett, Tyler Bertao,
+Nivedita Brett, Eugene Brevdo, Greg Brockman, Se-
+bastien Bubeck, Che Chang, and 107 others. 2025.
+gpt-oss-120b & gpt-oss-20b model card. Preprint,
+arXiv:2508.10925.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic evalu-
+ation of machine translation. In Proceedings of the
+40th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 311–318, Philadelphia,
+Pennsylvania, USA. Association for Computational
+Linguistics.
+Stefano
+Perrella,
+Lorenzo
+Proietti,
+Pere-Lluís
+Huguet Cabot, Edoardo Barba, and Roberto Navigli.
+2024a. Beyond correlation: Interpretable evaluation
+of machine translation metrics. In Proceedings of the
+2024 Conference on Empirical Methods in Natural
+Language Processing, pages 20689–20714, Miami,
+Florida,
+USA. Association for Computational
+Linguistics.
+Stefano Perrella, Lorenzo Proietti, Alessandro Scirè,
+Edoardo Barba,
+and Roberto Navigli. 2024b.
+Guardians
+of
+the
+machine
+translation
+meta-
+evaluation: Sentinel metrics fall in! In Proceedings
+of the 62nd Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long
+Papers), pages 16216–16244, Bangkok, Thailand.
+Association for Computational Linguistics.
+Stefano Perrella, Lorenzo Proietti, Alessandro Scirè,
+Niccolò Campolungo, and Roberto Navigli. 2022.
+MaTESe: Machine translation evaluation as a se-
+quence tagging problem. In Proceedings of the Sev-
+enth Conference on Machine Translation (WMT),
+pages 569–577, Abu Dhabi, United Arab Emirates
+(Hybrid). Association for Computational Linguistics.
+Maja Popovi´c. 2015. chrF: character n-gram F-score
+for automatic MT evaluation. In Proceedings of the
+Tenth Workshop on Statistical Machine Translation,
+pages 392–395, Lisbon, Portugal. Association for
+Computational Linguistics.
+Lorenzo Proietti, Roman Grundkiewicz, and Matt Post.
+2026. PEAR: Pairwise evaluation for automatic rela-
+tive scoring in machine translation. In Proceedings
+of the 64th Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 42189–42207, San Diego, California, United
+States. Association for Computational Linguistics.
+Lorenzo Proietti, Stefano Perrella, and Roberto Navigli.
+2025a. Has machine translation evaluation achieved
+human parity? the human reference and the limits of
+progress. In Proceedings of the 63rd Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 2: Short Papers), pages 790–813, Vienna,
+Austria. Association for Computational Linguistics.
+12
+
+Lorenzo Proietti, Stefano Perrella, Vilém Zouhar,
+Roberto Navigli, and Tom Kocmi. 2025b. Estimat-
+ing machine translation difficulty. In Findings of the
+Association for Computational Linguistics: EMNLP
+2025, pages 24261–24285, Suzhou, China. Associa-
+tion for Computational Linguistics.
+Ricardo Rei, Craig Stewart, Ana C Farinha, and Alon
+Lavie. 2020. COMET: A neural framework for MT
+evaluation. In Proceedings of the 2020 Conference
+on Empirical Methods in Natural Language Process-
+ing (EMNLP), pages 2685–2702, Online. Association
+for Computational Linguistics.
+Ricardo Rei, Marcos Treviso, Nuno M. Guerreiro,
+Chrysoula Zerva, Ana C Farinha, Christine Maroti,
+José G. C. de Souza, Taisiya Glushkova, Duarte
+Alves, Luisa Coheur, Alon Lavie, and André F. T.
+Martins. 2022. CometKiwi: IST-unbabel 2022 sub-
+mission for the quality estimation shared task. In
+Proceedings of the Seventh Conference on Machine
+Translation (WMT), pages 634–645, Abu Dhabi,
+United Arab Emirates (Hybrid). Association for Com-
+putational Linguistics.
+Parker Riley, Daniel Deutsch, George Foster, Viresh
+Ratnakar, Ali Dabirmoghaddam, and Markus Freitag.
+2024. Finding replicable human evaluations via sta-
+ble ranking probability. In Proceedings of the 2024
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies (Volume 1: Long Papers),
+pages 4908–4919, Mexico City, Mexico. Association
+for Computational Linguistics.
+Lucia Specia, Frédéric Blain, Marina Fomicheva, Er-
+ick Fonseca, Vishrav Chaudhary, Francisco Guzmán,
+and André F. T. Martins. 2020. Findings of the WMT
+2020 shared task on quality estimation. In Proceed-
+ings of the Fifth Conference on Machine Translation,
+pages 743–764, Online. Association for Computa-
+tional Linguistics.
+Shaomu Tan. 2025. Simple test time scaling for ma-
+chine translation: Kaze-MT at the WMT25 gen-
+eral translation task. In Proceedings of the Tenth
+Conference on Machine Translation, pages 651–656,
+Suzhou, China. Association for Computational Lin-
+guistics.
+Yu Wan, Dayiheng Liu, Baosong Yang, Haibo Zhang,
+Boxing Chen, Derek Wong, and Lidia Chao. 2022.
+UniTE: Unified translation evaluation. In Proceed-
+ings of the 60th Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), pages 8117–8127, Dublin, Ireland. Association
+for Computational Linguistics.
+Haoran Xu, Amr Sharaf, Yunmo Chen, Weiting Tan,
+Lingfeng Shen, Benjamin Van Durme, Kenton Mur-
+ray, and Young Jin Kim. 2024. Contrastive prefer-
+ence optimization: pushing the boundaries of llm per-
+formance in machine translation. In Proceedings of
+the 41st International Conference on Machine Learn-
+ing, ICML’24. JMLR.org.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, Chujie Zheng, Day-
+iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao
+Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41
+others. 2025.
+Qwen3 technical report.
+Preprint,
+arXiv:2505.09388.
+Taemin Yeom, Yonghyun Ryu, Yoonjung Choi, and
+Jinyeong Bak. 2025. Tagged span annotation for
+detecting translation errors in reasoning LLMs. In
+Proceedings of the Tenth Conference on Machine
+Translation, pages 878–886, Suzhou, China. Associ-
+ation for Computational Linguistics.
+Chrysoula Zerva, Frederic Blain, José G. C. De Souza,
+Diptesh Kanojia, Sourabh Deoghare, Nuno M. Guer-
+reiro, Giuseppe Attanasio, Ricardo Rei, Constantin
+Orasan, Matteo Negri, Marco Turchi, Rajen Chatter-
+jee, Pushpak Bhattacharyya, Markus Freitag, and An-
+dré Martins. 2024. Findings of the quality estimation
+shared task at WMT 2024: Are LLMs closing the gap
+in QE? In Proceedings of the Ninth Conference on
+Machine Translation, pages 82–109, Miami, Florida,
+USA. Association for Computational Linguistics.
+Mao Zheng, Zheng Li, Yang Du, Bingxin Qu, and
+Mingyang Song. 2025. Shy-hunyuan-MT at WMT25
+general machine translation shared task. In Proceed-
+ings of the Tenth Conference on Machine Translation,
+pages 607–613, Suzhou, China. Association for Com-
+putational Linguistics.
+13
+
+Year
+Language
+Pair
+#Samples
+#Errors
+%Samples
+w/o Errors
+2022
+EN→DE
+21, 040
+16, 074
+53.5%
+EN→ZH
+49, 558
+29, 558
+48.6%
+2023
+EN→DE
+5, 980
+18, 698
+26.9%
+ZH→EN
+18, 829
+43, 767
+18.9%
+2024
+EN→DE
+9, 253
+11, 650
+48.3%
+EN→ES
+9, 345
+4, 077
+77.4%
+JA→ZH
+8, 400
+8, 378
+51.0%
+2025
+MQM
+EN→KO
+3, 474
+7, 706
+38.6%
+JA→ZH
+3, 906
+8, 591
+27.0%
+2025
+ESA
+CS→DE
+9, 140
+17, 238
+59.8%
+CS→UK
+7, 290
+6, 561
+67.0%
+EN→AR
+6, 640
+6, 069
+53.0%
+EN→BHO
+11, 620
+12, 681
+74.9%
+EN→CS
+7, 296
+12, 532
+64.1%
+EN→ET
+6, 308
+12, 399
+57.4%
+EN→IS
+5, 976
+17, 301
+45.4%
+EN→IT
+5, 976
+7, 620
+55.3%
+EN→JA
+5, 976
+3, 968
+73.3%
+EN→MAS
+8, 964
+4, 106
+63.2%
+EN→RU
+5, 976
+9, 188
+55.7%
+EN→SR
+5, 976
+12, 048
+52.1%
+EN→UK
+5, 976
+3, 363
+72.6%
+EN→ZH
+5, 976
+6, 695
+68.6%
+Table 4: Statistics of the test sets used in this work.
+These test sets have been sourced from several previous
+works: the WMT Metrics Shared Task editions from
+2022 to 2024 (Freitag et al., 2022b, 2023, 2024), the
+study from Riley et al. (2024) regarding finding replica-
+ble human evaluation techniques, the WMT25 General
+Machine Translation shared task (Kocmi et al., 2025b),
+and the WMT25 shared task on Automated Translation
+Evaluation Systems (Lavie et al., 2025).
+A
+Data and Models
+Table 4 reports statistics for the MQM and ESA
+test sets employed in this work. Table 5 lists the
+WMT25 submissions used in this work and at-
+tributes them to their corresponding research pa-
+pers.
+B
+LLM-as-a-Judge Implementation
+Details
+Our auto-evaluators consist of four Large Language
+Models (LLMs) prompted for error detection:
+• Claude Sonnet 4.5 is a closed-source think-
+ing LLM developed by Anthropic, optimized
+for agents, coding, and computer use.13
+• Claude Haiku 4.5 is a cost-efficient thinking
+model in the Claude family.14
+13https://www.anthropic.com/claude/sonnet.
+14https://www.anthropic.com/claude/haiku.
+Auto-evaluator
+Research Paper
+GemSpanEval
+(Juraska et al., 2025)
+GemSpanEval-QE
+(Juraska et al., 2025)
+XCOMET-XL
+(Guerreiro et al., 2024)
+XCOMET-XXL
+(Guerreiro et al., 2024)
+AIP (pri)
+(Yeom et al., 2025)
+AIP (sec)
+(Yeom et al., 2025)
+AutoLQA
+(Hrabal et al., 2025a)
+AutoLQAESA
+(Hrabal et al., 2025a)
+AutoLQA41
+(Hrabal et al., 2025a)
+Table 5: Research papers associated with the WMT25
+submissions and baselines used in this work.
+• Qwen3 235b is an open-weight Mixture-of-
+Experts model from the Qwen3 model fam-
+ily (Yang et al., 2025). It features 235b pa-
+rameters, with only 22b parameters activated
+per token during a forward pass. This model
+incorporates both thinking and non-thinking
+modes.
+• gpt-oss 120b is an open-weight, Mixture-of-
+Experts, thinking model from the GPT model
+family (OpenAI et al., 2025).
+It features
+116.8b parameters, with only 5.13b parame-
+ters activated per token during a forward pass.
+We instruct these LLMs using the prompt re-
+ported in Table 9. Such a prompt illustrates pre-
+cisely the error detection task, providing to the
+model:
+• Task Guidelines: high-level instructions on
+how translation errors should be identified;
+• Error Typology: the MQM error typology
+used by Freitag et al. (2021);
+• Severity Levels: the allowed severity levels;
+• Output Annotation Format: the JSON out-
+put annotation format expected;
+• Task Instructions: step-by-step instructions
+guiding the models to conduct the error detec-
+tion task.
+{final_instruction} is assigned one out of two
+different values depending on whether the underly-
+ing LLM uses reasoning or not:
+1. Reasoning:
+Execute
+these
+steps
+sequentially.
+Ensure
+you
+complete
+all
+steps:
+error
+identification,
+individual error analysis (including
+reasoning,
+categorization,
+and
+14
+
+verification), and final annotation
+generation.
+Your
+output
+outside
+thinking tags must contain only the
+final json annotation.
+2. Non-reasoning:
+Execute
+these
+steps
+sequentially.
+Ensure
+your
+output
+shows your reasoning for all steps:
+error
+identification,
+individual
+error analysis (including reasoning,
+categorization,
+and
+verification),
+and final annotation generation.
+Asking non-reasoning models to show their rea-
+soning in the output, we elicit some reasoning be-
+havior, preventing them from outputting the final
+JSON directly. Reasoning models are gpt-oss 120b,
+Claude Sonnet 4.5, and Claude Haiku 4.5, while
+Qwen3 235b is used without reasoning.
+We collect our evaluations using the AWS
+Bedrock service.15 We sample from LLMs using
+the following generation parameters, leaving the
+rest as per the Bedrock default:
+max_new_tokens
+32768
+reasoning_effort
+medium
+reasoning_budget
+4096
+C
+Measures Used at WMT
+WMT editions have employed different variants of
+span-level precision, recall, and F-score to measure
+error detection performance. In this section, we
+formally define these measures and highlight their
+differences from those introduced in Section 2. We
+use the same notation as in Section 2. Importantly,
+as in the rest of the paper, we ignore error severity.
+C.1
+WMT 2019 and 2020
+At the 2019 and 2020 editions of the WMT Qual-
+ity Estimation shared tasks (Fonseca et al., 2019;
+Specia et al., 2020), the organizers adopt a version
+of span-level precision, recall, and F-score similar
+to MPP.16 Each hypothesis span ˆs ∈ˆS is matched
+with the ground-truth error span with which it has
+the highest character overlap, and vice versa. The
+15https://aws.amazon.com/bedrock/.
+16The official WMT19 meta-evaluation script can be found
+here: https://github.com/deep-spin/qe-evaluation/
+blob/master/eval_document_annotations.py.
+“best match” of each span is defined as follows:
+bm(ˆs) = arg max
+s∈S
+|ˆs ∩s|
+bm(s) = arg max
+ˆs∈ˆS
+|ˆs ∩s|
+For each ˆs ∈ˆS and s ∈S, span precision and
+recall are defined as follows:
+PW19(ˆs) = |ˆs ∩bm(ˆs)|
+|ˆs|
+RW19(s) = |s ∩bm(s)|
+|s|
+Document precision and recall are computed as the
+average span precision and recall:
+PW19 = 1
+| ˆS|
+X
+ˆs∈ˆS
+PW19(ˆs)
+RW19 = 1
+|S|
+X
+s∈S
+RW19(s)
+Finally, document F-score is the harmonic mean of
+average precision and recall, and corpus F-score is
+obtained by averaging F-score across documents.
+Similar to MPP, this measure assigns partial
+credit to partial overlaps. However, instead of com-
+puting a one-to-one matching between hypothesis
+and ground-truth error spans, each hypothesis span
+is matched with the ground-truth span with the
+largest character overlap. As a consequence, the
+same hypothesis span can be matched to multi-
+ple ground-truth error spans, and vice versa, and
+matches involving longer error spans are preferred
+over those involving shorter ones. Furthermore,
+corpus F-score is obtained via macro-averaging,
+which, in the presence of short documents and
+sparse human annotations, favors low-recall auto-
+evaluators, as shown in Section 5.2.
+C.2
+WMT 2023, 2024, and 2025
+The organizers of the 2023 and 2024 editions of
+the WMT Quality Estimation shared tasks (Blain
+et al., 2023; Zerva et al., 2024) adopt a different
+version of span-level precision, recall, and F-score,
+which was later slightly modified again for the 2025
+edition of the WMT shared task on Automated
+Translation Quality Evaluation (Lavie et al., 2025).
+These measures are very similar to the one we dub
+≈W25 in Section 2.3, with the primary difference
+that they do not enforce a one-to-one matching
+between hypothesis and ground-truth error spans.
+We define them formally as follows.
+15
+
+Let us first define two functions to count the
+number of times each character index of translation
+x = (x1, x2, . . . , xn) participates in an error span:
+cˆs(i) =
+X
+ˆs∈ˆS,ˆs=(iˆs,jˆs)
+I[iˆs ≤i ≤jˆs]
+cs(i) =
+X
+s∈S,s=(is,js)
+I[is ≤i ≤js]
+We then define two binary functions that indicate
+whether a character index participates in any error
+span:
+bˆs(i) = I[cˆs(i) > 0]
+bs(i) = I[cs(i) > 0]
+Precision and recall, as used by the WMT 2023 and
+2024 Quality Estimation shared tasks, are defined
+as follows:17
+PW23 =
+Pn
+i=1 bˆs(i)bs(i)
+Pn
+i=1 bˆs(i)
+RW23 =
+Pn
+i=1 bˆs(i)bs(i)
+Pn
+i=1 bs(i)
+Later, at the WMT 2025 Automated Transla-
+tion Quality Evaluation shared task, the organizers
+allowed multiple overlapping annotations to con-
+tribute as many times as each character participates
+in a distinct error span. Consequently, their version
+of precision and recall is defined directly using the
+counts c(·) rather than the binary functions b(·):18
+PW25 =
+Pn
+i=1 min(cˆs(i), cs(i))
+Pn
+i=1 cˆs(i)
+(8)
+RW25 =
+Pn
+i=1 min(cˆs(i), cs(i))
+Pn
+i=1 cs(i)
+(9)
+Despite being used for span-level evaluation,
+both measures operate at the character level. As a
+result, longer error spans receive greater weight
+than shorter ones, making these measures un-
+aligned with MT evaluation protocols such as ESA
+and MQM, where the weight of each error is deter-
+mined by explicit severity labels rather than span
+length.
+17The
+official
+WMT23
+meta-evaluation
+script
+can
+be
+found
+here:
+https://github.com/WMT-QE-Task/
+qe-eval-scripts/blob/main/wmt23/task2_evaluate.
+py.
+18The official WMT25 meta-evaluation script can be
+found
+here:
+https://github.com/wmt-conference/
+wmt25-mteval/blob/main/scripts/scoring/task2/
+scoring_esa.py.
+T
+T
+h
+h
+e
+e
+q
+q
+u
+u
+i
+i
+c
+c
+k
+k
+b
+b
+r
+r
+o
+o
+w
+w
+n
+n
+f
+f
+o
+o
+x
+x
+j
+j
+u
+u
+m
+m
+p
+p
+s
+s
+s1
+s2
+s3
+ˆs1
+ˆs2
+Figure 4: Given the translation x = “The quick brown
+fox jumps”, this example shows span-level annotations
+of translation quality, featuring three ground-truth error
+spans – s1, s2, s3 ∈S – and two hypothesis error spans
+– ˆs1, ˆs2 ∈ˆS.
+D
+Effects of Enforcing a One-to-one
+Error Matching
+In Section 2, we enforce a one-to-one matching
+between hypothesis and ground-truth error spans.
+In contrast, previous work has often implemented
+meta-evaluation measures without enforcing such a
+matching. For example, considering the measures
+employed over the years at WMT (Appendix C),
+W19 computes two many-to-one alignments, differ-
+ent between precision and recall, while W23 and
+W25 do not align hypothesis and ground-truth er-
+rors at all, because the final precision and recall
+are directly based on character overlaps. Let us
+clarify the difference between these choices using
+the example in Figure 4, where ˆs1 overlaps with
+both s1 and s2.
+Let us start from W19, where each hypothe-
+sis span is aligned to the ground-truth span with
+the highest character overlap, and vice-versa (Sec-
+tion C.1). Consequently, ˆs1 is paired to s2 when
+computing precision, while both s1 and s2 are
+paired to ˆs1 when computing recall, leading to the
+following P and R values:
+PW19 =
+5
+9 + 1
+2
+= 7
+9
+RW19 = 1 + 1 + 1
+3
+= 1
+In W23 and W25, there is no span alignment,
+and P and R are based directly on character over-
+lap counts. Thus, ˆs1 overlaps with ground-truth
+spans for 8 out of 9 characters, while s1 and s2
+overlap entirely with hypothesis error spans (ˆs1
+covers them both), leading to:
+PW25 = 8 + 3
+9 + 3 = 11
+12
+RW25 = 3 + 5 + 3
+3 + 5 + 3 = 1
+16
+
+Instead, MPP enforces a one-to-one error match-
+ing and selects the M ∈MMPP that maximizes the
+final F-score. In the example in Figure 4, ˆs1 is
+matched to s2, while s1 remains unmatched:
+PMPP =
+5
+9 + 1
+2
+= 7
+9
+RMPP = 1 + 1
+3
+= 2
+3
+Arguably, one strategy is not necessarily better
+than the other, and the choice might depend on
+the specific evaluation objectives. We decided to
+enforce a one-to-one matching to align with the
+MQM protocol, enabling the maximum score of
+F = 1 to be reached only when both the position
+and number of detected errors match the ground
+truth. In contrast, measures that do not enforce a
+one-to-one matching focus primarily on error lo-
+cation. Consider again our running example in
+Figure 4: auto-evaluators assessed using W23 and
+W25 can achieve an optimal F-score = 1 by re-
+turning as many single-character annotations as
+there are annotated characters in the ground-truth.
+However, the MQM protocol assigns scalar scores
+to translations based on both error severity and
+number. Specifically, a translation containing 11
+errors ei (i.e., the number of characters of “The”,
+“quick”, and “fox”) is assigned an MQM score of
+−P11
+i=1 severity(ei), which is substantially worse
+than a translation containing three errors, even if
+their lengths and position match precisely.
+W19 mitigates this by aligning hypothesis and
+ground-truth errors based on their character overlap.
+However, it does not enforce a single one-to-one
+matching; instead, it computes two many-to-one
+alignments when computing precision and recall.
+This allows the same hypothesis error to be aligned
+to multiple (potentially distinct) ground-truth er-
+rors, and vice versa. Returning to our running ex-
+ample, this allows R = 1 even though the number
+of hypothesis errors is smaller than the number of
+ground-truth errors.
+E
+Additional Results
+Table 6 shows the number of errors, average num-
+ber of errors per sample, and average span length,
+for each evaluator, computed on the MQM split of
+the WMT 2025 data.
+Table 7 presents the full results – in terms of
+auto-evaluator F-scores – on the MQM split of the
+WMT 2025 data.
+Auto-Evaluator
+#E
+#E/S
+SL
+MQM
+16,297
+2.21
+10.7
+AutoLQA41.sec
+2,116
+0.29
+53.1
+Claude Haiku 4.5
+11,439
+1.55
+10.7
+Claude Sonnet 4.5
+17,584
+2.38
+7.3
+AutoLQAESA.sec
+8,549
+1.16
+36.5
+AIP.pri
+6,606
+0.90
+5.1
+AutoLQA.pri
+10,070
+1.36
+35.5
+AIP.sec
+7,098
+0.96
+5.0
+gpt-oss 120b
+14,308
+1.94
+10.8
+GemSpanEval.pri
+26,363
+3.57
+10.5
+XCOMET-XXL.bas
+26,676
+3.61
+5.6
+XCOMET-XL.bas
+30,824
+4.18
+5.0
+Qwen3 235b
+30,563
+4.14
+9.6
+GemSpanEval-QE.sec
+31,815
+4.31
+9.6
+Table 6: Number of errors (“#E”), average number of
+errors per sample (“#E/S”), and average span length
+(“SL”), for each evaluator, computed on the MQM split
+of the WMT 2025 data (Lavie et al., 2025).
+E.1
+WMT25 ESA Ranking
+Table 8 presents the ranking of auto-evaluators
+when using the ESA split of WMT25 – including
+all the translation directions associated with ESA
+in Table 4 – using MPP with micro-averaging. Re-
+sults are aggregated across language directions by
+averaging language pair-specific precision, recall,
+and F-score.
+17
+
+Micro
+Macro
+Auto-evaluator
+EM
+MP
+MPP
+W25
+EM
+MP
+MPP
+W25
+Qwen3 235b
+6.99
+28.33
+22.37
+23.31
+7.21
+23.75
+17.45
+18.33
+GemSpanEval-QE.sec
+7.76
+25.87
+20.60
+22.10
+14.99
+27.33
+22.11
+22.61
+Sonnet 4.5
+7.98
+25.05
+19.92
+18.37
+12.28
+23.84
+18.87
+19.11
+GemSpanEval.pri
+7.11
+25.29
+19.84
+20.61
+13.95
+25.88
+20.65
+20.95
+XCOMET-XXL
+2.68
+25.53
+18.33
+20.89
+7.81
+24.73
+17.43
+19.48
+AIP.sec
+8.69
+24.43
+18.16
+13.91
+22.12
+31.86
+27.30
+26.87
+Haiku 4.5
+6.29
+22.45
+17.69
+17.52
+14.14
+24.77
+20.31
+20.55
+XCOMET-XL
+2.32
+24.72
+17.47
+21.14
+6.67
+23.89
+16.22
+18.91
+gpt-oss 120b
+6.62
+22.06
+17.45
+16.35
+10.99
+21.99
+17.21
+17.42
+AIP.pri
+6.04
+23.18
+15.93
+13.20
+22.73
+32.65
+27.90
+27.71
+AutoLQA.pri
+3.15
+21.49
+14.95
+16.26
+11.78
+24.44
+17.56
+18.82
+AutoLQAESA.sec
+2.82
+19.92
+14.01
+15.69
+12.81
+24.57
+18.14
+19.27
+AutoLQA41.sec
+1.72
+11.35
+9.30
+15.15
+27.16
+34.16
+30.36
+31.40
+Table 7: F-score of auto-evaluators on the MQM split of the WMT 2025 Automated Translation Quality Evaluation
+Systems shared task under EM, MP, MPP, and W25, with both micro- and macro-averaging. We run the auto-
+evaluators highlighted in gray; the others are submissions to WMT.
+Metric
+P
+R
+F1
+AIP.sec
+17.00
+14.75
+15.17
+AIP.pri
+16.06
+13.02
+13.52
+AutoLQA.pri
+10.61
+14.59
+10.95
+AutoLQAESA.sec
+11.45
+13.50
+10.77
+XCOMET-XXL.bas
+6.80
+28.45
+10.55
+GemSpanEval-QE.sec
+5.98
+33.99
+9.95
+GemSpanEval.pri
+5.91
+33.51
+9.81
+XCOMET-XL.bas
+6.22
+25.90
+9.60
+AutoLQA41.sec
+11.68
+7.27
+8.30
+Table 8: Full results on the ESA split of WMT25 under
+MPP with micro-averaging.
+18
+
+Table 9: Prompt used to instruct the LLMs to conduct the error detection task. It is designed to take as input source
+language, source text, target language, and target text, and return the annotation as a JSON object.
+You will be provided with a source paragraph and its translation. A paragraph may contain one or more sentences. Your task is
+to identify all translation errors, assigning a category, subcategory, and severity level to each error.
+### Task Guidelines
+- To identify an error, you must mark its span of text in the translation. Only in two special cases must the error be located
+in the source paragraph rather than the translation. These two special cases depend on the error category you assign to
+the identified error (refer to error categories and subcategories below):
+1. **Omission errors** (category='Accuracy' and subcategory='Omission'): Mark the missing span of text in the source
+paragraph.
+2. **Source errors** (category='Source error' and subcategory='Source error'): Mark the problematic span of text in the
+source paragraph. Source errors are problems in the source paragraph itself, not translation errors (e.g., grammatical
+errors in the source paragraph). When source errors occur, do not penalize the translation by marking a corresponding
+translation error unless the translation introduced additional problems.
+Apart from these two special cases, all errors must be located in the translation.
+- When identifying errors, be as fine-grained as possible. For example, if two consecutive words are each mistranslated, record
+two separate errors. However, if multiple errors occur in a single stretch of text and cannot be separated, record only
+the most severe error (refer to the available error severities below).
+- We will later derive the position of the identified error spans in the source or translation paragraphs via string matching.
+Therefore, report the identified error spans verbatim, without modifying or altering them in any way.
+- If it is not possible to reliably identify distinct errors because the translation is too badly garbled or is unrelated to
+the source, mark a single 'Unintelligible' error that spans the entire paragraph. There can be at most one '
+Unintelligible' error per translation, and it should span the entire paragraph. Do not identify other errors if the '
+Unintelligible' category is used.
+### Error typology
+You must select error categories and subcategories from the following error typology:
+```
+**Accuracy**
+- Addition: Translation includes information not present in the source.
+- Omission: Translation is missing content from the source.
+- Mistranslation: Translation does not accurately represent the source.
+- Untranslated text: Source text has been left untranslated when it should have been translated (note: use common sense and
+consider target language conventions, as some text like certain titles or certain proper names are typically left
+untranslated).
+**Fluency**
+- Punctuation: Incorrect punctuation (for locale or style).
+- Spelling: Incorrect spelling or capitalization.
+- Grammar: Problems with grammar, other than orthography.
+- Register: Wrong grammatical register (e.g., inappropriately informal pronouns).
+- Inconsistency: Internal inconsistency (not related to terminology).
+- Character encoding: Characters are garbled due to incorrect encoding.
+**Terminology**
+- Inappropriate for context: Terminology is non-standard or does not fit the context.
+- Inconsistent use: Terminology is used inconsistently.
+**Style**
+- Awkward: Translation has stylistic problems.
+**Locale convention**
+- Address format: Wrong format for addresses.
+- Currency format: Wrong format for currency.
+- Date format: Wrong format for dates.
+- Name format: Wrong format for names.
+- Telephone format: Wrong format for telephone numbers.
+- Time format: Wrong format for time expressions.
+**Other**
+- Other: Any other issue.
+**Source error**
+- Source error: An error in the source.
+**Unintelligible**
+- Unintelligible: Impossible to reliably characterize distinct errors.
+```
+Each error category (e.g., Accuracy or Fluency) has one or more subcategories (such as Addition for Accuracy, and Punctuation
+for Fluency).
+### Severity levels
+You must select severity levels from the following list:
+```
+19
+
+- **Critical**: Errors that severely distort the meaning of the source text or make the translation very difficult to
+understand or parse.
+- **Major**: Errors that alter the meaning of the source or impact the readability or flow of the translation.
+- **Minor**: Small imperfections that have minimal impact on meaning preservation or readability.
+```
+### Output Annotation Format
+Return your annotations in JSON format as a list of Python dictionaries enclosed between triple backticks. Each dictionary
+represents a translation error and has the following form:
+```json
+{{
+"span": <minimal span of text containing the error>,
+"span_with_context": <extended span of text containing the error>,
+"explanation": <justification for marking this span as error>,
+"category": <error category>,
+"subcategory": <error subcategory>,
+"severity": <error severity>
+}}
+```
+If no errors are found, return an empty list.
+## Input Source and Translated Segments
+The source paragraph and translation to evaluate are provided below:
+```
+{src_lang} source: {src}
+{tgt_lang} translation: {tgt}
+```
+## Task instructions
+You must execute these steps in order:
+1. **ERROR IDENTIFICATION**: Analyze the translation sentence by sentence. For each sentence, quote it, then identify potential
+translation errors by specifying error spans within the considered sentence. List all the spans of text that are
+potential translation errors.
+2. **ERROR ANALYSIS**: Examine each identified span in isolation:
+1. **REASONING**: Explain why this span of text should be considered an error. If during your reasoning you determine that
+this is not actually an error, discard it and move to the next span. Otherwise, proceed with the next step.
+2. **CATEGORIZATION**: Assign an appropriate category, a subcategory, and a severity level to the identified error. Pay
+particular attention to severity assignment. Ensure that the assigned severity label reflects the severity description.
+Adjust the severity level if your initial assessment doesn't align with the definitions.
+3. **VERIFICATION**: Review the error you have identified, its category, subcategory, and severity level. Confirm
+compliance with the annotation guidelines by checking:
+- Was the error span correctly marked in the translation? Or is it an omission or source error and should be marked in
+the source?
+- Was the error span correctly copied verbatim from the translation or source paragraphs, or have other characters been
+added?
+3. **FINAL ANNOTATION GENERATION**: Generate the output annotation in JSON format as requested.
+{final_instruction}
+20

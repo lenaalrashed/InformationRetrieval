@@ -1,0 +1,291 @@
+UNIT-BASED AGENT FOR SEMI-CASCADED FULL-DUPLEX DIALOGUE SYSTEMS
+Haoyuan Yu1,2∗
+Yuxuan Chen3∗†
+Minjie Cai1†
+1 Hunan University
+2 Gongdao Technology
+3 Jilin University
+ABSTRACT
+Full-duplex voice interaction is crucial for natural human com-
+puter interaction. We present a framework that decomposes
+complex dialogue into minimal conversational units, enabling
+the system to process each unit independently and predict
+when to transit to the next. This framework is instantiated as
+a semi-cascaded full-duplex dialogue system built around a
+multimodal large language model, supported by auxiliary mod-
+ules such as voice activity detection (VAD) and text-to-speech
+(TTS) synthesis. The resulting system operates in a train-
+free, plug-and-play manner. Experiments on the HumDial
+dataset demonstrate the effectiveness of our framework, which
+ranks second among all teams on the test set of the Human-
+like Spoken Dialogue Systems Challenge[1] (Track 2: Full-
+Duplex Interaction). Code is available at the GitHub repository
+https://github.com/yu-haoyuan/fd-badcat.
+Index Terms— Full-Duplex Dialogue Systems
+1. INTRODUCTION
+Real-world voice interaction remains a challenging task[2][3].
+Full-duplex interaction offers a more natural communication
+paradigm, unlike half-duplex systems that prevent users and
+machines from speaking concurrently. Full-duplex interaction
+is implemented through two paradigms, end-to-end models[4]
+and cascaded pipelines[5]. Paralinguistic cues such as emotion
+and prosody[6] play a crucial role in spoken dialogue. End-to-
+end models process user and agent speech jointly and preserve
+acoustic cues, but require heavy data and training. Cascaded
+pipelines built on TTS, automatic speech recognition(ASR),
+large language model (LLM), and speaker verification(SV)
+are easy to deploy and integrate. However, their multi-stage
+design loses paralinguistic cues and adds latency.
+Cascaded pipelines remain attractive in practice because
+their pluggable control modules support barge-in, backchan-
+nels, and flexible component integration. Recent advances in
+multimodal large language model (MLLM) allow the models
+to use acoustic cues directly, making cascaded pipelines sim-
+pler. [7] uses an LLM to predict Speak/Listen state tokens
+that explicitly govern turn-taking. EasyTurn [8][9] categorizes
+user utterances into four states: complete, incomplete, wait,
+*Equal contribution. †Corresponding author.
+and backchannel, making the model’s predictions more inter-
+pretable and accurate. FireRedChat[10] presents a practical
+pluggable full-duplex framework, and StepFun[11] further ex-
+plores chronological thinking in end-to-end full-duplex spoken
+dialogue models to improve fine-grained speech handling.
+In this work, we propose a new pluggable full-duplex dia-
+logue framework which unifies turn-taking signals and user ut-
+terance states into a single decision space, enabling the MLLM
+to make coherent state-dependent decisions. The framework
+is composed of four modular components: (1) an audio ac-
+quisition module which employs VAD and SV to monitor the
+incoming speech stream; (2) a context module which uses an
+asynchronous ASR to provide user transcripts; (3) a decision
+module powered by a MLLM; and (4) a speech generation
+module which synthesizes responses through TTS. Relying on
+the MLLM’s built-in multimodal reasoning, the framework is
+train-free, and uses ASR transcripts only as contextual augmen-
+tation, thereby realizing a semi-cascaded design. Experimental
+results show that the proposed framework achieves state-of-
+the-art semantic and interaction-state inference with reduced
+response latency on the HumDial dataset.
+2. METHOD
+Our framework decomposes natural dialogue into a sequence
+of dialogue units. Each unit contains two states: listen and
+speak. The system always begins a unit in the listen state, and
+the MLLM issues one of two actions—continue or switch—to
+drive state transitions. Continue keeps the system in the cur-
+rent state, while switch moves the system to the other state.
+A switch from listen to speak occurs within the same unit,
+whereas a switch from speak back to listen marks the begin-
+ning of the next unit. Through these two actions, the MLLM
+controls both state transition and unit progression.
+To determine state transition, we simplify and reorganize
+the categories introduced in EasyTurn [8]. In the listen state,
+the system determines whether the user’s utterance is semanti-
+cally complete, with incomplete utterances outputting a con-
+tinue decision and complete ones outputting a switch decision
+that moves the system to the speak state, where the system
+generates the assistant’s spoken response. In the speak state,
+the system distinguishes between user backchannels and gen-
+uine interruptions, with backchannels outputting a continue
+decision and interruptions outputting a switch decision that
+arXiv:2601.20230v2 [cs.CL] 29 Jan 2026
+
+continue
+continue
+···
+Unit 1
+Unit 2
+Unit 3
+time
+USER
+VAD
+TTS
+chunk
+chunk
+chunk
+chunk
+MLLM
+kl
+ASR
+l2s
+answer
+ks
+s2l
+ASR
+ASR
+That sounds exciting! Spain has so many··· 
+ I want to travel···             to Spain！           Yeah～  
+Switch to
+Turn 2
+(listen)
+When is Spain best··· 
+interrupt
+🗣️: Let's talk
+about···hmm
+(listen)🤖: continue
+🗣️: Let's talk
+about Spain!
+(listen)🤖: switch
+switch
+speak
+switch
+listen
+🗣️: Right.
+(speak)🤖: continue
+🗣️: Stop. I   
+think you···
+(speak)🤖: switch
+SV(optional)
+sv
+sv
+sv
+sv
+long
+interruption
+Unit 1
+next unit
+Fig. 1. Overview of the unit-based dialogue process. Top-left shows example MLLM control behaviors; bottom-left shows
+intra-unit listen/speak transitions driven by continue/switch signals. Right shows one unit’s execution, where kl (keep listen) /
+l2s (listen-to-speak) correspond to continue/switch in the listen state and ks (keep speak) / s2l (speak-to-listen) correspond to
+continue/switch in the speak state.
+returns the system to the listen state.
+The audio acquisition module continuously captures the
+user’s speech stream, optionally applying speaker verifica-
+tion to filter non-target voices, and forwards the audio to the
+MLLM together with a state-specific prompt. In parallel, the
+audio is sent to the context module, where an asynchronous
+ASR generates transcripts that are cached and used in the next
+decision cycle as semantic augmentation. During the speak
+state, the TTS module renders the assistant’s response, and any
+user interruption immediately terminates playback and returns
+the system to the listen state to begin a new unit.
+3. EXPERIMENTS
+Our system is implemented using open-source components.
+The audio acquisition module uses Silero VAD1 to detect
+speech activity in real time, with an optional speaker-
+verification model CAM++2 to identify and filter target
+speakers.
+The context module uses Paraformer3, which
+provides ASR results as auxiliary semantic context.
+The
+multimodal decision module uses Qwen3-Omni4 to inte-
+grate acoustic cues and contextual information for unit-level
+control decisions.
+The speech generation module adopts
+IndexTTS1.55 to synthesize agent responses with streaming
+support. Qwen3-Omni and IndexTTS 1.5 are vLLM-based,
+and the system prompts are available in our GitHub repository.
+1https://github.com/snakers4/silero-vad
+2https://modelscope.cn/models/damo/speech_campp
+lus_sv_zh-cn_16k-common
+3https://github.com/k2-fsa/sherpa-onnx
+4https://github.com/QwenLM/Qwen3-Omni
+5https://github.com/Ksuriuri/index-tts-vllm
+Experiments are conducted on two NVIDIA A100 GPUs
+using the dataset provided by the challenge organizers, with
+evaluation largely following Full-Duplex-Bench v1.5[12] and
+additional metrics for full-duplex assessment.
+Table 1. Experimental Results on the Dev and Test Set
+First
+Response
+Delay
+Interruption
+Total
+Score
+Rejection
+Total
+Score
+Total
+Delay
+baseline
+2.753s
+80.2
+45.6
+2.436s
+ours(Dev)
+1.528s
+89.7
+50.0
+1.698s
+ours(Test)
+-
+89.7
+57.8
+1.632s
+We implement front-end and back-end interaction using
+WebSocket and FastAPI to simulate real-world dialogue. The
+experiments show that a MLLM can replace the traditional
+ASR-to-LLM cascade by reasoning directly over user audio,
+enabling the system to capture paralinguistic cues, reduce
+latency, and produce more informed responses.
+4. CONCLUSION
+We present a train-free, unit-based framework for semi-
+cascaded full-duplex dialogue, where a MLLM directly taking
+audio as input controls state transition at the unit-level. Exper-
+iments show that our proposed framework achieves accurate,
+low-latency turn-taking, effectively replacing the traditional
+ASR-to-LLM cascade with a MLLM while remaining plug-
+and-play with existing speech components.
+
+5. REFERENCES
+[1] Zhixian Zhao, Shuiyuan Wang, Guojian Li, Hongfei Xue,
+Chengyou Wang, Shuai Wang, Longshuai Xiao, Zihan
+Zhang, Hui Bu, Xin Xu, Xinsheng Wang, Hexin Liu,
+Eng Siong Chng, Hung yi Lee, Haizhou Li, and Lei
+Xie, “The icassp 2026 humdial challenge: Benchmark-
+ing human-like spoken dialogue systems in the llm era,”
+2026.
+[2] Kai-Wei Chang, En-Pei Hu, Chun-Yi Kuan, Wenze Ren,
+Wei-Chih Chen, Guan-Ting Lin, Yu Tsao, Shao-Hua Sun,
+Hung-yi Lee, and James Glass, “Game-time: Evaluating
+temporal dynamics in spoken language models,” arXiv
+preprint arXiv:2509.26388, 2025.
+[3] Siyin Wang, Zengrui Jin, Changli Tang, Qiujia Li, Bo Li,
+Chen Chen, Yuchen Hu, Wenyi Yu, Yixuan Li, Jimin
+Zhuang, et al., “Towards general auditory intelligence:
+Large multimodal models for machine listening and
+speaking,” arXiv preprint arXiv:2511.01299, 2025.
+[4] Siddhant Arora, Jinchuan Tian, Hayato Futami, Jiatong
+Shi, Yosuke Kashiwagi, Emiru Tsunoo, and Shinji Watan-
+abe,
+“Chain-of-thought reasoning in streaming full-
+duplex end-to-end spoken dialogue systems,”
+arXiv
+preprint arXiv:2510.02066, 2025.
+[5] Yuxuan Chen and Haoyuan Yu, “From turn-taking to
+synchronous dialogue: A survey of full-duplex spoken
+language models,” arXiv preprint arXiv:2509.14515,
+2025.
+[6] Yifan Cheng, Ruoyi Zhang, and Jiatong Shi, “Miku-pal:
+An automated and standardized multi-modal method for
+speech paralinguistic and affect labeling,” arXiv preprint
+arXiv:2505.15772, 2025.
+[7] Peng Wang, Songshuo Lu, Yaohua Tang, Sijie Yan, Wei
+Xia, and Yuanjun Xiong, “A full-duplex speech dia-
+logue scheme based on large language model,” Advances
+in Neural Information Processing Systems, vol. 37, pp.
+13372–13403, 2024.
+[8] Guojian Li et al., “Easy turn: Integrating acoustic and
+linguistic modalities for robust turn-taking in full-duplex
+spoken dialogue systems,” 2025.
+[9] Xuelong Geng, Qijie Shao, Hongfei Xue, Shuiyuan
+Wang, Hanke Xie, Zhao Guo, Yi Zhao, Guojian Li,
+Wenjie Tian, Chengyou Wang, et al.,
+“Osum-echat:
+Enhancing end-to-end empathetic spoken chatbot via
+understanding-driven spoken dialogue,” arXiv preprint
+arXiv:2508.09600, 2025.
+[10] Junjie Chen, Yao Hu, Junjie Li, Kangyue Li, Kun Liu,
+Wenpeng Li, Xu Li, Ziyuan Li, Feiyu Shen, Xu Tang,
+et al., “Fireredchat: A pluggable, full-duplex voice inter-
+action system with cascaded and semi-cascaded imple-
+mentations,” arXiv preprint arXiv:2509.06502, 2025.
+[11] Donghang Wu, Haoyang Zhang, Chen Chen, Tianyu
+Zhang, Fei Tian, Xuerui Yang, Gang Yu, Hexin Liu,
+Nana Hou, Yuchen Hu, et al., “Chronological thinking
+in full-duplex spoken dialogue language models,” arXiv
+preprint arXiv:2510.05150, 2025.
+[12] Guan-Ting Lin, Shih-Yun Shan Kuan, Qirui Wang, Ji-
+achen Lian, Tingle Li, Shinji Watanabe, and Hung-yi
+Lee, “Full-duplex-bench v1. 5: Evaluating overlap han-
+dling for full-duplex speech models,” arXiv preprint
+arXiv:2507.23159, 2025.

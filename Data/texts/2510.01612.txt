@@ -1,0 +1,795 @@
+RAG-BioQA: A Retrieval-Augmented Generation
+Framework for Long-Form Biomedical Question
+Answering
+Lovely Yeswanth Panchumarthi
+Department of CSE
+Emory University
+Georgia, USA
+lpanch2@emory.edu
+Sumalatha Saleti
+Department of CSE
+SRM University AP
+Andhra Pradesh, India
+sumalatha.s@srmap.edu.in
+Sai Prasad Gudari
+Department of CSE
+Emory University
+Georgia, USA
+sgudari@emory.edu
+Atharva Negi
+Department of CSE
+Emory University
+Georgia, USA
+anegi2@emory.edu
+Praveen Raj Budime
+Department of CSE
+Trine University
+Michigan, USA
+Budimepraveenraj@gmail.com
+Harsit Upadhya
+Department of CSE
+Emory University
+Georgia, USA
+hupadhy@emory.edu
+Abstract—The rapidly growth of biomedical literature cre-
+ates challenges acquiring specific medical information. Cur-
+rent biomedical question-answering systems primarily focus on
+short-form answers, failing to provide comprehensive explana-
+tions necessary for clinical decision-making. We present RAG-
+BioQA, a retrieval-augmented generation framework for long-
+form biomedical question answering. Our system integrates
+BioBERT embeddings with FAISS indexing for retrieval and a
+LoRA fine-tuned FLAN-T5 model for answer generation. We
+train on 181k QA pairs from PubMedQA, MedDialog, and
+MedQuAD, and evaluate on a held-out PubMedQA test set. We
+compare four retrieval strategies: dense retrieval (FAISS), BM25,
+ColBERT, and MonoT5. Our results show that domain-adapted
+dense retrieval outperforms zero-shot neural re-rankers, with the
+best configuration achieving 0.24 BLEU-1 and 0.29 ROUGE-1.
+Fine-tuning improves BERTScore by 81% over the base model.
+We release our framework to support reproducible biomedical
+QA research.
+Index Terms—FAISS, FLAN-T5, MonoT5, LoRA, Biomedical
+QA, BERTScore, Information Retrieval
+I. INTRODUCTION
+The biomedical domain is currently witnessing an expo-
+nential growth in literature, with databases such as PubMed
+indexing millions of citations and adding thousands of new
+articles daily [1], [2]. This profusion of data presents a ”para-
+dox of abundance” for healthcare professionals, researchers,
+and clinical decision-makers: while the volume of available
+knowledge is vast, the ability to efficiently locate, synthe-
+size, and apply specific information to clinical scenarios is
+increasingly constrained by human cognitive limits [3]. Lists
+of documents are returned by conventional search engines.
+The information must be manually read and synthesized by
+users. This procedure takes a long time. In clinical settings
+when quick choices are required, it is not practicable [4]–[6].
+Confusion is caused by large datasets. We urgently require
+precise responses. A solution is offered by automated Q&A
+systems. These tools provide precise information by filtering
+out noise. Knowledge is accessible without the need for human
+search [7], [8].
+The limitations of general tools are revealed by biomedical
+tasks. We come across challenging terminology. Conventional
+definitions frequently fall short. We have to monitor particular
+causes and consequences. Facts are essential to patient safety.
+Mistakes put lives in danger. We require complete accuracy
+[9], [10]. There are limitations to the tools available today.
+They extract particular passages from the text. We get brief
+responses. We receive a straightforward ”yes” or ”no.” We
+locate single names [11], [12]. These systems are helpful
+for factoid queries, but they are unable to meet the complex
+information needs of clinicians who need lengthy, explanatory
+responses that include reasoning, context, and supporting data
+[13].
+The primary drawback of existing Large Language Models
+(LLMs) in healthcare—the propensity to ”hallucinate,” or
+produce plausible but factually incorrect information—is the
+driving force behind this study [14]–[16]. In a clinical con-
+text, a hallucinated drug interaction or an invented treatment
+guideline can have catastrophic consequences for patient safety
+[17]–[19]. Retrieval-Augmented Generation (RAG) offers a
+promising solution by grounding generative models in exter-
+nal, non-parametric memory (e.g., verified medical literature)
+[20], [21]. By retrieving relevant documents and conditioning
+the generation on this evidence, RAG systems aim to combine
+the fluency of LLMs with the reliability of retrieval systems.
+RAG systems face gaps in biomedical use. Developers
+optimize existing frameworks for open domain tasks. Neural
+re-ranking models like ColBERT [22] and MonoT5 [23] follow
+this trend. These models depend on datasets such as MS
+arXiv:2510.01612v3 [cs.CL] 2 Jan 2026
+
+MARCO [24]. There are fewer tools designed for medical
+data. In medical settings, re-ranking techniques are difficult.
+Meaning cannot be captured by general lexical overlap. To
+assess relevance, we require exact medical ontology. This
+transferability has not been sufficiently investigated by re-
+searchers [25]. Reranking techniques utilising neural networks
+require significant computational power. In many clinical
+settings, resources are scarce. The high expense involved in
+purchasing these tools prevents their use in hospitals. We
+investigate a novel question answering framework applicable
+to the retrieval of long answers within the biomedical domain.
+We are currently looking into the complexities and costs
+associated with retrieval. The quality of the generated text is
+evaluated. The research reveals the kind of compromises which
+would have to be made for the test to be used by clinicians:
+This investigation is driven by three primary research
+questions (RQs) designed to dissect the efficacy of RAG
+components in the biomedical context:
+• RQ1: Can Retrieval-Augmented Generation (RAG) ef-
+fectively improve the quality of long-form biomedical
+question answering compared to non-retrieval baselines?
+• RQ2: We investigate the effectiveness of three different
+re-ranking strategies: sparse (BM25 [26]), dense interac-
+tion (ColBERT [22]) and sequence to sequence (MonoT5
+[23]) for medical queries.
+• RQ3: What is the impact of LoRA on the performance
+of the generative model in domain adaptation when
+fine-tuning with Parameter-Efficient Fine-Tuning (PEFT)
+[27]?
+The use of a search engine like PubMed [28] to supplement
+a generative model in answering medical questions is inves-
+tigated. The goal is to determine whether this method results
+in answers that are both more coherent and factually accurate
+than those provided by a traditional AI system. In this work,
+we determine whether a zero-shot re-ranker can outperform a
+standard dense retrieval system which has been adapted to the
+domain through the use of BioBERT [29]. This text highlights
+a problem which arises from the disparity between the type
+of data which a neural information retrieval system has been
+trained upon and the type of data which it is being asked to
+search through. An experiment is reported on adapting a pre-
+trained language model, Flan-T5 [22], to the field of medicine
+by applying the Low-Rank Adaptation (LoRA) technique. The
+model’s efficiency and text generation abilities are assessed.
+II. RELATED WORK
+Biomedical question answering has changed. Experts moved
+from rule-based systems to deep neural networks. Now we
+use retrieval-augmented paradigms. This section reviews four
+areas. We examine Biomedical QA and RAG methodologies.
+We evaluate Long-form Generation and Re-ranking strategies.
+The development of mathematical models in biomedical
+science reveals a conflict of philosophies with regard to their
+use. Training from scratch on 14 million abstracts yields the
+best results, according to PubMedBERT [30]. This method
+outperformed the mixed domain training methodology. The
+SciBERT [31] model has been pre-trained on a massive corpus
+of 1.14 million scientific papers. BioLinkBERT [32] showed
+that using citation links could improve MedQA-USMLE [33]
+scores by seven percent. These developments have given a
+boost to the field. Biomedical language model BioGPT [34]
+used 1.5 billion parameters to reach a score of 81 percent on
+PubMedQA. The BioMedLM [35] model has been scaled up
+to 2.7 billion parameters. We obtain a custom word tokeniser
+for medical terms. The model performed at 57.3% on MedQA
+in its compact form.
+The
+foundational
+RAG
+architecture
+established
+the
+paradigm
+of
+combining
+parametric
+memory
+with
+non-
+parametric retrieval, explicitly noting that systems could
+be ”endowed with a medical index” for domain-specific
+applications.
+Architectural
+innovations
+have
+substantially
+improved retrieval generation integration. Fusion-in-Decoder
+[36] addressed the computational bottleneck of processing
+multiple passages by encoding them independently before
+fusion in the decoder achieving 51.4% exact match on Natural
+Questions while scaling to 100 retrieved passages with linear
+rather than quadratic complexity. RETRO [37] introduced
+chunked cross-attention that retrieves for each 64-token
+segment from a 2 trillion token database, matching GPT-3
+(175B) [38] performance with 25× fewer parameters. Atlas
+demonstrated that joint pre-training of retriever and generator
+enables remarkable few shot capability outperforming 540B
+PaLM [39] by 3% on Natural Questions using only 64
+examples.
+Adaptive retrieval mechanisms represent the current fron-
+tier. Self-RAG trained models to decide when to retrieve
+using special reflection tokens enabling on-demand retrieval
+and self critique of generated content. FLARE [40] imple-
+mented forward-looking active retrieval that triggers on low-
+confidence tokens, particularly effective for multi-hop rea-
+soning in long-form generation. REPLUG [41] demonstrated
+that even black box LLMs can benefit from retrieval through
+parallel document prepending and probability ensembling ap-
+plicable to closed source medical AI deployments. MedRAG
+[42] provide systematic evaluation across 7,663 questions
+from five medical QA datasets, demonstrating that combining
+multiple corpora (PubMed, StatPearls, textbooks) with diverse
+retrievers achieves up to 18% accuracy improvement and
+elevates GPT-3.5 to GPT-4-level performance.
+Long-form question answering presents distinct challenges
+for biomedical applications where comprehensive explanations
+must synthesize evidence from multiple sources. The ELI5
+dataset [43] established benchmarks for explanatory QA with
+270,000 questions requiring
+130-word answers synthesized
+from 100 web documents. However, attribution mechanisms
+have become essential for medical QA credibility. WebGPT
+[44] pioneered interactive web browsing with snippet level
+citations, trained via reinforcement learning from human
+feedback on 6,000 demonstrations. GopherCite advanced this
+with verifiable quoted snippets from Google Search results,
+achieving 80% high-quality responses.
+Generalization has emerged as the critical differentiator
+
+Fig. 1.
+The RAG-BioQA framework follows a clear process. The system
+retrieves contexts using BioBERT embeddings and FAISS indexing. We apply
+re-ranking strategies to select informative data. The system combines these
+contexts with our query. A fine-tuned T5 model generates comprehensive
+answers.
+for medical applications. TAS-B achieved best zero shot
+generalization among dense retrievers through balanced topic-
+aware sampling and dual teacher distillation trainable on a
+single consumer GPU while outperforming BM25 by 44% and
+prior models by 5%. Contriever enabled unsupervised dense
+retrieval through contrastive learning with random cropping
+augmentation, competitive with BM25 on 11/15 BEIR datasets
+without any labeled training data. E5 embeddings became the
+first model to consistently beat BM25 under zero shot BEIR
+evaluation through weakly-supervised contrastive pre-training
+on 270 million text pairs.
+III. METHODOLOGY
+A. Framework Overview
+RAG-BioQA operates in two stages: (1) retrieval of relevant
+QA pairs from a curated biomedical database, and (2) an-
+swer generation conditioned on retrieved examples. The main
+distinction between RAGs utilised for document retrieval and
+this question answering RAG is that it retrieves question and
+answer pairs in their entirety, thereby providing the model with
+the contexts and the structure of the given answers. Figure 1
+illustrates the architecture.
+B. Preprocessing Pipeline
+We make use of pre-processed question and answer pairs
+from the PubMedQA dataset within our retrieval system. Most
+articles do not cite raw biomedical literature. This layout is
+structured to fit in with what we already know. This tool
+synthesizes evidence more quickly than full document retrieval
+systems. The pipeline includes these steps:
+1) Data Filtering and Cleaning: For training and evalu-
+ation, we use the PubMedQA dataset after it has been
+filtered. We eliminate low-quality annotations. Standar-
+dising medical abbreviations puts their meanings into
+ordinary English. Biomedical terminology is processed
+in this system for accurate meaning.
+2) Embedding Generation: For each query in our dataset,
+we use BioBERT to generate a dense vector representa-
+tion of that query along with its related passage. It em-
+ploys a training regime on biomedical literature initially.
+We apply mean pooling over the token embeddings.
+This results in fixed-length vectors which are suitable
+for similarity searching.
+3) Index Construction: We use the FAISS [45] library
+to index the output vector space. This application per-
+forms high-performance similarity searches on vectorial
+datasets. In the implementation, an L2 index is used for
+retrieval of the nearest neighbour with an exact match.
+Using our existing database allows the retrieval of the
+most accurate results.
+This processing stage results in a data base structured of
+question context pairs with the vectors associated with each,
+enabling fast retrieval during the question answering process
+[46].
+C. Retrieval Module with Re-ranking Strategies
+Embedding Generation. We encode all QA pairs using
+BioBERT-base-cased-v1.1, a BERT model pre-trained on
+PubMed abstracts and PMC full-text articles [47]. For each
+QA pair, we concatenate the question and answer, pass through
+BioBERT, and apply mean pooling over token embeddings to
+obtain a 768-dimensional representation.
+Index Construction. We index all QA pair embeddings using
+FAISS with an IndexFlatL2 configuration for exact nearest
+neighbor search. At query time, the input question is embedded
+using the same BioBERT model, and we retrieve the top-k
+most similar QA pairs (k=16).
+Re-ranking Strategies. We compare four strategies for se-
+lecting the final n=4 contexts:
+• FAISS (baseline): Use L2 distance scores directly with-
+out re-ranking.
+• BM25: Re-rank by lexical overlap using term frequency
+and inverse document frequency.
+• ColBERT: Re-rank using late interaction between query
+and document token embeddings.
+• MonoT5: Re-rank using a sequence-to-sequence model
+trained for relevance classification.
+BM25, ColBERT, and MonoT5 are applied zero-shot with-
+out biomedical fine-tuning.
+D. Generation Module
+The answer generation module synthesizes retrieved con-
+texts. We produce long-form answers to biomedical questions.
+We fine-tune T5 models for this task. These models show
+strong performance in natural language generation.
+1) Context Integration: We concatenate the retrieved con-
+texts and the query question into a unified input format.
+This structure provides the model with all necessary
+evidence. We use specific markers to separate each
+context from the question.
+
+Context: [Retrieved QA Pair 1]
+[Retrieved QA Pair 2] ... [Retrieved
+QA Pair n] Question: [Query] Answer:
+We
+format
+each
+retrieved
+pair
+as
+Question:
+[Retrieved Question] Answer:
+[Retrieved Answer].
+This
+structure
+provides
+the model with the question and the corresponding
+answer. We use this format to establish clear context.
+2) Model Fine-tuning: We fine-tune a pre-trained FLAN-
+T5-base model on the formatted training data. We imple-
+ment Parameter-Efficient Fine-Tuning using Low-Rank
+Adaptation to improve efficiency. This method reduces
+memory requirements. We update a small subset of
+model parameters. Performance remains stable.
+3) Answer
+Generation: At inference time, the pre-
+processed input to the models is passed through the
+fine-tuned T5 model. The model generates a long-form
+answer. The information gathered from the retrieved
+sources is integrated here. We perform decoding using a
+beam search technique of size 4. In order to encourage
+response detail, we apply length normalization.
+IV. EXPERIMENTAL SETUP
+A. Dataset
+The training data set is constructed by combining the
+MedQuAD, MedDialog and PubMed question-answering data
+sets. The dataset contains 181,488 Q A pairs. The content
+covers clinical questions and patient-doctor dialogues. Our
+medical reference section covers a wide range of subjects. The
+data was divided into three groups. We use 70% for training.
+We assign 15% to validation. We reserve 15% for testing.
+We keep the PubMedQA test set for the final evaluation. We
+allow no overlap between training and test pairs. PubMedQA
+provides expert-annotated questions. These questions link to
+article abstracts. This structure supports long-form biomedical
+answer evaluation.
+B. Implementation Details
+Our implementation uses the following technologies and
+parameters:
+• Embedding
+Model: BioBERT-base-cased-v1.1 (768-
+dimensional embeddings).
+• Retrieval: FAISS IndexFlatL2 with k = 16 initial candi-
+dates, n=4 final contexts.
+• Re-ranking:
+BM25
+(rank-bm25
+library),
+ColBERT
+(official checkpoint), MonoT5 (castorini/monot5-base-
+msmarco).
+• Generator: FLAN-T5-base (250M parameters) fine-
+tuned with LoRA
+• LoRA Configuration: rank r = 16, alpha α = 32,
+dropout p = 0.1
+• Training: Batch size of 8, learning rate of 5e-5, 3 epochs
+• Hardware: NVIDIA A100 GPUs with 128GB memory
+C. Baselines
+We compare our approach against the following baselines:
+• Base T5 + FAISS: Pre-trained FLAN-T5 without fine-
+tuning, using FAISS retrieval.
+• Finetuned T5 + FAISS: LoRA fine-tuned FLAN-T5 with
+FAISS retrieval (no re-ranking).
+• Finetuned T5 + [Re-ranker]: Fine-tuned model with
+BM25, ColBERT, or MonoT5 re-ranking
+This setup isolates the impact of fine-tuning by comparing
+Base models against Finetuned models. We also isolate re-
+ranking strategies by comparing FAISS against other methods.
+These comparisons show the performance gain from domain
+adaptation. We measure how each component contributes to
+answer quality.
+V. EVALUATION METRICS
+We evaluate generated answers using four complementary
+metrics:
+1) BLEU-1 (Bilingual Evaluation Understudy - Uni-
+gram Precision):
+This sentence could be measured
+using the BLEU-1 score which is a metric to check
+the precision of a system’s output with respect to single
+words.
+BLEU-1 = BP · exp (log p1)
+(1)
+p1 =
+P
+word∈generated min(countgen(word), countref(word))
+P
+word∈generated countgen(word)
+(2)
+BP =
+(
+1
+if c > r
+e(1−r
+c )
+if c ≤r
+(3)
+• c: length of the generated sentence
+• r: length of the reference sentence
+2) ROUGE-1 (Recall-Oriented Understudy for Gisting
+Evaluation - Unigram Recall):
+ROUGE-1 measures
+the co-occurrence of one word in a system output versus
+a reference summary. The number of words in the output
+is 16 while in the reference is 18. The measure of
+precision refers to the number of correct predictions out
+of all the predictions made by the system.
+ROUGE-1 =
+P
+word∈ref min(countref(word), countgen(word))
+P
+word∈ref countref(word)
+(4)
+3) BERTScore (Precision): In the BERTScore the similar-
+ity between tokens is evaluated by utilising contextual
+embeddings. The precision metric evaluates the extent
+to which the reference sentences match sentences gen-
+erated by the system. The evaluation of the meaning of
+the query and the content is based on the conceptual
+similarity of the two.
+
+BERTScorePrecision =
+1
+|X|
+X
+xi∈X
+max
+yj∈Y cosine(xi, yj) (5)
+cosine(xi, yj) =
+xi · yj
+∥xi∥∥yj∥
+(6)
+• X: token embeddings of the generated sentence
+• Y : token embeddings of the reference sentence
+4) METEOR (Metric for Evaluation of Translation with
+Explicit ORdering):
+This aligns the reference and
+model sentences by positions to evaluate the model’s
+performance. The search is performed on word stems as
+well as the words themselves. We include synonym and
+paraphrase matches. This measure allows for a relative
+assessment of linguistic equivalence.
+METEOR = Fmean · (1 −Penalty)
+(7)
+Fmean = 10 · P · R
+R + 9P
+(8)
+P =
+m
+wgen
+,
+R = m
+wref
+(9)
+Penalty = γ ·
+ch
+m
+θ
+(10)
+• m: number of mapped unigrams (matches)
+• wgen: total unigrams in the generated sentence
+• wref: total unigrams in the reference sentence
+• ch: number of chunks (contiguous matched subse-
+quences)
+• γ, θ: tunable parameters (commonly γ = 0.5, θ = 3)
+VI. RESULTS AND DISCUSSION
+TABLE I
+PERFORMANCE COMPARISON OF DIFFERENT MODEL CONFIGURATIONS ON
+THE PUBMEDQA TEST SET.
+Model
+BLEU-1
+ROUGE-1
+BERTScore
+METEOR
+Base T5 + FAISS
+0.2065
+0.2618
+0.1132
+0.1948
+Finetuned T5 + FAISS
+0.2415
+0.2918
+0.2054
+0.2264
+Finetuned T5 + BM25
+0.2221
+0.2714
+0.1318
+0.2054
+Finetuned T5 + ColBERT
+0.2218
+0.2713
+0.1364
+0.2053
+Finetuned T5 + MonoT5
+0.2172
+0.2632
+0.1277
+0.2023
+A. Impact of Fine-tuning
+Fine-tuning yields consistent improvements across all met-
+rics refer I. Comparing Base T5 + FAISS to Finetuned T5 +
+FAISS, we observe a 17% improvement in BLEU-1 (0.2065
+→0.2415), 11% in ROUGE-1 (0.2618 →0.2918), and 81% in
+BERTScore (0.1132 →0.2054). The substantial BERTScore
+gain indicates that fine-tuning improves semantic alignment
+with reference answers, not merely lexical overlap. This
+confirms that domain adaptation through LoRA effectively
+specializes the generator for biomedical content.
+B. Impact of Re-ranking Strategies
+A notable finding is that FAISS retrieval without re-ranking
+outperforms all re-ranking strategies. The fine-tuned model
+with FAISS achieves the highest scores across all metrics,
+while BM25, ColBERT, and MonoT5 re-ranking each degrade
+performance. We attribute this to domain mismatch. ColBERT
+and MonoT5 are trained on MS MARCO, a general-domain
+retrieval dataset. Biomedical text contains specialized termi-
+nology, abbreviations, and semantic relationships absent from
+general web queries. When applied zero-shot, these re-rankers
+may prioritize lexical patterns learned from general text that
+do not transfer to biomedical contexts.
+BM25 performs slightly better than the neural re-rankers
+but still underperforms FAISS. This suggests that lexical
+matching alone is insufficient for biomedical retrieval, where
+semantically related terms (e.g., ”myocardial infarction” and
+”heart attack”) may share few surface tokens. In contrast,
+BioBERT embeddings are pre-trained on PubMed and PMC
+corpora, encoding biomedical semantics directly. This domain
+alignment appears more valuable than the sophisticated match-
+ing mechanisms of neural re-rankers applied without domain
+adaptation.
+C. Analysis of Re-ranker Performance
+Among the re-ranking strategies, performance differences
+are small. BM25 achieves marginally higher scores than Col-
+BERT and MonoT5, though all three perform comparably.
+This suggests that in the absence of domain adaptation, the
+choice of re-ranking algorithm matters less than the domain
+gap itself. The consistent underperformance of neural re-
+rankers challenges findings from general IR research, where
+re-ranking typically improves retrieval quality. Our results
+suggest this assumption does not hold in specialized domains
+without appropriate fine-tuning.
+D. Efficiency Considerations
+Beyond accuracy, FAISS retrieval offers practical advan-
+tages. Dense retrieval with FAISS requires only a single
+forward pass through BioBERT and a nearest neighbor search.
+Re-ranking with ColBERT or MonoT5 requires additional
+model inference for each candidate, increasing latency and
+compute cost. Given that re-ranking provides no accuracy
+benefit in our setting, FAISS offers better accuracy-efficiency
+tradeoff for biomedical QA.
+VII. CONCLUSION
+We presented RAG-BioQA, a retrieval-augmented gener-
+ation framework for long-form biomedical question answer-
+ing. Our system combines BioBERT embeddings for dense
+retrieval, FAISS indexing for efficient search, and a LoRA
+fine-tuned FLAN-T5 model for answer generation. We train on
+181k QA pairs from three biomedical datasets and evaluate on
+PubMedQA. Our experiments yield two main findings. First,
+domain-specific fine-tuning substantially improves generation
+quality, with BERTScore improving by 81% over the base
+model. Second, domain-adapted dense retrieval (BioBERT
+
++ FAISS) outperforms zero-shot neural re-rankers (BM25,
+ColBERT, MonoT5). This suggests that for biomedical QA,
+investing in domain-aligned embeddings is more effective than
+applying sophisticated re-ranking methods without domain
+adaptation.
+VIII. LIMITATIONS
+In comparison with general information retrieval, our exper-
+iments yield somewhat different results from those which have
+been seen previously, as re-ranking does not improve retrieval
+effectiveness. This gap in research shows how significant
+the difference between the fields of the lab and the clinical
+setting is. In comparison to other models such as Med-PaLM
+and GPT-4, our approach has the disadvantage of being less
+capable and of a smaller size. Our approach offers the advan-
+tages of open source software, maintains user data privacy by
+local processing and also provides results which can be easily
+verified. BioBERT-FAISS sets a high benchmark for publicly
+available biomedical Retrieval-Augmented Generation models
+in terms of ROUGE-1 score which is 0.29.
+• Hallucinations: The model still exhibited the problem
+of hallucinated certainty as found in the qualitative
+assessment. This happens when tentative results of an
+exploratory study are described in a definitive way. Such a
+mislabelling can be found particularly in clinical contexts.
+• Context Window: Due to the 512 token context window
+of T5, we limited our retrieval to the top 4 documents.
+Forcing the researcher to browse through the entire
+document to identify relevant evidence may force the
+exclusion of relevant evidence if the documents are long.
+• Metric Limitations: Automated evaluation metrics such
+as BLEU ratio do not assess the medical correctness of
+responses produced by a machine. A low quality answer,
+medically incorrect, may have a high score in this system
+if it contains a lot of the same words as the correct
+summary.
+REFERENCES
+[1] I. Yoo, P. Alafaireet, M. Marinov, K. Pena-Hernandez, R. Gopidi, J.-
+F. Chang, and L. Hua, “Data mining in healthcare and biomedicine: a
+survey of the literature,” Journal of medical systems, vol. 36, no. 4, pp.
+2431–2448, 2012.
+[2] I. Masic and K. Milinovic, “On-line biomedical databases–the best
+source for quick search of the scientific information in the biomedicine,”
+Acta Informatica Medica, vol. 20, no. 2, p. 72, 2012.
+[3] H. Sandhu, C. Carpenter, K. Freeman, S. G. Nabors, and A. Olson,
+“Clinical decisionmaking: opening the black box of cognitive reasoning,”
+Annals of emergency medicine, vol. 48, no. 6, pp. 713–719, 2006.
+[4] K. Natarajan, D. Stein, S. Jain, and N. Elhadad, “An analysis of clinical
+queries in an electronic health record search utility,” International
+journal of medical informatics, vol. 79, no. 7, pp. 515–522, 2010.
+[5] S. Sivarajkumar, H. A. Mohammad, D. Oniani, K. Roberts, W. Hersh,
+H. Liu, D. He, S. Visweswaran, and Y. Wang, “Clinical information
+retrieval: a literature review,” Journal of healthcare informatics research,
+vol. 8, no. 2, pp. 313–352, 2024.
+[6] R. Fok, J. C. Chang, T. August, A. X. Zhang, and D. S. Weld, “Qlarify:
+Recursively expandable abstracts for dynamic information retrieval over
+scientific papers,” in Proceedings of the 37th Annual ACM Symposium
+on User Interface Software and Technology, 2024, pp. 1–21.
+[7] K. H¨offner, S. Walter, E. Marx, R. Usbeck, J. Lehmann, and A.-C.
+Ngonga Ngomo, “Survey on challenges of question answering in the
+semantic web,” Semantic Web, vol. 8, no. 6, pp. 895–920, 2017.
+[8] A. Rogers, M. Gardner, and I. Augenstein, “Qa dataset explosion:
+A taxonomy of nlp resources for question answering and reading
+comprehension,” ACM Computing Surveys, vol. 55, no. 10, pp. 1–45,
+2023.
+[9] Q. Jin, Z. Yuan, G. Xiong, Q. Yu, H. Ying, C. Tan, M. Chen, S. Huang,
+X. Liu, and S. Yu, “Biomedical question answering: a survey of
+approaches and challenges,” ACM Computing Surveys (CSUR), vol. 55,
+no. 2, pp. 1–36, 2022.
+[10] Q. Li, L. Li, and Y. Li, “Developing chatgpt for biology and medicine: a
+complete review of biomedical question answering,” Biophysics Reports,
+vol. 10, no. 3, p. 152, 2024.
+[11] Z. Li, I. Mondal, H. Nghiem, Y. Liang, and J. L. Boyd-Graber, “Pedants:
+Cheap but effective and interpretable answer equivalence,” in Findings
+of the Association for Computational Linguistics: EMNLP 2024, 2024,
+pp. 9373–9398.
+[12] C. Wang, X. Liu, Y. Yue, X. Tang, T. Zhang, C. Jiayang, Y. Yao,
+W. Gao, X. Hu, Z. Qi et al., “Survey on factuality in large language
+models: Knowledge, retrieval and domain-specificity,” arXiv preprint
+arXiv:2310.07521, 2023.
+[13] L. M. Currie, M. Graham, M. Allen, S. Bakken, V. Patel, and J. J.
+Cimino, “Clinical information needs in context: an observational study
+of clinicians while using a clinical information system,” in AMIA Annual
+symposium proceedings, vol. 2003, 2003, p. 190.
+[14] L. Huang, W. Yu, W. Ma, W. Zhong, Z. Feng, H. Wang, Q. Chen,
+W. Peng, X. Feng, B. Qin et al., “A survey on hallucination in large
+language models: Principles, taxonomy, challenges, and open questions,”
+ACM Transactions on Information Systems, vol. 43, no. 2, pp. 1–55,
+2025.
+[15] M. Cossio, “A comprehensive taxonomy of hallucinations in large
+language models,” arXiv preprint arXiv:2508.01781, 2025.
+[16] Y. Kim, H. Jeong, S. Chen, S. S. Li, M. Lu, K. Alhamoud, J. Mun,
+C. Grau, M. Jung, R. Gameiro et al., “Medical hallucinations in
+foundation models and their impact on healthcare,” arXiv preprint
+arXiv:2503.05777, 2025.
+[17] M. W. Johnson, W. A. Richards, and R. R. Griffiths, “Human hallucino-
+gen research: guidelines for safety,” Journal of psychopharmacology,
+vol. 22, no. 6, pp. 603–620, 2008.
+[18] P. R. Breggin, Brain-disabling treatments in psychiatry: Drugs, elec-
+troshock, and the psychopharmaceutical complex.
+Springer Publishing
+Company, 2007.
+[19] E. Sivanesan, M. C. Gitlin, and K. A. Candiotti, “Opioid-induced
+hallucinations: a review of the literature, pathophysiology, diagnosis,
+and treatment,” Anesthesia & Analgesia, vol. 123, no. 4, pp. 836–843,
+2016.
+[20] F. Neha, D. Bhati, and D. K. Shukla, “Retrieval-augmented generation
+(rag) in healthcare: A comprehensive review,” AI, vol. 6, no. 9, p. 226,
+2025.
+[21] A. J. Oche, A. G. Folashade, T. Ghosal, and A. Biswas, “A systematic
+review of key retrieval-augmented generation (rag) systems: Progress,
+gaps, and future directions,” arXiv preprint arXiv:2507.18910, 2025.
+[22] O. Khattab and M. Zaharia, “Colbert: Efficient and effective passage
+search via contextualized late interaction over bert,” in Proceedings
+of the 43rd International ACM SIGIR conference on research and
+development in Information Retrieval, 2020, pp. 39–48.
+[23] R. Nogueira, Z. Jiang, R. Pradeep, and J. Lin, “Document ranking with a
+pretrained sequence-to-sequence model,” in Findings of the association
+for computational linguistics: EMNLP 2020, 2020, pp. 708–718.
+[24] T. Nguyen, M. Rosenberg, X. Song, J. Gao, S. Tiwary, R. Majumder,
+and L. Deng, “Ms marco: A human-generated machine reading compre-
+hension dataset,” 2016.
+[25] G. Frisoni, G. Moro, and A. Carbonaro, “A survey on event extraction for
+natural language understanding: Riding the biomedical literature wave,”
+IEEE Access, vol. 9, pp. 160 721–160 757, 2021.
+[26] S. Robertson, H. Zaragoza et al., “The probabilistic relevance frame-
+work: Bm25 and beyond,” Foundations and Trends® in Information
+Retrieval, vol. 3, no. 4, pp. 333–389, 2009.
+[27] N. Ding, Y. Qin, G. Yang, F. Wei, Z. Yang, Y. Su, S. Hu, Y. Chen, C.-
+M. Chan, W. Chen et al., “Parameter-efficient fine-tuning of large-scale
+pre-trained language models,” Nature machine intelligence, vol. 5, no. 3,
+pp. 220–235, 2023.
+[28] H. Chen and B. M. Sharp, “Content-rich biological network constructed
+by mining pubmed abstracts,” BMC bioinformatics, vol. 5, no. 1, p. 147,
+2004.
+
+[29] J. Lee, W. Yoon, S. Kim, D. Kim, S. Kim, C. H. So, and J. Kang,
+“Biobert: a pre-trained biomedical language representation model for
+biomedical text mining,” Bioinformatics, vol. 36, no. 4, pp. 1234–1240,
+2020.
+[30] L. Gao, Z. Dai, and J. Callan, “Rethink training of bert rerankers in
+multi-stage retrieval pipeline,” in European Conference on Information
+Retrieval.
+Springer, 2021, pp. 280–286.
+[31] I. Beltagy, K. Lo, and A. Cohan, “Scibert: A pretrained language model
+for scientific text,” arXiv preprint arXiv:1903.10676, 2019.
+[32] M. Yasunaga, J. Leskovec, and P. Liang, “Linkbert: Pretraining language
+models with document links,” arXiv preprint arXiv:2203.15827, 2022.
+[33] D. Jin, E. Pan, N. Oufattole, W.-H. Weng, H. Fang, and P. Szolovits,
+“What disease does this patient have? a large-scale open domain question
+answering dataset from medical exams,” Applied Sciences, vol. 11,
+no. 14, p. 6421, 2021.
+[34] R. Luo, L. Sun, Y. Xia, T. Qin, S. Zhang, H. Poon, and T.-Y. Liu,
+“Biogpt: generative pre-trained transformer for biomedical text genera-
+tion and mining,” Briefings in bioinformatics, vol. 23, no. 6, p. bbac409,
+2022.
+[35] E. Bolton, A. Venigalla, M. Yasunaga, D. Hall, B. Xiong, T. Lee,
+R. Daneshjou, J. Frankle, P. Liang, M. Carbin et al., “Biomedlm: A 2.7
+b parameter language model trained on biomedical text,” arXiv preprint
+arXiv:2403.18421, 2024.
+[36] D. Yu, C. Zhu, Y. Fang, W. Yu, S. Wang, Y. Xu, X. Ren, Y. Yang,
+and M. Zeng, “Kg-fid: Infusing knowledge graph in fusion-in-decoder
+for open-domain question answering,” in Proceedings of the 60th annual
+meeting of the association for computational linguistics (volume 1: long
+papers), 2022, pp. 4961–4974.
+[37] M. M. Bhuiyan, “Retrieval-native language models: Integrating paramet-
+ric and vector memory with bayesian attention,” 2025.
+[38] L. Floridi and M. Chiriatti, “Gpt-3: Its nature, scope, limits, and
+consequences,” Minds and machines, vol. 30, no. 4, pp. 681–694, 2020.
+[39] A. Chowdhery, S. Narang, J. Devlin, M. Bosma, G. Mishra, A. Roberts,
+P. Barham, H. W. Chung, C. Sutton, S. Gehrmann et al., “Palm: Scal-
+ing language modeling with pathways,” Journal of Machine Learning
+Research, vol. 24, no. 240, pp. 1–113, 2023.
+[40] Z. Jiang, F. F. Xu, L. Gao, Z. Sun, Q. Liu, J. Dwivedi-Yu, Y. Yang,
+J. Callan, and G. Neubig, “Active retrieval augmented generation,” in
+Proceedings of the 2023 Conference on Empirical Methods in Natural
+Language Processing, 2023, pp. 7969–7992.
+[41] W. Shi, S. Min, M. Yasunaga, M. Seo, R. James, M. Lewis, L. Zettle-
+moyer, and W.-t. Yih, “Replug: Retrieval-augmented black-box language
+models,” in Proceedings of the 2024 Conference of the North American
+Chapter of the Association for Computational Linguistics: Human
+Language Technologies (Volume 1: Long Papers), 2024, pp. 8371–8384.
+[42] G. Xiong, Q. Jin, Z. Lu, and A. Zhang, “Benchmarking retrieval-
+augmented generation for medicine,” in Findings of the Association for
+Computational Linguistics ACL 2024, 2024, pp. 6233–6251.
+[43] A. Fan, Y. Jernite, E. Perez, D. Grangier, J. Weston, and M. Auli, “Eli5:
+Long form question answering,” arXiv preprint arXiv:1907.09190, 2019.
+[44] R. Nakano, J. Hilton, S. Balaji, J. Wu, L. Ouyang, C. Kim,
+C. Hesse, S. Jain, V. Kosaraju, W. Saunders et al., “Webgpt: Browser-
+assisted question-answering with human feedback,” arXiv preprint
+arXiv:2112.09332, 2021.
+[45] P. N. Singh, S. Talasila, and S. V. Banakar, “Analyzing embedding
+models for embedding vectors in vector databases,” in 2023 IEEE
+International Conference on ICT in Business Industry & Government
+(ICTBIG).
+IEEE, 2023, pp. 1–7.
+[46] S. Trangcasanchai, “Improving question answering systems with re-
+trieval augmented generation,” Ph.D. dissertation, University of Helsinki,
+2024.
+[47] S. Gupta, “Top k relevant passage retrieval for biomedical question
+answering,” arXiv preprint arXiv:2308.04028, 2023.

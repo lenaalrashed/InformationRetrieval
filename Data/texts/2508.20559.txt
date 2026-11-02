@@ -1,0 +1,1107 @@
+Leveraging Generative Models for Real-Time Query-Driven Text
+Summarization in Large-Scale Web Search
+Zeyu Xiong∗
+Baidu Inc.
+Beijing, China
+jerainxiong@gmail.com
+Yixuan Nan∗
+Institute of Information Engineering,
+Chinese Academy of Sciences
+Beijing, China
+nanyixuan@iie.ac.cn
+Li Gao†
+Baidu Inc.
+Beijing, China
+gaoli.sinh@gmail.com
+Hengzhu Tang
+Baidu Inc.
+Beijing, China
+hengzhutang@gmail.com
+Shuaiqiang Wang
+Baidu Inc.
+Beijing, China
+wangshuaiqiang@baidu.com
+Junfeng Wang
+Baidu Inc.
+Beijing, China
+wangjunfeng@baidu.com
+Dawei Yin
+Baidu Inc.
+Beijing, China
+yindawei@acm.org
+Abstract
+In the dynamic landscape of large-scale web search, Query-Driven
+Text Summarization (QDTS) aims to generate concise and informa-
+tive summaries from textual documents based on a given query,
+which is essential for improving user engagement and facilitating
+rapid decision-making. Traditional extractive summarization mod-
+els, based primarily on ranking candidate summary segments, have
+been the dominant approach in industrial applications. However,
+these approaches suffer from two key limitations: 1) The multi-stage
+pipeline often introduces cumulative information loss and archi-
+tectural bottlenecks due to its weakest component; 2) Traditional
+models lack sufficient semantic understanding of both user queries
+and documents, particularly when dealing with complex search
+intents. In this study, we propose a novel framework to pioneer
+the application of generative models to address real-time QDTS in
+industrial web search. Our approach integrates large model distil-
+lation, supervised fine-tuning, direct preference optimization, and
+lookahead decoding to transform a lightweight model with only
+0.1B parameters into a domain-specialized QDTS expert. Evaluated
+on multiple industry-relevant metrics, our model outperforms the
+production baseline and achieves a new state of the art. Further-
+more, it demonstrates excellent deployment efficiency, requiring
+only 334 NVIDIA L20 GPUs to handle ~50,000 queries per second
+under 55 ms average latency per query.
+∗Equal contribution.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+CIKM ’25, Seoul, Republic of Korea
+© 2025 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-2040-6/2025/11
+https://doi.org/10.1145/3746252.3761549
+CCS Concepts
+• Information systems →Summarization.
+Keywords
+Generative Model, Query-Driven Text Summarization, Web Search
+ACM Reference Format:
+Zeyu Xiong, Yixuan Nan, Li Gao, Hengzhu Tang, Shuaiqiang Wang, Junfeng
+Wang, and Dawei Yin. 2025. Leveraging Generative Models for Real-Time
+Query-Driven Text Summarization in Large-Scale Web Search. In Proceed-
+ings of the 34th ACM International Conference on Information and Knowledge
+Management (CIKM ’25), November 10–14, 2025, Seoul, Republic of Korea.
+ACM, New York, NY, USA, 8 pages. https://doi.org/10.1145/3746252.3761549
+1
+Introduction
+To enhance user experience and facilitate rapid decision-making,
+large-scale web search systems such as Google and Baidu are in-
+creasingly focusing on Query-Driven Text Summarization (QDTS)
+— a task aimed at generating concise and informative summaries
+tailored to user queries [5, 6, 28, 29, 38].
+As shown in Figure 1 (a), the traditional summary generation
+process typically follows a multi-stage pipeline: extracting content
+from the landing page, generating snippet candidates, applying pre-
+ranking, ranking, and finally post-processing. Each stage makes
+independent selection decisions based on partial information, form-
+ing a funnel-like filtering mechanism. This design often leads to
+the early elimination of relevant content, resulting in cumulative
+information loss throughout the pipeline [37]. Moreover, due to
+its fragmented structure, such a pipeline is inherently difficult to
+optimize for the global objective of user intent alignment. Existing
+summarization methods usually rely on computing the relevance
+score between the query and the document, selecting the most
+relevant sentence or paragraph as the summary [2, 23, 36]. Many of
+these systems adopt a "top-1 paragraph selection and concatenation-
+based presentation" strategy [20, 24], where a single highly rele-
+vant paragraph is selected and then truncated or concatenated with
+arXiv:2508.20559v1 [cs.CL] 28 Aug 2025
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Zeyu Xiong et al.
+(a) Existing methods for QDTS.
+(b) Ours.
+Query
+Web Page
+Sharding
+Pre-Rank
+Rank
+Post-
+processing
+Summary
+Generative Model
+Figure 1: Differences between existing methods and ours.
+other sentences for display as needed. Due to the lack of global
+semantic modeling and structural understanding capabilities, this
+strategy shows clear limitations when dealing with complex real-
+world search scenarios such as multi-question, multi-faceted, or
+procedural queries: the model cannot extract relevant information
+across multiple paragraphs, cannot generate structured summaries,
+and may even produce content that is irrelevant to the query intent.
+While large language models offer promising capabilities for
+QDTS through their powerful generation and contextual under-
+standing [12, 30, 34], their effective integration into real-world
+systems remains a significant challenge. First, large-scale models
+are often computationally expensive, suffer from slow inference
+speeds, and produce unstable outputs, making them difficult to de-
+ploy under the strict requirements of industrial applications, such
+as low latency and high reliability [17]. Second, in the search sce-
+nario, we prefer the generated summaries to be extractive in nature,
+meaning that they should faithfully reflect the content of the origi-
+nal document. This ensures that users can quickly locate relevant
+information after clicking through to the landing page, rather than
+being presented with entirely rephrased or hallucinated content.
+To effectively address these challenges and generate summaries
+that are both query-relevant and faithfully reflective of the source
+document, we propose Query-Driven Generative Summarization
+in Real-Time (QDGenSumRT), a novel end-to-end summarization
+framework in industrial scenarios. QDGenSumRT consists of four
+key stages: model distillation, supervised fine-tuning (SFT), direct
+preference optimization (DPO), and deployment optimization, in-
+volving model quantization and inference optimization. Specifically,
+we first perform model distillation by leveraging a 10B-parameter
+large generative model to produce a massive distilled training
+dataset. This enables us to obtain a highly efficient 0.1B-parameter
+lightweight model. Next, to improve the quality and relevance of
+the generated summaries while keeping them consistent with user
+preferences, we first use high-quality human-annotated data for
+SFT to enhance factual correctness; we then use online sampled
+preference data for DPO to make the model closer to the user’s pref-
+erence and content structure. Finally, we use FP8 quantization and
+develop model using TensorRT-LLM. Coupled with lookahead de-
+coding strategy, these optimizations ensure the system achieves low
+latency and high throughput in large-scale search environments.
+The main contributions of our work are summarized as follows:
+1) we reveal the limitations of query-driven text summarization in
+industrial search engines, including information loss due to multi-
+stage pipelines and poor generation results for complex scenes; 2)
+we propose a novel end-to-end framework, QDGenSumRT, for real-
+time query-driven summarization, which integrates model distilla-
+tion, supervised fine-tuning, preference alignment, and inference
+optimization; 3) through comprehensive offline and online evalua-
+tions, we demonstrate that our framework not only enhances the
+quality of generated summaries but also exhibits strong feasibility
+for industrial deployment.
+2
+Related Work
+Existing text summarization methods can be categorized into two
+types: extractive summarization and abstractive summarization [9].
+Extractive methods aim to identify and select the most important
+sentences from a source document to construct a summary that
+captures the key information, while abstractive methods aim to
+produce novel sentences by analyzing the semantic content of the
+source text. In this work, we aim to address the task of present-
+ing users with query-relevant information extracted from a web
+page, thereby facilitating efficient access to salient content within
+the page. Given the need to preserve the original wording and
+structural context of the source document, we adopt an extractive
+summarization framework.
+Early extractive summarization methods were mainly statistics-
+based. One of the pioneering statistical methods was proposed by
+Luhn [19], who utilized word frequency and distributional analysis
+to automatically extract important sentences. ANES [3] adopted the
+term frequency–inverse document frequency to compute word im-
+portance, selecting high-scoring sentences based on word weights
+and positional features to generate news summaries. Graph-based
+extractive methods emerged as another framework that enhances
+summarization flexibility by representing documents as graphs. Tex-
+tRank [22] is an influential graph-based ranking model that treats
+sentences as nodes and sentence similarity as edges. It iteratively
+computes node importance and selects high-scoring sentences as
+the summary. Similarly, LexRank [7] adopts a PageRank-like algo-
+rithm to compute sentence centrality, capturing mutual reinforce-
+ment relationships among sentences to assess their relevance. With
+the advent of deep learning, neural network-based approaches have
+gained prominence in extractive summarization. Khosrow et al. [14]
+were among the first to propose a neural summarization model that
+learns and integrates sentence-level features. More recently, DCD-
+Sum [39] reframes the extractive summarization task as a sentence
+re-ranking problem using contrastive learning. It employs RoBERTa
+to encode the document and dynamically adjusts the number of
+extracted sentences via a learnable selector. DeepSumm [13] in-
+tegrates topic modeling with a Seq2Seq network to capture the
+semantic information of a document and proposes a novel sentence
+scoring method for extractive summarization.
+Query-driven text summarization is a more complex task that
+aims to extract content aligned with a given query from relevant
+documents [33]. Chandu et al. [4] proposed a query-based extrac-
+tive summarization model by combining similarity metrics with
+clustering algorithms. Afsharizadeh et al. [1] extracted and evalu-
+ated sentence-level features to identify those containing valuable
+information. The appearance of generative models has introduced a
+more flexible paradigm for text summarization. Nema et al. [25] pro-
+posed a generative approach that incorporates query attention and
+diversity attention mechanisms. QFAS-KE [10] enhances summary
+relevance by integrating keyword extraction and fine-tuning of pre-
+trained models. The emergence of large language models (LLMs)
+
+Leveraging Generative Models for Real-Time Query-Driven Text Summarization in Large-Scale Web Search
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+offers a promising new direction for addressing this challenge. Deep-
+Extract [27] leverages GPT-4 to generate sentence embeddings and
+incorporates hierarchical positional encoding to compute impor-
+tance scores for the remaining context.
+Unlike prior work, our approach leverages an LLM to perform
+query-driven extractive summarization. By applying model distil-
+lation and two-stage model optimization, we obtain a lightweight
+local model that meets the requirements of real-time querying.
+3
+Methodology
+We propose an end-to-end summarization framework QDGen-
+SumRT, as illustrated in Figure 2. The framework consists of: (1)
+model distillation, (2) full-parameter supervised fine-tuning, (3)
+user preference alignment, and (4) model quantization, deployment,
+and inference optimization. It is designed to simultaneously meet
+the industrial requirements of high relevance, high quality, and low
+latency in summary generation. In the first stage, we leverage a
+10B-parameter generative model to produce high-quality synthetic
+training data. These distilled samples are used to train a lightweight
+student model, effectively compressing the language understand-
+ing and extraction capabilities of the large model into a smaller
+0.1B-parameter model. In the second stage, we fine-tune the dis-
+tilled model using carefully curated human-labeled samples. This
+supervised training further enhances the model’s alignment with
+the input query and improves the overall relevance of the extracted
+summaries. In the third stage, to better reflect user preferences in
+real-world usage, we apply DPO using implicit feedback collected
+from online interactions. This step encourages the model to gen-
+erate summaries that are not only relevant but also more likely to
+satisfy user intent. Finally, to satisfy the real-time requirements
+of online services, we perform model quantization and deploy the
+trained model in a high-performance serving environment. Addi-
+tionally, we adopt a lookahead speculative decoding strategy to
+accelerate the inference process, enabling large-scale, low-latency
+generation in production scenarios.
+3.1
+Preliminaries
+Query-driven text summarization refers to the task of extracting
+content from a source document that is relevant to a user-specified
+query. We formally define the QDTS task as follows.
+Given a user query 𝑞and a document 𝐷= {𝑠1,𝑠2, ...,𝑠𝑛}, where
+each 𝑠𝑖denote a sentence, the aim of QDTS is to select a subset
+of sentences 𝑆= {𝑠𝑜1,𝑠𝑜2, ...,𝑠𝑜𝑘}, such that 𝑆⊆𝐷, |𝑆| ≤𝑘, and 𝑆
+serves as a query-relevant summary. The selected sentences should
+not only align with the information need expressed by the query
+but also preserve essential content from the original document,
+under a predefined length constraint 𝑘. Note that each document
+has a display space constrained by word count in the web search,
+and the variable 𝑘is defined to meet this constraint. In our settings,
+𝑘is generally set to 80 tokens. We denote our summarization model
+as a function 𝑓, such that
+𝑆= 𝑓(𝑞, 𝐷),
+(1)
+where 𝑓takes the query 𝑞and document 𝐷as input, and outputs
+the extracted sentence subset 𝑆.
+3.2
+Model Distillation
+Generative language models inherently possess strong capabilities
+in language understanding and summarization. However, as the
+number of model parameters increases (e.g., to the scale of 7B or
+10B), the inference latency for generating an average of 80 tokens
+typically exceeds 1000 milliseconds [11, 35], which far surpasses the
+latency constraints in our industrial scenarios. Although the scaling
+law of language models suggests that larger models generally out-
+perform smaller ones in terms of generalization and performance, in
+domain-specific and task-specific settings, well-tuned lightweight
+models can achieve comparable effectiveness [15]. Moreover, these
+smaller models often offer better cost-efficiency while satisfying
+the requirements for real-time inference. To retain the strong rep-
+resentation capabilities of LLM while meeting the requirements of
+real-time inference, we adopt a teacher–student model distillation
+approach. Specifically, we use the 10B-parameter ERNIE-Lite-8K
+model as the teacher and a lightweight 0.1B-parameter Hamburger
+model as the student. The Hamburger model is built upon the
+GPT-2 architecture [31], with a hidden size of 768 and 12 layers of
+self-attention. Through this distillation process, the summarization
+ability of the large model is effectively transferred to the smaller
+model.
+Distillation dataset construction. To construct the training data
+for model distillation, we collect supervision samples from fine-
+tuned ERNIE-Lite-8K. Specifically, when a user initiates a search
+query 𝑞, a ranked list of web pages 𝑈= 𝑢𝑟𝑙1,𝑢𝑟𝑙2, ...,𝑢𝑟𝑙𝑛is re-
+trieved. For each URL, we obtain the corresponding page title 𝑡𝑖and
+content 𝐷𝑖via the document indexer. These components—query,
+title, and content—are then concatenated and fed into the teacher
+model to produce target summaries. This results in a distillation
+training dataset Ddt consisting of 𝑁samples:
+Ddt = {⟨𝑞𝑖,𝑡𝑖, 𝐷𝑖,𝑦𝑖⟩| 𝑦𝑖= 𝜋𝑇(𝑞𝑖,𝑡𝑖, 𝐷𝑖;𝜃𝑇), 𝑖= 1, . . . , 𝑁} ,
+(2)
+where 𝜋𝑇denotes the teacher model and 𝜃𝑇its parameters. In total,
+we generate 14 million training samples using the ERNIE-Lite-8K
+model.
+Prompt design for distillation. Due to the weaker instruction-
+following capability of the lightweight student model, we should
+not design a complex prompt. Instead, we adopt a concise and
+efficient prompt, which also helps reduce the model’s prefilling
+time. The prompt is formulated as:
+Please extract relevant summaries for the article content
+based on the query. Please use \n to separate multi-
+viewpoint and step-by-step summaries
+---Query:{query}---Title:{title}---Content:{content}---
+This prompt encourages the model to focus on the semantic
+alignment between the query and the document content, while also
+optimizing the input length for reduced token budget and computa-
+tional cost. By using a clear instruction format and domain-specific
+phrasing, the prompt improves the effectiveness of knowledge trans-
+fer during the distillation process. Finally, we obtained 130B tokens
+using 14 million samples.
+3.3
+Full-parameter Supervised Fine-tuning
+After distillation, the lightweight model acquires basic summariza-
+tion capabilities. However, in practice, we observe that it still suffers
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Zeyu Xiong et al.
+<Query, Title, 
+Content, Answer>
+Stage 1: Model Distillation
+Input
+Inference
+Prompt
+Construction
+Please extract relevant 
+summaries for the 
+article content based 
+on the query. Please 
+use \n to separate......
+Training
+Prompt
+Stage 2: Full-parameter SFT
+Original Samples
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+Adjust
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+Manually labeled 
+samples
+SFT
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+LLM
+Lightweight Model
+SFT Model
+<Query, Title, 
+Content, Answer>
+<Query, Title, 
+Content, Answer>
+Decoding
+Alternative Summaries
+Preference 
+Signals
+≻
+Alignment
+User Preference
+Alignment Model
+Stage 3: User Preference Alignment
+Stage 4: Quantiza-
+tion and Inference 
+Optimization
+TensorRT-LLM
+Figure 2: Pipeline overview of QDGenSumRT. We first take user queries, along with web page titles and contents, as input, and
+employ a teacher LLM to generate a distillation dataset for training a lightweight student model. Subsequently, we fine-tune
+the student model using a carefully curated human-annotated dataset to enhance the quality and factuality of the generated
+summaries. Next, we incorporate sampled user preference signals and apply DPO to further align summaries with real user
+needs. Finally, we deploy the model through quantization and lookahead decoding to achieve optimal efficiency.
+from issues such as low relevance and weak structural consistency
+in certain scenarios. These issues arise mainly due to distributional
+biases and inconsistencies in summary length present in the dis-
+tillation data. To address these limitations, we further perform
+full-parameter supervised fine-tuning using high-quality, human-
+annotated samples.
+Human-annotated dataset construction. To ensure that the gen-
+erated summaries better align with user expectations, we re-curated
+the training dataset through manual annotation. Specifically, we
+adopt targeted strategies to enhance the distribution of positive and
+negative samples, control summary length, and improve structural
+consistency. First, we addressed the model’s tendency to generate
+shallow or loosely relevant summaries, a common issue in distilled
+models caused by exposure to training samples with mismatched
+or poorly defined target summaries. During data curation, we re-
+moved such ambiguous samples to encourage the model to develop
+a deeper semantic understanding of the query-document relation-
+ship. Second, considering the constraint of inference latency and
+the effectiveness of the generated summary, the lightweight model
+must not only accurately locate relevant text spans, but also present
+a complete and informative summary within the space of three dis-
+play lines—approximately 80 tokens. Overly short summaries lead
+to excessive whitespace and insufficient information, while overly
+long summaries are prone to truncation during inference, resulting
+in incomplete output and unnecessary computation. Therefore, we
+removed excessively short samples and truncated overly long ones
+to enforce consistent summary lengths. Third, for tasks requiring
+multi-perspective or stepwise summaries, structured outputs are
+preferred. However, such patterns were sparsely represented and
+inconsistent in the distillation data, leading to poor model perfor-
+mance on these types. To remedy this, we increased the proportion
+of structured summary samples and enforced output formatting
+constraints: summaries were required to contain 3–5 distinct points,
+with each point controlled in length. This ensures better learning of
+structured paradigms and improves the model’s ability to generate
+coherent multi-part answers.
+Based on carefully curated human-labeled samples, we perform
+full-parameter supervised fine-tuning on the lightweight model
+to further enhance its ability to generate summaries that are well
+aligned with the input query and of high quality. The input is a
+structured prompt 𝑥= (𝑞,𝑡, 𝐷), consisting of the user query 𝑞,
+web page title 𝑡, and document content 𝐷, while the output is the
+corresponding summary 𝑦. We formulate this process as an au-
+toregressive generation task, with the objective of maximizing the
+conditional probability 𝑝(𝑦|𝑞,𝑡, 𝐷). Specifically, assuming the sum-
+mary consists of 𝑇tokens, the fine-tuning objective is to minimize
+the following negative log-likelihood loss:
+LSFT(𝜃) = −E(𝑞,𝑡,𝐷,𝑦)∼DSFT
+𝑇
+∑︁
+𝑖=1
+log 𝜋(𝑦𝑖| 𝑦0:𝑖−1,𝑞,𝑡, 𝐷;𝜃),
+(3)
+where DSFT denotes the human-annotated fine-tuning dataset,
+which contains high-quality query-summary pairs with consis-
+tent output formatting. 𝜋(·) represents the output distribution of
+the lightweight model, and 𝜃denotes its parameters.
+3.4
+User Preference Alignment
+To further align the model outputs with user preferences and gen-
+erate summaries that better reflect user expectations, we introduce
+a Direct Preference Optimization step. This step aims to bring the
+model outputs closer to the implicit user feedback collected during
+real-time interactions.
+We design a live A/B experiment where, for each query-URL
+pair, the system presents the user with two alternative summaries
+𝑦+ and 𝑦−at the same display position. User click behavior is used
+as a weak signal to infer preferences between the two. Specifically,
+we periodically sample high-traffic query-URL pairs, prioritizing
+those with stable user engagement and sufficient exposure. For
+each selected pair, we generate multiple candidate summaries by
+applying diverse decoding strategies. To improve the quality of the
+resulting preference dataset used for DPO training, we only retain
+interaction instances where user click behavior exhibits clear and
+
+Leveraging Generative Models for Real-Time Query-Driven Text Summarization in Large-Scale Web Search
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+consistent preference signals. The resulting preference dataset is
+constructed as follows:
+Ddpo = {(𝑞𝑖,𝑡𝑖, 𝐷𝑖,𝑦+
+𝑖,𝑦−
+𝑖)|𝑖= 1, . . . , 𝑁},
+(4)
+where 𝑦+
+𝑖≻𝑦−
+𝑖indicates that the user preferred 𝑦+
+𝑖over 𝑦−
+𝑖under
+the same query 𝑞𝑖, title 𝑡𝑖, and document content 𝐷𝑖.
+We adopt the DPO framework [32], which directly optimizes the
+model to assign higher probability to the preferred summary 𝑦+
+without requiring reinforcement learning or reward models. The
+DPO loss is represented by the following equation:
+LDPO(𝜃) = −E(𝑥,𝑦+,𝑦−)∼Ddpo [log𝜎(𝛽· (log 𝜋(𝑦+ | 𝑥)
+−log 𝜋(𝑦−| 𝑥) −log 𝜋0(𝑦+ | 𝑥) + log 𝜋0(𝑦−| 𝑥)))],
+(5)
+where 𝑥= (𝑞,𝑡, 𝐷) is the structured input, 𝜎denote the sigmoid
+function, 𝜋denote the current model , and 𝜋0 be the SFT model
+as the reference policy. This objective encourages the model to
+increase the likelihood of preferred responses relative to less pre-
+ferred ones, while penalizing large deviations from the SFT baseline
+𝜋0, thus achieving preference alignment without reward models.
+During model optimization, DPO training is interleaved with peri-
+odic SFT refresh cycles to adapt to evolving user preferences while
+maintaining output quality.
+3.5
+Quantization and Inference Optimization
+Quantization. In order to deploy in real-time search systems, we
+optimize the inference performance of the user preference-aligned
+summary model through quantization and an efficient serving
+framework. The model is deployed using TensorRT-LLM inference
+framework, which provides high throughput, low latency, and opti-
+mized memory usage. To further reduce inference time, we apply
+FP8 quantization [21], compressing model weights and activations
+from bfloat16 to fp8 (W8A8).
+Inference optimization. To further accelerate inference, we inte-
+grate lookahead speculative decoding [8] into our serving pipeline.
+After deploying the model with TensorRT-LLM for optimized infer-
+ence, we combine FP8 quantization with the lookahead decoding
+strategy. In this approach, the lookahead branch generates multiple
+candidate tokens in parallel, while the verification branch uses the
+original model to validate the proposed n-gram candidates. This
+effectively breaks the strict token-by-token constraint of autoregres-
+sive generation, enabling significant inference acceleration with
+reduced computational overhead—particularly under long-context
+and low-latency scenarios.
+4
+Experiments
+To evaluate the effectiveness and practical impact of our proposed
+QDGenSumRT method in real-world scenarios, we conduct compre-
+hensive offline and online experiments on a large-scale web search
+system. Our experimental setup operates real-world query traffic
+and user interactions, allowing us to measure both the quality of
+generated summaries and their influence on user search experience.
+4.1
+Datasets
+We evaluate our model on a real-world dataset specifically con-
+structed for QDTS. The dataset is collected from real-world query
+logs and corresponding search results in a production search sys-
+tem. Each item in the dataset consists of a query-document pair. To
+construct the ground-truth summaries, we employ professional an-
+notators via Baidu’s in-house annotation platform. Annotators are
+instructed to generate concise, informative summaries that directly
+address the information need expressed in the query, based on the
+content of the retrieved documents. Each summary is carefully
+reviewed to ensure factual consistency, relevance, and centrality.
+Ultimately, our final dataset contains 6,160 (query, document,
+summary) triplets for SFT training and 1,021 triplets for testing.
+4.2
+Evaluation Metircs
+We adopt multiple metrics to evaluate the performance of our model,
+as follows:
+ROUGE. The ROUGE [18] metric evaluates the overlap between
+n-grams in the generated outputs and reference texts. We utilize
+ROUGE-N (N=1,2) to measure the n-gram overlap, which is defined
+as:
+ROUGE-N =
+Í
+𝑆∈RefSumm
+Í
+gram𝑛∈𝑆Countmatch(gram𝑛)
+Í
+𝑆∈RefSumm
+Í
+gram𝑛∈𝑆Count(gram𝑛)
+,
+(6)
+where Countmatch(gram𝑛) denotes the maximum number of n-
+grams co-occurring in the candidate summary and the set of refer-
+ence summaries, and Count(gram𝑛) represents the total number
+of n-grams in the reference summaries.
+ROUGE-L is a metric that measures the similarity between a
+candidate summary and a reference summary based on the longest
+common subsequence. It is defined as follows:
+ROUGE-L = 𝐿(𝑋,𝑌)
+|𝑌|
+,
+(7)
+where 𝐿(𝑋,𝑌) denotes the length of the longest common subse-
+quence between the candidate sequence 𝑋and the reference se-
+quence 𝑌, and |𝑌| is the length of the reference sequence.
+GSB. The Good vs. Same vs. Bad (GSB) metric is judged by pro-
+fessionally trained annotators. For a user query, we provide the
+annotators with both System A and System B search results. The
+annotators independently label each comparison as Good (result A
+is better than B), Bad (result B is better than A), or Same (they are
+equally good or bad), based on the quality of the search results and
+their relevance to the query. To quantify human evaluation, we use
+a unified metric denoted ΔGSB, defined as:
+ΔGSB =
+#Good −#Bad
+#Good + #Same + #Bad.
+(8)
+In addition to human evaluation, we also monitored several on-
+line metrics to assess the model’s impact in real-time environments.
+These include click-through rate, which reflects the proportion of
+queries that result in clicks; search engagement, which indicates
+users’ activity during search; satisfactory consumption rate, which
+measures the percentage of users who find satisfactory results;
+distribution ratio, which represents the proportion of queries for
+which at least one web page is successfully delivered to the user
+per search.
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Zeyu Xiong et al.
+Table 1: ROUGE scores (%) comparison on our test set. “*”
+denotes non-real-time methods.
+Model
+ROUGE-1
+ROUGE-2
+ROUGE-L
+Base
+40.64
+34.03
+39.78
+DeepExtract [27]*
+38.13
+25.28
+33.51
+BART [16]*
+34.14
+22.75
+30.64
+NGS*
+60.48
+50.25
+58.31
+QDGenSumRT (Ours)
+59.21
+51.33
+57.12
+Table 2: Human evaluation results measured by ΔGSB.
+Comparison
+ΔGSB
+p-value
+QDGenSumRT vs. Base
++20.68%
+1.3e-6
+QDGenSumRT vs. NGS
+-0.12%
+0.88
+4.3
+Implementation Details
+For the teacher model used in the distillation stage, we adopt a 10B-
+parameter model based on ERNIE-Lite-8K, further fine-tuned using
+1,000 human-annotated query-summary pairs. The fine-tuning pro-
+cess is conducted over 3 epochs, with a checkpoint saved every
+64 steps. For the student model in distillation, we build a custom
+0.1B-parameter model named Hamburger, following the GPT-2
+architecture. The model consists of 12 transformer layers with a
+hidden size of 768. During distillation, the teacher model generates
+14 million summaries, forming a dataset of approximately 130B
+tokens. We train the student model on this dataset for 3 epochs
+using a batch size of 192 and the AdamW optimizer. In the SFT
+stage, we manually filter and obtain a high-quality dataset of 6,160
+examples. The model is fine-tuned for 6 epochs with a batch size of
+128. A linear learning rate scheduler is applied, and a checkpoint is
+saved every 30 steps. The distillation stage is conducted using three
+NVIDIA A100 GPUs (40GB each), while the SFT stage is completed
+using a single A100. During deployment, we conduct inference
+on a single NVIDIA L20 GPU using the TensorRT-LLM v0.17.0
+framework [26]. We employ fp8 W8A8 + fp8 kv cache quantization.
+The three key parameters of the lookahead algorithm — window
+size, ngram size, and verification set size — are set to 4, 6, and 4,
+respectively.
+4.4
+Competitor System
+To demonstrate the effectiveness of our approach, we compare it
+against several strong baselines and variants:
+• Base: A multi-stage traditional summarization strategy cur-
+rently deployed online in Baidu Search. Specific details are
+omitted due to confidentiality constraints.
+• NGS: The Nearline Generative Summarizer (NGS) employs
+a fine-tuned ERNIE-Lite-8K 10B model for summary gen-
+eration. It is conditionally triggered online using a query-
+document caching mechanism, but it cannot meet the re-
+quirements for real-time inference.
+• DeepExtract [27]: Leverages GPT-4 to generate sentence
+embeddings and incorporates hierarchical positional encod-
+ing to compute importance scores for content selection.
+Table 3: Relative improvements (%) of our QDGenSumRT
+method over the base model on online A/B testing metrics.
+CTR: Click-Through Rate; SE: Search Engagement; SCR: Sat-
+isfactory Consumption Rate; DR: Distribution Ratio. The
+p-values for these experimental metrics are less than 0.05.
+Method
+CTR
+SE
+SCR
+DR
+Base
+—
+—
+—
+—
+QDGenSumRT
++0.81%
++0.33%
++0.62%
++0.54%
+Table 4: Efficiency comparison on L20 GPU. Inference latency
+and end-to-end (E2E) latency are reported as averages.
+Model
+#Params
+Train Time
+Inference
+E2E
+(per epoch)
+Latency
+Latency
+Base
+—
+—
+—
+~60 ms
+NGS
+10 B
+28 h
+3773 ms
+3802 ms
+Ours
+0.1 B
+0.8 h
+55 ms
+78 ms
+• BART [16] : An encoder-decoder Transformer model pre-
+trained using a denoising objective. It consists of a bidirec-
+tional encoder and an autoregressive decoder.
+• QDGenSumRT: The real-time generative summarization
+model proposed in this work. With only 0.1B parameters, it is
+specifically designed for low-latency online deployment and
+supports efficient end-to-end summarization conditioned on
+both query and document.
+4.5
+Main Results
+Offline experimental results. As shown in Table 1, our proposed
+QDGenSumRT achieves strong performance across all ROUGE met-
+rics and significantly outperforms most existing methods. Specifi-
+cally, QDGenSumRT obtains the highest ROUGE-2 score of 51.33,
+even surpassing NGS, a much larger fine-tuned ERNIE-Lite-8K
+10B model. This demonstrates that our model generates more co-
+herent and grammatically accurate summaries while maintaining
+relevance to the references. Despite its small size (only 0.1B pa-
+rameters), QDGenSumRT closely matches the performance of NGS,
+mainly attributed to the refined SFT and DPO stages. This makes it
+particularly suitable for low-latency deployment scenarios where
+both performance and efficiency are critical.
+Moreover, third-party methods such as DeepExtract and BART
+underperform compared to the production-level Base system, due
+to a lack of adaptation to real-world data distributions.
+Human evaluation results. The human evaluation results, mea-
+sured by ΔGSB, are summarized in Table 2. When comparing our
+system against the production-level Base system, we observe a sig-
+nificant positive gain of +20.68% in ΔGSB, with a highly significant
+p-value of 10−6, indicating that our model produces substantially
+better search summaries according to professional annotators.
+In comparison to NGS, our model achieves comparable perfor-
+mance with only a minor −0.12% difference in ΔGSB. This demon-
+strates that despite its significantly smaller size (0.1B vs. 10B pa-
+rameters), our model remains competitive in terms of perceived
+summary quality.
+
+Leveraging Generative Models for Real-Time Query-Driven Text Summarization in Large-Scale Web Search
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Table 5: Ablation study on different inference optimization strategies. Best result in bold.
+Config
+Quant.
+GPU
+𝑤
+𝑛
+𝑣
+QPS↑
+AR↑
+InfT↓
+ROUGE-2↑
+Baseline
+BF16
+A10
+–
+–
+–
+31.1
+1.00
+153.31
+51.91
++ INT8-wo. + A10
+INT8
+A10
+–
+–
+–
+46.3
+1.00
+131.25
+49.84
++ INT8-wo. + A10 + Lookahead(4,6,4)
+INT8
+A10
+4
+6
+4
+54.6
+3.11
+68.41
+49.87
++ INT8-wo. + L20
+INT8
+L20
+–
+–
+–
+79.3
+1.00
+118.49
+49.79
++ FP8 + L20
+FP8
+L20
+–
+–
+–
+115.4
+1.00
+101.21
+51.31
++ FP8 + L20 + Lookahead(5,5,5)
+FP8
+L20
+5
+5
+5
+148.9
+3.56
+57.16
+51.35
++ FP8 + L20 + Lookahead(6,6,6)
+FP8
+L20
+6
+6
+6
+147.8
+3.98
+59.72
+51.28
++ FP8 + L20 + Lookahead(4,6,4)
+FP8
+L20
+4
+6
+4
+149.7
+3.64
+55.01
+51.33
+Table 6: Ablation study of different training components on
+ROUGE-2 scores. Baseline denotes pretrained 0.1B model
+with GPT-2 structure.
+Method
+Distil.
+SFT
+DPO
+ROUGE-2
+Baseline
+5.34
++ Distillation
+✓
+33.51
++ SFT
+✓
+35.24
++ DPO
+✓
+21.62
++ Distillation + SFT
+✓
+✓
+45.87
++ Distillation + DPO
+✓
+✓
+40.48
+Full method
+✓
+✓
+✓
+51.33
+Online A/B test results. We conducted a large-scale A/B test to
+evaluate the real-world performance of our method against the base
+model. As shown in Table 3, our QDGenSumRT approach consis-
+tently outperforms the baseline across several key online metrics,
+demonstrating its effectiveness in improving user interaction and
+satisfaction.
+Efficiency comparison. To evaluate the practicality of our model
+in real-world deployment scenarios, we conduct a comprehensive
+efficiency comparison between our proposed QDGenSumRT and
+the larger NGS model. As shown in Table 4, QDGenSumRT achieves
+significantly better efficiency across all metrics. On L20 GPU, our
+model reduces training time by more than 35x compared to NGS. In
+terms of inference, QDGenSumRT exhibits over 68x lower inference
+latency and end-to-end response time. These results highlight the
+superior scalability and cost-effectiveness of our approach, espe-
+cially in real-time summarization applications where low latency
+and high throughput are essential.
+In summary, these results validate that QDGenSumRT signifi-
+cantly improves the quality of generated summaries and achieves
+a better balance between efficiency and effectiveness, making it
+well-suited for industrial deployment.
+4.6
+Ablation study
+Main ablation. We conduct ablation experiments to evaluate the
+effectiveness of each component of our pipeline, i.e., model distilla-
+tion, SFT, and DPO. As shown in Table 6, we observe the following
+findings: First, the base model without any refinement achieves
+a ROUGE-2 score of only 5.34, demonstrating that directly apply-
+ing the pretrained 0.1B model is insufficient to handle QDTS tasks.
+Adding model distillation improves the performance to 33.51, indi-
+cating that distillation helps transfer knowledge from larger teacher
+models into our compact architecture. Further incorporating SFT
+significantly boosts the score to 45.87, showing the importance of
+fine-tuning on high-quality, query-document aligned summariza-
+tion data. Finally, applying DPO brings an additional improvement
+of +5.46, highlighting its effectiveness in aligning the model with hu-
+man preferences for concise and relevant summaries. These results
+demonstrate that each stage in our training pipeline contributes
+meaningfully to the final summarization quality.
+Effect of inference optimization strategies. We conduct abla-
+tion studies to evaluate the impact of various inference optimization
+techniques, including quantization methods (INT8-weight-only,
+FP8), GPU hardware (A10 vs. L20), and lookahead parameters (win-
+dow size 𝑤, ngram size 𝑛, verification set size 𝑣). The results are
+evaluated using three key metrics: queries per second (QPS), accep-
+tance rate (AR), and average inference time (InfT).
+From Table 5, we observe the following: 1) FP8 quantization
+achieves better performance than INT8-weight-only. This is because
+FP8 conversion from BF16 introduces less precision loss compared
+to INT8, while also offering greater efficiency gains. Specifically,
+FP8 includes quantization of all of weights, activations, and KV
+cache, leading to improvements in both computational efficiency
+and memory utilization. 2) Lookahead decoding is a lossless infer-
+ence acceleration technique that does not degrade model quality, as
+evidenced by the comparable or even slightly improved ROUGE-2
+scores. Moreover, it significantly reduces output latency by enabling
+speculative token generation, which improves QPS substantially.
+3) Higher AR does not always translate to better overall efficiency
+in lookahead decoding. This is because lookahead introduces addi-
+tional computation overhead. Therefore, careful tuning of its param-
+eters is crucial for maximizing throughput and minimizing infer-
+ence time. 4) The best configuration, FP8 + L20 + Lookahead(4,6,4),
+achieves the highest QPS of 149.7 and the lowest average inference
+time of 55.01 ms, while maintaining competitive generation quality
+with a ROUGE-2 score of 51.33. This demonstrates a well-balanced
+trade-off between speed and accuracy.
+5
+Conclusion
+In this work, we introduced a novel generative framework QDGen-
+SumRT for QDTS in large-scale web search. We leverage model
+distillation, SFT, DPO, and lookahead decoding to build a highly
+effective and efficient system. Despite its compact size of only 0.1B
+parameters, the proposed model achieves state-of-the-art perfor-
+mance across multiple industry metrics. Extensive experiments
+demonstrate the effectiveness and efficiency of our method.
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Zeyu Xiong et al.
+6
+GenAI Usage Disclosure
+This work utilized generative AI tools for minor language editing
+and polishing of sentences to improve clarity and readability. These
+tools were not used to generate new content, results, interpretations,
+or any novel intellectual contributions.
+References
+[1] Mahsa Afsharizadeh, Hossein Ebrahimpour-Komleh, and Ayoub Bagheri. 2018.
+Query-oriented text summarization using sentence extraction technique. In 2018
+4th international conference on web research (ICWR). IEEE, 128–132.
+[2] Hannah Bast and Marjan Celikik. 2014. Efficient index-based snippet generation.
+ACM Transactions on Information Systems (TOIS) 32, 2 (2014), 1–24.
+[3] Ronald Brandow, Karl Mitze, and Lisa F Rau. 1995. Automatic condensation of
+electronic publications by sentence selection. Information Processing & Manage-
+ment 31, 5 (1995), 675–685.
+[4] Gayathri Venu Madhuri Chandu, Amritha Premkumar, Nalini Sampath, et al. 2019.
+Extractive approach for query based text summarization. In 2019 International
+Conference on Issues and Challenges in Intelligent Computing Techniques (ICICT),
+Vol. 1. IEEE, 1–5.
+[5] Hoa Trang Dang. 2006. DUC 2005: Evaluation of question-focused summariza-
+tion systems. In Proceedings of the workshop on task-focused summarization and
+question answering. 48–55.
+[6] Yang Deng, Wai Lam, Yuexiang Xie, Daoyuan Chen, Yaliang Li, Min Yang, and
+Ying Shen. 2020. Joint learning of answer selection and answer summary genera-
+tion in community question answering. In Proceedings of the AAAI Conference on
+Artificial Intelligence, Vol. 34. 7651–7658.
+[7] Günes Erkan and Dragomir R Radev. 2004. Lexrank: Graph-based lexical centrality
+as salience in text summarization. Journal of artificial intelligence research 22
+(2004), 457–479.
+[8] Yichao Fu, Peter Bailis, Ion Stoica, and Hao Zhang. 2024. Break the sequen-
+tial dependency of llm inference using lookahead decoding. arXiv preprint
+arXiv:2402.02057 (2024).
+[9] Nikolaos Giarelis, Charalampos Mastrokostas, and Nikos Karacapilidis. 2023.
+Abstractive vs. extractive summarization: An experimental review. Applied
+Sciences 13, 13 (2023), 7620.
+[10] Rupali Goyal, Parteek Kumar, and VP Singh. 2025. QFAS-KE: Query focused
+answer summarization using keyword extraction. Information Processing &
+Management 62, 4 (2025), 104104.
+[11] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek
+Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex
+Vaughan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783
+(2024).
+[12] Shaoyao Huang, Luozheng Qin, and Ziqiang Cao. 2023. Diffusion language model
+with query-document relevance for query-focused summarization. In Findings of
+the Association for Computational Linguistics: EMNLP 2023. 11020–11030.
+[13] Akanksha Joshi, Eduardo Fidalgo, Enrique Alegre, and Laura Fernández-Robles.
+2023. DeepSumm: Exploiting topic models and sequence to sequence networks
+for extractive text summarization. Expert Systems with Applications 211 (2023),
+118442.
+[14] Khosrow Kaikhah. 2004. Automatic text summarization with neural networks. In
+2004 2nd international IEEE conference on’Intelligent Systems’. Proceedings (IEEE
+cat. No. 04EX791), Vol. 1. IEEE, 40–44.
+[15] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess,
+Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 (2020).
+[16] Mike Lewis, Yinhan Liu, Naman Goyal, Marjan Ghazvininejad, Abdelrahman
+Mohamed, Omer Levy, Veselin Stoyanov, and Luke Zettlemoyer. 2020. BART:
+Denoising Sequence-to-Sequence Pre-training for Natural Language Generation,
+Translation, and Comprehension. In Proceedings of the 58th Annual Meeting of
+the Association for Computational Linguistics. 7871–7880.
+[17] Xiaoyu Li, Xiao Li, Li Gao, Yiding Liu, Xiaoyang Wang, Shuaiqiang Wang, Junfeng
+Wang, and Dawei Yin. 2025. Proactive Guidance of Multi-Turn Conversation in
+Industrial Search. arXiv preprint arXiv:2505.24251 (2025).
+[18] Chin-Yew Lin. 2004. Rouge: A package for automatic evaluation of summaries.
+In Text summarization branches out. 74–81.
+[19] Hans Peter Luhn. 1958. The automatic creation of literature abstracts. IBM
+Journal of research and development 2, 2 (1958), 159–165.
+[20] Wenjuan Luo, Fuzhen Zhuang, Qing He, and Zhongzhi Shi. 2013. Exploiting rele-
+vance, coverage, and novelty for query-focused multi-document summarization.
+Knowledge-Based Systems 46 (2013), 33–42.
+[21] Paulius Micikevicius, Dusan Stosic, Neil Burgess, Marius Cornea, Pradeep Dubey,
+Richard Grisenthwaite, Sangwon Ha, Alexander Heinecke, Patrick Judd, John
+Kamalu, et al. 2022. Fp8 formats for deep learning. arXiv preprint arXiv:2209.05433
+(2022).
+[22] Rada Mihalcea and Paul Tarau. 2004. Textrank: Bringing order into text. In Pro-
+ceedings of the 2004 conference on empirical methods in natural language processing.
+404–411.
+[23] Muhidin Mohamed, Mourad Oussalah, and Victor Chang. 2024. SDbQfSum:
+Query-focused summarization framework based on diversity and text semantic
+analysis. Expert Systems 41, 1 (2024), e13462.
+[24] Muhidin A Mohamed and Mourad Oussalah. 2015.
+Similarity-based query-
+focused multi-document summarization using crowdsourced and manually-built
+lexical-semantic resources. In 2015 IEEE Trustcom/BigDataSE/ISPA, Vol. 2. IEEE,
+80–87.
+[25] Preksha Nema, Mitesh Khapra, Anirban Laha, and Balaraman Ravindran. 2017.
+Diversity driven attention model for query-based abstractive summarization.
+arXiv preprint arXiv:1704.08300 (2017).
+[26] NVIDIA Corporation. 2025. TensorRT-LLM: Large Language Model Inference
+Library by NVIDIA. https://github.com/NVIDIA/TensorRT-LLM.
+Accessed:
+2025-04-05.
+[27] Aytuğ Onan and Hesham A Alhumyani. 2024. DeepExtract: Semantic-driven
+extractive text summarization framework using LLMs and hierarchical positional
+encoding. Journal of King Saud University-Computer and Information Sciences 36,
+8 (2024), 102178.
+[28] Choongwon Park and Youngjoong Ko. 2022. Qsg transformer: Transformer with
+query-attentive semantic graph for query-focused summarization. In Proceedings
+of the 45th international ACM SIGIR conference on research and development in
+information retrieval. 2589–2594.
+[29] Min Peng, Binlong Gao, Jiahui Zhu, Jiajia Huang, Mengting Yuan, and Fei Li.
+2016. High quality information extraction and query-oriented summarization
+for automatic query-reply in social network. Expert Systems with applications 44
+(2016), 92–101.
+[30] Muhammad Reza Qorib, Qisheng Hu, and Hwee Tou Ng. 2025. Just What You
+Desire: Constrained Timeline Summarization with Self-Reflection for Enhanced
+Relevance. In Proceedings of the AAAI Conference on Artificial Intelligence, Vol. 39.
+25065–25073.
+[31] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever,
+et al. 2019. Language models are unsupervised multitask learners. OpenAI blog
+1, 8 (2019), 9.
+[32] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language
+model is secretly a reward model. Advances in Neural Information Processing
+Systems 36 (2023), 53728–53741.
+[33] Nazreena Rahman and Bhogeswar Borah. 2015. A survey on existing extractive
+techniques for query-based text summarization. In 2015 international symposium
+on advanced computing and communication (ISACC). IEEE, 98–102.
+[34] Sajad Sotudeh and Nazli Goharian. 2023. Qontsum: On contrasting salient content
+for query-focused summarization. arXiv preprint arXiv:2307.07586 (2023).
+[35] Yu Sun, Shuohuan Wang, Shikun Feng, Siyu Ding, Chao Pang, Junyuan Shang, Ji-
+axiang Liu, Xuyi Chen, Yanbin Zhao, Yuxiang Lu, et al. 2021. Ernie 3.0: Large-scale
+knowledge enhanced pre-training for language understanding and generation.
+arXiv preprint arXiv:2107.02137 (2021).
+[36] Andrew Turpin, Yohannes Tsegay, David Hawking, and Hugh E Williams. 2007.
+Fast generation of result snippets in web search. In Proceedings of the 30th annual
+international ACM SIGIR conference on Research and development in information
+retrieval. 127–134.
+[37] Zhichao Xu and Daniel Cohen. 2023. A lightweight constrained generation alter-
+native for query-focused summarization. In Proceedings of the 46th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+1745–1749.
+[38] Jin-ge Yao, Xiaojun Wan, and Jianguo Xiao. 2017. Recent advances in document
+summarization. Knowledge and Information Systems 53 (2017), 297–336.
+[39] Jiaqi Zhang, Ling Lu, Liang Zhang, Yinong Chen, and Wanping Liu. 2024. DCD-
+Sum: An interpretable extractive summarization framework based on contrastive
+learning method. Engineering Applications of Artificial Intelligence 133 (2024),
+108148.

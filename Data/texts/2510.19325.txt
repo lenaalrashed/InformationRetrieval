@@ -1,0 +1,822 @@
+BALANCING REWARDS IN TEXT SUMMARIZATION: MULTI-OBJECTIVE
+REINFORCEMENT LEARNING VIA HYPERVOLUME OPTIMIZATION
+Junjie Song∗, Yiwen Liu∗, Dapeng Li∗, Yin Sun, Shukun Fu, Siqi Chen, Yuji Cao†
+AI-4-Business of Li Auto Inc.
+Beijing, China
+ABSTRACT
+Text summarization is a crucial task that requires the simul-
+taneous optimization of multiple objectives, including con-
+sistency, coherence, relevance, and fluency, which presents
+considerable challenges.
+Although large language models
+(LLMs) have demonstrated remarkable performance, en-
+hanced by reinforcement learning (RL), few studies have
+focused on optimizing the multi-objective problem of sum-
+marization through RL based on LLMs. In this paper, we
+introduce hypervolume optimization (HVO), a novel opti-
+mization strategy that dynamically adjusts the scores be-
+tween groups during the reward process in RL by using
+the hypervolume method. This method guides the model’s
+optimization to progressively approximate the pareto front,
+thereby generating balanced summaries across multiple ob-
+jectives. Experimental results on several representative sum-
+marization datasets demonstrate that our method outper-
+forms group relative policy optimization (GRPO) in over-
+all scores and shows more balanced performance across
+different dimensions.
+Moreover, a 7B foundation model
+enhanced by HVO performs comparably to GPT-4 in the
+summarization task, while maintaining a shorter gener-
+ation length.
+Our code is publicly available at https:
+//github.com/ai4business-LiAuto/HVO.git
+Index Terms— Multi-objective Reinforcement Learning,
+Text Summarization, Hypervolume Optimization
+1. INTRODUCTION
+Text summarization is a core and challenging task in natural
+language processing (NLP) [1]. To comprehensively evaluate
+the quality of generated summaries, researchers typically ex-
+amine multiple dimensions, such as coherence, consistency,
+fluency, and relevance [2]. However, optimizing the objec-
+tives of these dimensions simultaneously is challenging, as
+improvements along one dimension may lead to compromises
+in others [3], resulting in imbalanced summaries.
+With the development of large language models (LLMs),
+utilizing LLMs for zero-shot generation of summaries has
+∗Equal Contribution
+†Corresponding Author
+Manual reference summary
+Christopher 
+Eccleston‘s 
+turn 
+was 
+among 
+shortest 
+incarnations of Dr Who .Actor, who grew up in Manchester, 
+played the Doctor for just 13 episodes. He was a huge hit
+with fans, but fell out with show boss Russell T Davies . The 
+51-year-old suggested he quit after a row over his decision 
+to play character with a strong northern accent.
+HVO summary
+Christopher Eccleston, who played Doctor Who for just 13 
+episodes, has suggested he quit the show aIer falling out 
+with bosses over his decision to play the character with a 
+strong northern accent. Eccleston grew up in Manchester
+and proved a hit with fans during his tenure.
+GRPO summary
+Christopher Eccleston, who played the Doctor in Doctor Wh
+o for just 13 episodes in 2005, quit the show after a dispute 
+with the producers over his decision to give the character a 
+strong northern accent. He expresses hope for being remem
+bered as one of the Doctors and criticizes the current lack of 
+diversity in the film and television industry.
+Fig. 1. The radar chart shows the scores of different mod-
+els in each dimension, evaluated by UniEval [4] on the
+CNN/DailyMail [5]. The same meanings are represented in
+the same color and the highlighted areas show where the
+HVO summary performs better. Underline indicates improper
+phrasing.
+become one of the mainstream approaches [6]. As shown
+in Figure 1, the zero-shot summaries leave room for im-
+provement in all dimensions, especially in consistency. With
+the demonstrated success of reinforcement learning (RL) in
+post-training [7, 8], it has been established as an effective
+enhancement method in text summarization [1]. Most studies
+use RL methods to enhance summarization models by rely-
+ing on a single reward signal [9, 10, 11]. However, they do
+not integrate multi-dimensional metrics as rewards for sum-
+marization, and those methods still encounter challenges in
+generating high-quality summaries while balancing multiple
+dimensions. To achieve well-balanced summaries, MDO [12]
+incorporates multi-dimensional rewards and explores opti-
+mal strategies for multi-objective RL. In detail, MDO uses
+PCGrad optimization to reduce gradient interference across
+different dimensions, facilitating the discovery of Pareto im-
+provements by balancing multiple objectives. However, this
+method requires pairwise gradient projections between dif-
+ferent dimensions. Due to the high computational cost, it is
+not feasible to integrate into LLMs.
+In this work, we propose hypervolume optimization
+(HVO), a multi-objective reinforcement learning (MORL)
+arXiv:2510.19325v1 [cs.CL] 22 Oct 2025
+
+optimization strategy designed for text summarization, which
+is based on group relative policy optimization (GRPO) [13]
+and well-suited for LLMs. HVO incorporates multi-dimensional
+rewards into a hypervolume [14] computation framework,
+optimizing the model towards hypervolume maximization,
+progressively approaching the Pareto optimal frontier. As il-
+lustrated in Figure 1, our proposed HVO method significantly
+outperforms LLM-based baseline approaches by achieving
+higher scores across multiple evaluation dimensions, while
+maintaining a more balanced and stable optimization. The
+main contributions of this work are summarized as follows:
+• We introduce HVO, a multi-objective reinforcement
+learning strategy for text summarization based on
+GRPO, which efficiently balances multiple evaluation
+dimensions without requiring supervised fine-tuning or
+a cold start.
+• On representative datasets, HVO outperforms GRPO
+with better hypervolume and UniEval scores. The 7B
+LLM version of HVO performs similarly to GPT-4 on
+two benchmarks.
+• To address the training instability and summary length
+collapse issues in vanilla GRPO, a new length con-
+straint mechanism is introduced to enhance the training
+stability.
+2. METHOD
+In order to preserve the core summarization capabilities of
+LLMs while enhancing performance across multiple dimen-
+sions. We introduce HVO based on the R1-Zero-like [15]
+training paradigm, which directly applies GRPO to base
+LLMs without relying on supervised fine-tuning (SFT) as
+a preliminary step. Specifically, HVO applies hypervolume
+evaluation to improve the multi-objective optimization pro-
+cess, where a policy model generates summaries optimized
+with multi-dimensional rewards calculated via UniEval [4]
+, enhanced by a length constraint mechanism.
+UniEval is
+a multi-dimensional evaluation tool that strongly correlates
+with human judgment [4] and is commonly used in text sum-
+marization research [12, 16]. The entire process is illustrated
+in Figure 2.
+2.1. Problem Formulation
+Given a set of documents {p1, p2, . . . , pN}, LLMs gener-
+ate the corresponding summaries {s1, s2, . . . , sN} using a
+prompt α. Text summarization can be modeled as a Question
+Answering (QA) problem, where the question is a prompted
+document qi = f(pi; α) and the answer is the corresponding
+summary si. The dataset D is formed as {(qi, si)}N
+i=1. For
+a specific question q ∈D the policy model πθ generates a
+group of G individual summaries {oi}G
+i=1. For each evalua-
+tion dimension Dk in {D1, D2, . . . , DM}, the reward model
+R computes the reward rk
+i for oi at the k-th dimension. Our
+objective is to optimize the policy model’s parameters θ us-
+ing multi-objective reinforcement learning to maximize the
+expected reward guided by hypervolume maximization based
+on GRPO.
+2.2. HVO
+𝑚𝑖𝑛!"#
+$
+𝑟!
+%
+𝐷!
+𝐷"
+𝐷#
+𝑟!
+𝑟"
+𝑟#
+Schematic diagram of two-dimensional case
+𝐷!
+𝐷"
+𝑓!
+𝑓"
+Hypervolume 
+Calculation
+𝑟!
+!
+𝑟"
+!
+𝑟$
+!
+𝑟!
+"
+𝑟!
+#
+𝑟"
+"
+𝑟"
+#
+𝑟$
+"
+𝑟$
+#
+…
+r%#
+!
+r%$
+"
+r%%
+#
+…
+…
+𝛿
+ϵ
+ϵ
+ϵ
+𝑞
+Policy
+Model
+𝑜!
+𝑜"
+Multi-
+objective
+Rewards
+Reference
+Model
+𝑟!
+𝑟"
+𝑟#
+Group
+Computation
+𝐴!
+𝐴"
+𝐴#
+𝑜#
+Hypervolume
+Op6miza6on
+🔥
+KL
+❄
+Text: {content}
+Instruction: Summarize 
+the Text without any 
+Explanation.
+Output:
+𝑝
+𝑠
+Prompt
+C𝑜ℎ𝑒𝑟𝑒𝑛𝑐𝑒
+R𝑒𝑙𝑒𝑣𝑎𝑛𝑐𝑒
+𝐹𝑙𝑢𝑒𝑛𝑐𝑦
+C𝑜𝑛𝑠𝑖𝑠𝑡𝑒𝑛𝑐𝑦
+ρ
+0.5
+|Δ CR|
+𝑅&'(&!)*(*))
+0
+Conciseness
+𝐔𝐧𝐢𝐄𝐯𝐚𝐥
+1
+(a)
+(b)
+(c)
+Fig. 2. The entire process of HVO. In subplot (c), the points
+on the f1 line represent the same linear weighted sum score
+for D1 and D2, while the points on the f2 line represent the
+same hypervolume value for D1 and D2.
+HVO is based on GRPO in which the optimization of
+policy πθ is achieved by maximizing the following objective
+function:
+J (θ) = E(q,a)∼D,{oi}G
+i=1∼πold(·|q)
+"
+1
+G
+G
+X
+i=1
+1
+|oi|
+|oi|
+X
+t=1
+ 
+min
+
+fi,t(θ) ˆAi,t, clip(fi,t(θ), 1 −ϵ, 1 + ϵ) ˆAi,t
+
+(1)
+−βDKL(πσ||πref)
+!#
+,
+where
+fi,t(θ) = πθ(oi,t|q, oi,<t)
+πθold(oi,t|q, oi,<t),
+ˆAi,t
+= ri −mean({ri}G
+i=1)
+std({ri}G
+i=1)
+.
+The default and direct way to extend GRPO to multi-objective
+optimization is to compute the reward ri through a weighted
+linear combination:
+ri =
+M
+X
+k=1
+wk · rk
+i ,
+(2)
+where wk represents the weight for the reward rk
+i , which
+requires manual configuration. It is worth noting that while
+the weighted linear combination method is simple, it has
+
+non-trivial limitations, particularly in handling issues of
+inter-dependencies between objectives, which can result in
+imbalanced or incomplete optimization outcomes [17].
+The hypervolume method is an evaluation metric in multi-
+objective optimization that measures the volume of the hyper-
+cube occupied by a set of solutions in the objective space. As
+shown in Figure 2 (c), taking the two-dimensional case as an
+example, when the weighted linear combination scores of the
+samples are similar, samples with more balanced dimensions
+have higher hypervolume values. Moreover, hypervolume-
+based evaluation has been shown to be a Pareto-consistent
+evaluation method [18]. Therefore, optimizing towards hy-
+pervolume maximization ensures continuous improvement in
+the quality of the solution set, progressively approaching the
+Pareto optimal frontier. Inspired by this, we integrate hy-
+pervolume evaluation into the multi-dimensional rewards of
+GRPO and use the commonly adopted approach of selecting
+a slightly worse reference point than the nadir point. The spe-
+cific method of HVO is as follows:
+ri =
+M
+Y
+k=1
+
+min
+ ϵ, rk
+i −min({rk
+i }G
+i=1) + δ
+−wk
+,
+(3)
+where δ, ϵ ∈(0, 1), δ is a small constant used to avoid zero
+values and ϵ is an upper bound, which ensures that the term
+rk
+i −minG
+i=1(rk
+i ) is restricted within the range [δ, ϵ], allowing
+monotonic adjustment of wk for Dk.
+We use the scores of UniEval as a reward that focuses on
+coherence, consistency, fluency, and relevance in text sum-
+marization. However, recent studies have shown that GRPO
+encounters issues with training instability [19], which leads
+to issues with summary length collapse during training when
+using UniEval as the sole reward. Consequently, we propose
+a new length constraint method to help maintain training sta-
+bility. The calculation is as follows:
+Rconciseness (oi) =
+1
+1 + (xi/ρ)λ ,
+(4)
+where xi =
+|pi| / |oi| −mean
+
+{|pj| / |sj|}V
+j=1
+, V is the
+size of the training set.
+It represents the absolute differ-
+ence between the compression ratio (CR) of the generated
+summary oi and the average compression ratio of human-
+generated summaries in the training set. The λ represents
+the steepness, indicating the degree of rapid decrease, while
+ρ represents the offset, indicating how far from xi = 0 the
+value starts to decrease sharply. This ensures that the score
+decreases slowly around xi = 0, maintaining sufficient ex-
+ploration space, and declines rapidly when xi is large.
+3. EXPERIMENT
+3.1. Experiment Setup
+3.1.1. Dataset and Baselines
+We use two text summarization datasets: CNN/DailyMail [5]
+for news summarization, with 287K training and 11.5K test
+samples, and BillSum [20] for legislative content, with 18.9K
+training and 3.2K test samples.
+We used the instruct version of the Qwen 2.5 as the
+baseline, as it is known for its strong performance in vari-
+ous benchmarks [21]. In the experiment, the 7B model was
+selected for comparing GRPO and HVO, balancing perfor-
+mance and resource usage. In addition, we used GPT-4-turbo
+for GPT-4 and employed the already fine-tuned versions of
+PEGASUS on the BillSum1 and CNN/DailyMail2 as base-
+lines.
+3.1.2. Setup and Metrics
+For training the GRPO, the parameters are set as follows:
+train batch size = 64, num generations = 8, max grad norm
+= 0.4, and learning rate = 5e-7. All rewards are weighted
+equally with a weight of 1.0. Additionally, for HVO, we de-
+fault to use ϵ = 0.99, δ = 0.1, ρ = 16 and λ = 2, wk is de-
+faulted to -1 to align with GRPO. We primarily use UniEval
+(coherence, consistency, fluency, relevance, and the average
+of them) and hypervolume (HV) scores according to Equa-
+tion 3 as the evaluation metric.
+3.2. Results
+Based on the experimental results from Table 1, HVO outper-
+forms all other methods in both datasets, demonstrating the
+highest hypervolume (HV) scores and overall scores.
+GPT-4, while excelling in coherence (0.967) and fluency
+(0.945) on the CNN/DailyMail dataset and coherence (0.973)
+and relevance (0.971) on the BillSum dataset, does not per-
+form as well in overall performance and dimension balance
+compared to the Qwen 2.5 7B (HVO), which shows that the
+HVO method can achieve results comparable to GPT-4 in the
+summarization task.
+Though Qwen2.5 7B enhanced by both GRPO and HVO,
+shows balanced performance, HVO achieves much better
+overall scores. From Figure 3, in the early stages of training,
+the GRPO algorithm prioritizes fluency and relevance, with
+less emphasis on consistency. As a result, the optimization
+of consistency is constrained. In contrast, HVO optimizes
+all objectives more evenly and it is worth noting that the
+standard deviation of HVO is large and persists over a longer
+period of training, which makes the advantage signal more
+significant. This provides the opportunity to explore a larger
+1https://huggingface.co/google/pegasus-billsum
+2https://huggingface.co/google/pegasus-cnn dailymail
+
+Dataset
+Model
+Method Coherence
+Consistency
+Fluency
+Relevance
+HV score
+Overall
+STD
+BillSum
+PEGASUS
+SFT
+0.823
+0.832
+0.849
+0.814
+0.171
+0.830
+0.015
+Qwen2.5 1.5B Zero-shot
+0.941
+0.826
+0.905
+0.914
+1.018
+0.896
+0.050
+Qwen2.5 7B Zero-shot
+0.958
+0.843
+0.820
+0.948
+0.790
+0.892
+0.071
+Qwen2.5 14B Zero-shot
+0.953
+0.805
+0.919
+0.940
+1.101
+0.904
+0.068
+Qwen2.5 32B Zero-shot
+0.948
+0.799
+0.941
+0.933
+1.088
+0.905
+0.071
+GPT4 Zero-shot
+0.973
+0.843
+0.831
+0.971
+1.025
+0.904
+0.078
+Qwen2.5 7B
+GRPO
+0.959
+0.823
+0.912
+0.955
+1.358
+0.912
+0.063
+Qwen2.5 7B
+HVO
+0.964
+0.853
+0.939
+0.955
+1.961
+0.928
+0.051
+CNN/DailyMail
+PEGASUS
+SFT
+0.936
+0.939
+0.815
+0.684
+0.364
+0.843
+0.121
+Qwen2.5 1.5B Zero-shot
+0.871
+0.819
+0.936
+0.861
+0.612
+0.872
+0.048
+Qwen2.5 7B Zero-shot
+0.890
+0.820
+0.932
+0.874
+0.757
+0.879
+0.046
+Qwen2.5 14B Zero-shot
+0.931
+0.826
+0.859
+0.907
+0.805
+0.881
+0.047
+Qwen2.5 32B Zero-shot
+0.918
+0.843
+0.933
+0.893
+1.226
+0.897
+0.040
+GPT4 Zero-shot
+0.967
+0.840
+0.945
+0.934
+1.913
+0.921
+0.056
+Qwen2.5 7B
+GRPO
+0.908
+0.903
+0.922
+0.954
+1.938
+0.922
+0.023
+Qwen2.5 7B
+HVO
+0.961
+0.926
+0.951
+0.934
+3.258
+0.943
+0.016
+Table 1. The results of multi-dimensional evaluation measured on both the CNN/DailyMail and BillSum datasets. Within
+the same dimension, the bold denotes the highest score, and the underline denotes the second-highest score. The HV score is
+expressed in units of 10−3 calculated according to Equation 3.
+0
+500
+1000
+1500
+2000
+2500
+3000
+Step
+0.822
+0.859
+0.895
+0.932
+Reward
+Coherence Reward with Std Dev
+Mean of HVO Coherence_reward
+Mean of GRPO Coherence_reward
+Standard Deviation Range
+0
+500
+1000
+1500
+2000
+2500
+3000
+Step
+0.726
+0.786
+0.846
+0.906
+Consistency Reward with Std Dev
+Mean of HVO Consistency_reward
+Mean of GRPO Consistency_reward
+Standard Deviation Range
+0
+500
+1000
+1500
+2000
+2500
+3000
+Step
+0.823
+0.864
+0.905
+0.946
+Fluency Reward with Std Dev
+Mean of HVO Fluency_reward
+Mean of GRPO Fluency_reward
+Standard Deviation Range
+0
+500
+1000
+1500
+2000
+2500
+3000
+Step
+0.781
+0.832
+0.884
+0.936
+Relevance Reward with Std Dev
+Mean of HVO Relevance_reward
+Mean of GRPO Relevance_reward
+Standard Deviation Range
+Fig. 3. The inter-group means and standard deviations on the 500-validation set during the training process on CNN/DailyMail,
+with HVO method recording scores prior to hypervolume calculation and being comparable to GRPO.
+400
+600
+800
+1000
+1200
+1400
+Completion Length
+0.84
+0.86
+0.88
+0.90
+0.92
+0.94
+Overall Score
+PEGASUS
+Qwen2.5 1.5B
+Qwen2.5 7B
+Qwen2.5 14B
+Qwen2.5 32B
+GPT4
+Qwen2.5 7B (GRPO)
+Qwen2.5 7B (HVO)
+CNN-DailyMail
+BillSum
+Fig. 4. Scatter plot illustrating the relationship between the
+overall score and completion length, as evaluated by UniEval,
+for different models on two datasets: CNN/DailyMail and
+BillSum.
+strategy space, increasing the probability of approaching
+Pareto optimality, leading to more comprehensive and stable
+performance across all metrics. The HV score serves as a
+proxy for how closely results approximate the pareto front.
+As shown in Table 1, HVO achieves a superior HV score.
+This indicates that our approach enables the policy model
+to approximate the pareto front more closely compared to
+existing baselines.
+Finally, we computed the generation length of different
+models and plotted a scatter plot of the overall score against
+completion length, as shown in Figure 4. Our method not only
+achieves the highest overall score but also maintains a shorter
+completion length, ensuring better conciseness.
+4. CONCLUSION
+In this paper, we introduce hypervolume optimization en-
+hanced GRPO (HVO), a multi-objective reinforcement learn-
+ing framework for text summarization that directly optimizes
+the hypervolume indicator in high-dimensional objective
+space.
+By balancing multiple evaluation metrics, HVO
+achieves a more stable and efficient trajectory toward the
+pareto frontier.
+Experiments on CNN/DailyMail and Bill-
+Sum show that HVO attains state-of-the-art hypervolume and
+overall scores, outperforming existing methods and rivaling
+GPT-4, without supervised fine-tuning or cold-start initializa-
+tion. These results confirm HVO’s effectiveness in managing
+complex trade-offs and generating high-quality summaries,
+offering a robust solution for multi-objective text summariza-
+tion.
+
+5. REFERENCES
+[1] Haopeng Zhang, Philip S. Yu, and Jiawei Zhang, “A
+systematic survey of text summarization: From statisti-
+cal methods to large language models,” ACM Comput.
+Surv., vol. 57, no. 11, pp. 277:1–277:41, 2025.
+[2] Yang Liu, Dan Iter, Yichong Xu, et al., “G-eval: NLG
+evaluation using gpt-4 with better human alignment,” in
+Proceedings of the 2023 Conference on Empirical Meth-
+ods in Natural Language Processing, EMNLP 2023,
+Singapore, December 6-10, 2023, Houda Bouamor,
+Juan Pino, and Kalika Bali, Eds. 2023, pp. 2511–2522,
+Association for Computational Linguistics.
+[3] H Abo-Bakr and SA Mohamed,
+“Automatic multi-
+documents text summarization by a large-scale sparse
+multi-objective optimization algorithm,” Complex & In-
+telligent Systems, vol. 9, no. 4, pp. 4629–4644, 2023.
+[4] Ming Zhong, Yang Liu, Da Yin, et al.,
+“Towards
+a unified multi-dimensional evaluator for text genera-
+tion,” in Proceedings of the 2022 Conference on Empir-
+ical Methods in Natural Language Processing, EMNLP
+2022, Abu Dhabi, United Arab Emirates, December
+7-11, 2022, Yoav Goldberg, Zornitsa Kozareva, and
+Yue Zhang, Eds. 2022, pp. 2023–2038, Association for
+Computational Linguistics.
+[5] Ramesh Nallapati, Bowen Zhou, Cicero dos Santos,
+et al., “Abstractive text summarization using sequence-
+to-sequence RNNs and beyond,”
+in Proceedings of
+the 20th SIGNLL Conference on Computational Natu-
+ral Language Learning, Stefan Riezler and Yoav Gold-
+berg, Eds., Berlin, Germany, Aug. 2016, pp. 280–290,
+Association for Computational Linguistics.
+[6] Xiao Pu, Mingqi Gao, and Xiaojun Wan,
+“Summa-
+rization is (almost) dead,” CoRR, vol. abs/2309.09558,
+2023.
+[7] Dapeng Li, Na Lou, Zhiwei Xu, Bin Zhang, and Guo-
+liang Fan, “Efficient communication in multi-agent rein-
+forcement learning with implicit consensus generation,”
+in Proceedings of the AAAI Conference on Artificial In-
+telligence, 2025, vol. 39, pp. 23240–23248.
+[8] Dapeng Li, Hang Dong, Lu Wang, Bo Qiao, Si Qin,
+Qingwei Lin, Dongmei Zhang, Qi Zhang, Zhiwei Xu,
+Bin Zhang, et al., “Verco: Learning coordinated verbal
+communication for multi-agent reinforcement learning,”
+arXiv preprint arXiv:2404.17780, 2024.
+[9] Shweta Yadav, Deepak Gupta, Asma Ben Abacha, et al.,
+“Reinforcement learning for abstractive question sum-
+marization with question-aware semantic rewards,” in
+Proceedings of the 59th Annual Meeting of the Asso-
+ciation for Computational Linguistics and the 11th In-
+ternational Joint Conference on Natural Language Pro-
+cessing, ACL/IJCNLP 2021, (Volume 2: Short Papers),
+Virtual Event, August 1-6, 2021. 2021, pp. 249–255, As-
+sociation for Computational Linguistics.
+[10] Figen
+Beken
+Fikri,
+Kemal
+Oflazer,
+and
+Berrin
+Yanikoglu, “Abstractive summarization with deep rein-
+forcement learning using semantic similarity rewards,”
+Nat. Lang. Eng., vol. 30, no. 3, pp. 554–576, 2024.
+[11] Paul Roit, Johan Ferret, Lior Shani, et al.,
+“Factu-
+ally consistent summarization via reinforcement learn-
+ing with textual entailment feedback,” arXiv preprint
+arXiv:2306.00186, 2023.
+[12] Sangwon Ryu, Heejin Do, Yunsu Kim, et al., “Multi-
+dimensional optimization for text summarization via re-
+inforcement learning,” in Proceedings of the 62nd An-
+nual Meeting of the Association for Computational Lin-
+guistics (Volume 1: Long Papers), ACL 2024, Bangkok,
+Thailand, August 11-16, 2024, Lun-Wei Ku and An-
+dre Martins andUniEval Vivek Srikumar, Eds. 2024, pp.
+5858–5871, Association for Computational Linguistics.
+[13] Zhihong Shao,
+Peiyi Wang,
+Qihao Zhu,
+et al.,
+“Deepseekmath: Pushing the limits of mathematical
+reasoning in open language models,” 2024.
+[14] Andreia P Guerreiro, Carlos M Fonseca, and Lu´ıs Pa-
+quete, “The hypervolume indicator: Problems and algo-
+rithms,” arXiv preprint arXiv:2005.00515, 2020.
+[15] DeepSeek-AI et al., “Deepseek-r1: Incentivizing rea-
+soning capability in llms via reinforcement learning,”
+2025.
+[16] Jee-Weon Jung, Roshan S. Sharma, William Chen, et al.,
+“Augsumm: Towards generalizable speech summariza-
+tion using synthetic labels from large language models,”
+in IEEE International Conference on Acoustics, Speech
+and Signal Processing, ICASSP 2024, Seoul, Republic
+of Korea, April 14-19, 2024. 2024, pp. 12071–12075,
+IEEE.
+[17] Indraneel Das and John E Dennis,
+“A closer look at
+drawbacks of minimizing weighted sums of objectives
+for pareto set generation in multicriteria optimization
+problems,” Structural optimization, vol. 14, no. 1, pp.
+63–69, 1997.
+[18] Eckart Zitzler, Lothar Thiele, Marco Laumanns, et al.,
+“Performance assessment of multiobjective optimizers:
+an analysis and review,” IEEE Trans. Evol. Comput.,
+vol. 7, no. 2, pp. 117–132, 2003.
+
+[19] Qiying Yu, Zheng Zhang, Ruofei Zhu, et al., “Dapo:
+An open-source llm reinforcement learning system at
+scale,” arXiv preprint arXiv:2503.14476, 2025.
+[20] Anastassia Kornilova and Vladimir Eidelman,
+“Bill-
+Sum: A corpus for automatic summarization of US leg-
+islation,” in Proceedings of the 2nd Workshop on New
+Frontiers in Summarization, Lu Wang, Jackie Chi Kit
+Cheung, Giuseppe Carenini, and Fei Liu, Eds., Hong
+Kong, China, Nov. 2019, pp. 48–56, Association for
+Computational Linguistics.
+[21] Qwen, An Yang, Baosong Yang, and et al., “Qwen2.5
+technical report,” 2025.

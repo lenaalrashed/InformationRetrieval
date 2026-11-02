@@ -1,0 +1,1980 @@
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+1
+DROID: Dual Representation for Out-of-Scope Intent Detection
+Wael Rashwan1, 2, Hossam M. Zawbaa2, Sourav Dutta3, and Haytham Assem4
+1School of Business, Maynooth University (Ireland), wael.rashwan@mu.ie
+2Technological University Dublin (Ireland), hossam.zawbaa@gmail.com
+3Huawei Research Centre (Ireland) sourav.dutta2@huawei.com
+4Amazon Alexa AI (United Kingdom). hithsala@amazon.co.uk
+Abstract—Detecting out-of-scope (OOS) user utterances re-
+mains a key challenge in task-oriented dialogue systems and,
+more broadly, in open-set intent recognition. Existing approaches
+often depend on strong distributional assumptions or auxiliary
+calibration modules. We present DROID (Dual Representation
+for Out-of-Scope Intent Detection), a compact end-to-end frame-
+work that combines two complementary encoders—the Universal
+Sentence Encoder (USE) for broad semantic generalization and
+a domain-adapted Transformer-based Denoising Autoencoder
+(TSDAE) for domain-specific contextual distinctions. Their fused
+representations are processed by a lightweight branched classifier
+with a single calibrated threshold that separates in-domain and
+OOS intents without post-hoc scoring. To enhance boundary
+learning under limited supervision, DROID incorporates both
+synthetic and open-domain outlier augmentation. Despite using
+only 1.5M trainable parameters, DROID consistently outper-
+forms recent state-of-the-art baselines across multiple intent
+benchmarks, achieving macro-F1 improvements of 6–15% for
+known and 8–20% for OOS intents, with the largest gains in low-
+resource settings. These results demonstrate that dual-encoder
+representations with simple calibration can yield robust, scalable,
+and reliable OOS detection for neural dialogue systems.
+Index Terms—Out-of-scope intent detection, Open-set recogni-
+tion, Dual encoder networks, Threshold learning, Representation
+learning, Task-oriented dialogue systems.
+I. INTRODUCTION
+C
+ONVERSATIONAL AI systems are a primary interface
+for user assistance across sectors such as customer ser-
+vice, healthcare, and finance. A core requirement is intent
+classification—mapping utterances to predefined intents so
+downstream components can act appropriately [1]. Equally
+critical is detecting out-of-scope (OOS) utterances—inputs
+that do not belong to any trained intent—because misrouting
+unknowns degrades user experience and safety [2]. This chal-
+lenge is amplified in low-data, domain-specific deployments
+where curated intent coverage is inherently incomplete [3].
+We therefore cast the problem as open-set recognition for text,
+wherein a model must confidently assign in-domain intents
+while rejecting OOS inputs.
+Despite substantial gains from pretrained transformers in
+intent classification [4], OOS detection remains difficult.
+Confidence-based heuristics (e.g., maximum softmax proba-
+bility) are brittle and sensitive to calibration [5]; open-set
+extensions such as OpenMax still rely on parametric tail
+assumptions [6]. Density- and feature-space approaches (e.g.,
+LOF, Mahalanobis-based detectors) can suffer under feature
+collapse or domain shift [7], [8]. Boundary/point methods
+(e.g., DOC, ARPL, ADB/DA-ADB) improve separability but
+often introduce complex objectives or adversarial components
+[9]–[12]. Synthetic outlier augmentation has proven effective
+by casting training as a (K+1)-class problem that mixes
+feature-space constructs with open-domain negatives [13].
+Recent advances further refine representation learning and
+boundaries (e.g., TCAB; autoencoder-regularized fine-tuning)
+[14], [15], leverage class-name semantics (SCOOS) [16],
+or jointly shape clusters and adaptive boundaries (CLAB)
+[17]. Complementary interactive approaches formulate post-
+hoc clarification for uncertain predictions [18].
+Large
+language
+models
+(LLMs)
+provide
+compelling
+zero/few-shot baselines via prompting or instruction tuning
+[19]–[21]. However, their inference latency and computational
+cost limit real-time deployment, and recent evidence shows
+smaller, well-adapted models can remain competitive for open-
+intent settings [19], [21].
+We introduce DROID (Dual Representation for Out-of-
+Scope Intent Detection), an efficient end-to-end framework
+that addresses these limitations. DROID integrates two com-
+plementary sentence encoders—the Universal Sentence En-
+coder (USE) for broad semantic coverage [22] and a domain-
+adapted Transformer-based Denoising AutoEncoder (TSDAE)
+for fine-grained, task-specific nuance [23]—within a light-
+weight branched classifier. A single calibrated threshold on
+the softmax outputs (tuned only on ID validation data)
+separates known from OOS intents at inference, avoiding
+post-hoc detectors and strong distributional assumptions. To
+further enhance robustness, especially under few-shot label
+regimes, DROID trains with synthetic feature-space outliers
+and open-domain negatives, building on [13], but within a
+dual-representation pipeline.
+Contributions.
+• Dual-encoder representation. We fuse USE [22] with
+a domain-adapted TSDAE [23] to construct richer,
+more discriminative utterance embeddings for open-
+intent recognition, complementing recent representation-
+learning advances [14], [15].
+• Thresholded decision rule. A single calibrated threshold
+(tuned only on ID validation data). It separates known
+from OOS intents at inference, avoiding post-hoc detec-
+tors and strong distributional assumptions.
+• Outlier augmentation. We combine synthetic feature-
+space outliers with open-domain negatives, extend-
+0000–0000/00$00.00 © 2025 IEEE
+arXiv:2510.14110v1 [cs.CL] 15 Oct 2025
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+2
+ing mixture-based open-class training [13] in a dual-
+representation setting.
+• Efficiency and scalability. The trainable part of DROID
+comprises 1.5M parameters—far smaller than com-
+mon open-set baselines [13]—supporting real-time and
+resource-constrained use.
+• Extensive validation. On CLINC-150 [24], BANK-
+ING77 [3], and STACKOVERFLOW [25], DROID
+achieves consistent gains, with macro-F1 improvements
+of up to 16% (known) and 24% (unknown) over strong
+baselines, and remains robust under few-shot label ratios
+with analyses of thresholding, class weighting, encoding,
+and outlier quantities.
+Relation to prior work. This manuscript substantially extends
+our conference version, DETER [26]. For clarity, we refer to
+the extended framework as DROID throughout. Compared to
+[26], we (i) fully specify the architecture (layer sizes, nor-
+malization, dropout), (ii) add comprehensive ablations on the
+thresholded decision rule, class weighting, and outlier compo-
+sition/quantity as well as encoding strategies, (iii) deepen the
+analysis of domain adaptation effects (USE+TSDAE), and (iv)
+expand experimental validation across multiple known-intent
+and label ratios with 10 seeds for statistical robustness, in-
+cluding few-shot behavior and error analysis. On CLINC-150,
+BANKING77, and STACKOVERFLOW, DROID achieves
+macro-F1 gains of up to 16% (known) and 24% (unknown)
+over strong baselines.
+Paper outline. Section II reviews related work; Section III
+formalizes the problem and presents DROID; Section IV
+details datasets, baselines, and implementation; Section V
+reports results and ablations; Section VI discusses findings
+and limitations; Section VII concludes.
+II. RELATED LITERATURE
+Terminology. We study out-of-scope (OOS) intent detection as
+open-set recognition (OSR) for text: a model must confidently
+assign in-domain (known) intents and reject OOS inputs. We
+focus on NLP dialogue/intent methods and exclude vision-first
+OOD/OSR baselines.
+A. Representation Learning
+Sentence-level representations are central to open-intent
+recognition [27]. While pretrained transformers boost intent
+classification [4], ID/OOS separability often requires task-
+specific adaptation [28]. Recent work sharpens separability
+via structured objectives, e.g., triplet-contrastive learning with
+adaptive boundaries (TCAB) [14] and autoencoder-regularized
+fine-tuning [15](preprint). Our approach complements these
+directions by pairing two complementary encoders (USE and
+a domain-adapted TSDAE) while keeping the decision mech-
+anism simple.
+B. Paradigms for OOS/OSR in Intent Detection
+a) Density/feature-space
+(NLP).:
+Transformer-based
+Mahalanobis features (MDF) aggregate layer-wise distances
+and use a one-class SVM for OOS on intent corpora [8].
+DeepUnk
+learns
+margin-enhanced
+features
+and
+applies
+LOF post-hoc [29], and SEG uses large-margin Gaussian
+mixture embeddings with LOF for detection [30]. KNNCL
+leverages KNN-guided contrastive learning to compact intent
+clusters [31]. A succinct comparison of representative NLP
+intent/OOS methods is provided in Table I.
+b) Boundary/point/semantics (NLP).: DOC introduces
+one-vs-rest sigmoids with per-class thresholds [9]. Distance-
+aware adaptive boundaries (ADB/DA-ADB) learn per-class
+margins for open-intent classification [11], [12]. SCOOS
+tightens decision regions using class-name semantics (BERT)
+with an SVAE prior [16]. CLAB couples K-center contrastive
+clustering with adaptive boundary scaling [17]. TCAB jointly
+optimizes contrastive structure and a boundary [14]. These
+approaches improve separability but often add objectives or
+auxiliary heads.
+c) Synthetic outlier augmentation (NLP).: (K+1) train-
+ing with outliers is effective for intents.Zang et
+al. [13]
+synthesize feature-space outliers via convex combinations of
+representations from distinct known intents and mix them with
+open-domain negatives, training a unified (K+1) classifier.
+d) Dynamic/interactive (NLP).: AIDOIL integrates an-
+chors for dynamic matching to represent diverse OOS without
+significant augmentation [32]. CICC converts classifier un-
+certainty into clarification questions with statistical coverage
+guarantees [18], trading rejections for interaction.
+C. Modern Training Strategies and the Role of LLMs
+LLMs enable zero/few-shot intent/OOS via prompting or in-
+struction tuning [19]–[21], but latency/memory often preclude
+real-time routing; smaller, well-adapted models remain com-
+petitive in open-intent settings [19], [21]. Parameter-efficient
+tuning and distillation mitigate costs, yet many deployments
+still prefer compact classifiers with predictable calibration.
+D. Our Contribution in Context
+DROID couples two complementary encoders (USE [22]
+and a domain-adapted TSDAE [23]) with a single calibrated
+threshold and mixed outlier augmentation [13], avoiding ad-
+versarial training and auxiliary scoring heads while retaining
+a small trainable footprint.
+E. Modern Training Strategies and the LLM Revolution
+Training strategies, particularly for data-scarce scenarios,
+have become as crucial as model architecture itself. While
+earlier work effectively used data augmentation with synthetic
+outliers [13], the field is now grappling with the paradigm
+shift introduced by Large Language Models (LLMs). The
+immense world knowledge and generative power of models
+like GPT-4 and Llama have reshaped the landscape, moving
+the focus from purely discriminative classifiers to generative
+solutions.
+The primary way LLMs have been leveraged is through
+prompt-based inference, which requires no task-specific train-
+ing. A significant line of current research involves using these
+prompt-based strategies for few-shot or zero-shot detection
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+3
+TABLE I
+REPRESENTATIVE NLP METHODS FOR OOS DETECTION IN TASK-ORIENTED DIALOGUE/INTENT CLASSIFICATION. “OOS DATA?” DENOTES WHETHER
+TRAINING USES SYNTHETIC OR REAL OOS.
+Family
+Method
+OOS data?
+Core idea (intent setting)
+Extra module
+Baseline (NLP)
+MSP [5]
+No
+Max softmax as confidence; reject below
+threshold on intent datasets.
+–
+Density/feature (NLP)
+MDF (transformers) [8]
+No
+Layer-wise transformer features; Mahalanobis
+distances aggregated, then one-class SVM for
+OOS.
+One-class SVM
+DeepUnk [29]
+No
+Learn margin-enhanced features for intents;
+LOF post-hoc to flag OOS utterances.
+LOF
+SEG [30]
+No
+Large-margin Gaussian mixture embeddings
+for intents; LOF for OOS detection.
+LOF
+KNNCL [31]
+No
+KNN-guided contrastive learning to compact
+intent clusters and expose OOS.
+–
+Boundary/semantics (NLP)
+DOC [9]
+No
+One-vs-rest sigmoids with per-class thresholds
+for open-intent recognition.
+Thresholds
+ADB / DA-ADB [11], [12]
+No
+Distance-aware features with adaptive per-
+class boundaries for open-intent classification.
+Boundary head
+SCOOS [16]
+No
+Class-name semantics (BERT) + SVAE prior
+tighten known-intent regions; depends on label
+quality.
+SVAE head
+CLAB [17]
+No
+K-center contrastive clustering + adaptive
+boundary scaling for intent spaces.
+Boundary scaler
+TCAB [14]
+No
+Triplet-contrastive
+learning
+with
+adaptive
+boundary to separate known/unknown intents.
+Boundary term
+(K+1) with outliers (NLP)
+(K+1)-way [13]
+Synthetic+Open
+Unified (K+1) classifier trained with convex-
+combo synthetic outliers + open-domain neg-
+atives.
+–
+Dynamic/interactive (NLP)
+AIDOIL [32]
+No (anchors learned) Anchor-integrated dynamic matching to repre-
+sent diverse OOS without large augmentation.
+Anchor memory
+CICC (interactive) [18]
+No
+Converts classifier uncertainty into clarifica-
+tion questions with coverage guarantees.
+Clarification
+module
+LLM-based (NLP)
+Prompt/IT baselines [19]–[21]
+No
+Zero/few-shot intent/OOS via prompting or in-
+struction tuning; strong but higher latency/cost.
+–
+Dual encoders + threshold (ours) DROID
+Synthetic+Open
+USE + domain-adapted TSDAE fused; single
+calibrated threshold (ID-only validation) sepa-
+rates known vs. OOS; compact head.
+–
+[19], [21] and systematically investigating LLM performance
+on out-of-domain intents to understand their true capabilities
+and failure points [19].
+To move beyond the limitations of simple prompting, more
+advanced adaptation techniques are being explored. Instruction
+tuning, for instance, has emerged as a powerful method
+for refining LLM behavior for specific tasks. This approach
+reformulates intent detection as a generative task, proving
+especially effective in challenging low-resource scenarios [20].
+However, the adoption of LLMs is not without significant
+challenges. Their immense computational cost and high in-
+ference latency make them impractical for many real-time
+applications. Furthermore, recent ”reality check” investigations
+have shown that smaller, efficiently fine-tuned models can still
+outperform these large-scale counterparts in specific contexts,
+highlighting a critical trade-off between generative power and
+practical viability [21]. This ongoing tension between massive,
+general-purpose LLMs and smaller, specialized models defines
+the current research frontier. A consolidated view of these
+approaches—their supervision, assumptions, and deployment
+needs—appears in Table I.
+Positioning. Prior intent/OOS methods typically trade off sim-
+plicity and robustness: representation/boundary refinements
+add training complexity [14], [15], semantic-guided models
+depend on label quality [16], and several approaches intro-
+duce auxiliary scores or adversarial components. In contrast,
+DROID uses two complementary encoders (USE for broad
+semantics and a domain-adapted TSDAE for task nuance)
+fused by a small branched head, a single thresholded decision
+rule calibrated only on in-domain validation data (no labeled
+OOS), and mixed outlier augmentation in a (K+1) setup [13].
+This design avoids parametric tail assumptions and post-hoc
+detectors while keeping the trainable footprint small; detailed
+results appear in Sec. V.
+III. DROID: DUAL ENCODERS WITH A THRESHOLDED
+(K+1) CLASSIFIER
+A. Problem Setup
+Let Sknown
+=
+{C1, . . . , CK} be the set of in-domain
+(known) intents and let CK+1 = OOS denote the reject class.
+Given an utterance u, DROID is trained as a (K+1)-way
+classifier producing p(c | u) ∈RK+1. At inference, we apply
+a single thresholded decision rule:
+ˆc(u) =
+(
+arg maxi p(c=Ci | u),
+if maxi p(c=Ci | u) ≥T,
+OOS,
+otherwise.
+(1)
+Assumptions: (i) no labeled OOS data is used for threshold
+calibration; (ii) encoders are frozen during supervised training;
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+4
+K in-domain 
+intents 
+(Training & 
+Validation)
+Open 
+domain 
+Examples
+Out of scope 
+test examples
+In-domain-specific Fine-tuned
+ TSDAE
+K+1 intents
+K+1 intents
+K in-domain embedding
+Out of scope Embedding
+Synthetic outliers embedding
+Open domain outliers embedding
+In-domain test 
+examples
+In-domain Embedding
+Testing Dataset
+Transformer-based Sentence Autoencoder with Denoising
+ (TSDAE)
+Unsupervised 
+training
+Stage 1: Unsupervised training of TSDAE
+Stage 2: Training
+Stage 3: Testing
+In-domain 
+Specific Data 
+(without 
+labels)
+Two-Branches 
+Embeddings
+(K+1) FFNN Dense
+ Model
+Training and Validation Dataset
+Computing Threshold
+Convex combination of two randomly 
+selected embeddings
+Model 
+inference
+The Universal Sentence Encoder
+ (USE)
+Intent 
+Class
+Re-classification
+With
+threshold
+Fig. 1. End-to-end pipeline of DROID. Stage 1: unsupervised domain adaptation of the TSDAE encoder on in-domain unlabeled text. Stage 2: supervised
+(K+1) training with two frozen encoders (USE, domain-adapted TSDAE); per-branch projections produce embeddings for known intents, synthetic feature-
+space outliers (convex mixes of distinct known-class embeddings), and open-domain negatives. A light-weight MLP learns the (K+1) classifier, and a single
+threshold T is calibrated on in-domain validation data. Stage 3: inference on test utterances using the thresholded decision rule to separate known vs. OOS.
+(iii) synthetic and open-domain samples are labeled as OOS
+during training only. The overall pipeline is illustrated in
+Fig. 1.
+B. Sentence Encoders
+Universal
+Sentence
+Encoder
+(USE).
+We
+use
+the
+Transformer-based USE (TF-Hub), mapping u 7→EUSE(u) ∈
+R512. USE parameters remain frozen throughout.
+TSDAE (domain-adapted). We train a RoBERTa-based TS-
+DAE via denoising on unlabeled target-domain text following
+[23]. For u and a corrupted ˜u (token deletion/masking),
+TSDAE minimizes
+LTSDAE = 1 −cos
+ ETSDAE(u), ETSDAE(˜u)
+
+.
+(2)
+where ETSDAE(u) ∈R768.
+Unless stated otherwise, TSDAE is frozen during supervised
+training (Sec . V ablates adaptation sources and freezing).
+C. Outlier Construction
+We enrich the OOS signal at training time with two sources.
+Synthetic (feature-space) outliers. Following [13], we syn-
+thesize hard OOS by convexly mixing representations from
+two distinct known classes. Let hα, hβ be representation
+vectors sampled from different classes; we form
+hOOS = θ hβ + (1 −θ) hα,
+θ ∼U(0, 1).
+(3)
+Unless specified, we generate hα, hβ in the fused space de-
+fined in (6) (post-branch projection), which empirically yields
+diverse but on-manifold negatives. All synthetic samples are
+labeled OOS.
+Open-domain negatives. We add generic negatives from
+SQuAD 2.0 question text [33] (length filter 5≤|u|≤64,
+de-duplication),
+following
+[13].
+These
+are
+encoded
+by
+USE/TSDAE and treated as OOS during training.
+Quantities and mixing. Per epoch, we sample comparable
+counts of synthetic and open-domain OOS; unless otherwise
+stated,, we use Nsyn=500 and Nopen=500 per epoch. In mini-
+batches, we maintain an OOS fraction between 20% and 40%
+(tuned in Sec . V).
+D. Architecture
+Figure 1 summarizes DROID; Fig. 2 details the head
+and per-encoder branches. Two per-encoder branches project
+embeddings into a common space; features are fused and
+classified by a small MLP head.
+Per-encoder branches. For encoder e ∈{USE, TSDAE}:
+h′
+e = fe
+ Ee(u)
+
+,
+h′
+e ∈R256,
+(4)
+fe : MLP with hidden sizes (512, 256, 256, 256, 256),
+(5)
+with ReLU activations and BatchNorm+Dropout (p=0.4) after
+the first two layers. (Weights are trainable; encoders are
+frozen.)
+Fusion and classifier. The fusion and (K+1) classifier are
+depicted on the right side of Fig. 2.
+hfused(u) =
+
+h′
+USE; h′
+TSDAE
+
+∈R512.
+(6)
+A 3-layer MLP head with hidden sizes (128, 128, 128) (ReLU;
+Dropout 0.4 after first two) maps to logits z ∈RK+1:
+z = Wfinal fhead
+ hfused(u)
+
++ bfinal,
+p(c | u) = softmax(z).
+(7)
+With encoders frozen, the trainable head (branches + classi-
+fier) has ∼1.56M parameters.
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+5
+USE Embedding Input
+(None, 512)
+TSDAE Embedding Input
+(None, 768)
+Dense 1 (512, ReLU)
+Dropout (Rate: 0.4)
+Batch Norm
+Dense 2 (256, ReLU)
+Dense 3 (256, ReLU)
+Dropout (Rate: 0.4)
+Dense 4 (256, ReLU)
+Dense 5 (256, ReLU)
+Dense 1 (512, ReLU)
+Dropout (Rate: 0.4)
+Batch Norm
+Dense 2 (256, ReLU)
+Dense 3 (256, ReLU)
+Dropout (Rate: 0.4)
+Dense 4 (256, ReLU)
+Dense 5 (256, ReLU)
+Concatenate
+(None, 512)
+Dense 6 (128, ReLU)
+Dropout (Rate: 0.4)
+Dense 7 (128, ReLU)
+Dropout (Rate: 0.4)
+Dense 8 (128, ReLU)
+Output Layer (Softmax)
+(None, K+1)
+USE Branch
+TSDAE Branch
+Classification Head
+Fig. 2.
+Head architecture of DROID. USE and TSDAE embeddings are
+passed through parallel 5-layer MLP branches (sizes 512–256–256–256–256;
+ReLU; BatchNorm and Dropout 0.4 after the first two layers) to 256-d
+projections. The projections are concatenated (512-d) and fed to a 3-layer
+classifier (sizes 128–128–128; ReLU; Dropout 0.4 after the first two layers)
+followed by a linear layer to (K+1) logits and softmax. A single calibrated
+threshold on the maximum softmax decides OOS at inference.
+E. Training Objective and Regularization
+Given a batch {(u(j), y(j))}M
+j=1 with one-hot y(j)
+∈
+{e1, . . . , eK+1}, we minimize
+LCE = −1
+M
+M
+X
+j=1
+K+1
+X
+i=1
+wi y(j)
+i
+log pi(c | u(j)),
+(8)
+where wi are class weights to mitigate imbalance between
+known classes and OOS. Early stopping on validation accuracy
+is applied; optimizer and schedules are detailed in Sec. IV.
+Unless stated, we do not fine-tune encoder parameters.
+F. Threshold Calibration
+We select a single threshold T ∈[0, 1] using in-domain
+validation data only (no labeled OOS), to avoid leakage:
+• Compute scores s(u) = maxi p(c=Ci | u) for validation
+utterances from Sknown.
+• Either (i) choose T as the (1−α)-quantile of {s(u)}
+for a target ID coverage 1−α, or (ii) grid-search T ∈
+{0.00, 0.02, . . . , 1.00} to maximize validation accuracy
+on known intents.1
+At test time, we apply (1). We additionally report a proxy-
+OOS calibration (held-out intents as unknowns) in ablations
+to illustrate sensitivity (Sec . V).
+G. Complexity and Deployment Considerations
+Compute. Inference requires two encoder forward passes
+plus a small MLP head; with frozen encoders and a 1.56M-
+parameter head, latency is dominated by encoders. Memory.
+Only head parameters are trainable; encoders are loaded once
+and shared across tasks. Stability. Using a single scalar
+T avoids classwise threshold tuning and post-hoc detectors;
+we find T is stable across seeds and label ratios (Sec. V).
+Portability. Because T is calibrated on ID validation only, the
+procedure does not require labeled OOS for a new domain.
+IV. EXPERIMENTAL SETUP
+We evaluate DROID on standard intent benchmarks and
+compare against representative open intent detection methods.
+The setup specifies datasets/splits, training-time outlier usage,
+encoders, baselines, implementation, threshold calibration, and
+metrics.
+A. Datasets and Protocol
+We use CLINC-150 [24], BANKING77 [3], and STACK-
+OVERFLOW [25]. For each dataset, we sample known-intent
+subsets at {25%, 50%, 75%} of the classes; the remaining
+courses are held out and treated as unknown (unselected
+intents, UI) at test time. We repeat each configuration with
+fixed random seeds 0–9, following TEXTOIR [34]. Consistent
+with prior work, the external CLINC-150 OOS set (1,200
+utterances) is always included in the test set, regardless of
+the primary data set. Table II provides statistics on the data
+sets in the 25% known intent ratio.
+B. Encoders and Training-Time Outliers
+We use the Transformer-based USE and a BERT-based
+TSDAE [23] (both frozen during supervised training). TSDAE
+is domain-adapted once via denoising on unlabeled in-domain
+text and reused across datasets unless otherwise stated.
+1Sec. V shows both strategies give similar operating points; we report the
+grid-search variant unless otherwise noted.
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+6
+TABLE II
+DATASET STATISTICS AT THE 25% KNOWN-INTENT RATIO. “UNKNOWN” COUNTS REFLECT UNSELECTED INTENTS (UI), SYNTHETIC OUTLIERS
+(NOUTLIER), AND OPEN-DOMAIN (OD) OR OUT-OF-SCOPE (OOS) SAMPLES, AS APPLICABLE.
+Dataset
+Intent Type
+Training
+Validation
+Testing
+Total
+25% Known
+Total
+25% Known
+Total
+25% Known
+CLINC-150
+Known
+15,000
+3,800
+3,000
+760
+4,500
+1,140
+Unknown
+0
+11,200 (UI) + Noutlier
+0
+221 (OD)
+1,200
+1,200 (OOS) + 3,360 (UI)
+BANKING77
+Known
+9,003
+2,119
+1,000
+234
+3,080
+760
+Unknown
+0
+6,884 (UI) + Noutlier
+0
+221 (OD)
+1,200
+1,200 (OOS) + 2,320 (UI)
+STACKOVERFLOW
+Known
+12,000
+3,000
+2,000
+500
+6,000
+1,500
+Unknown
+0
+9,000 (UI) + Noutlier
+0
+221 (OD)
+1,200
+1,200 (OOS) + 4,500 (UI)
+Note: UI = Unselected (held-out) intents; OOS = external CLINC-150 OOS; OD = Open-Domain negatives used on validation for threshold calibration.
+C. Synthetic Outlier Generation
+To enhance the model’s ability to delineate known and
+unknown intent boundaries, we employ a synthetic outlier
+generation mechanism inspired by convex feature-space inter-
+polation. Using the fused representations defined in Eq. (6),
+we randomly sample two embeddings, hα and hβ ∈Rd, from
+distinct known intent classes and interpolate between them to
+create pseudo OOS examples:
+hOOS = θ hβ + (1 −θ) hα,
+θ ∼U(0, 1).
+(9)
+Such convex interpolations generate samples that lie outside
+the convex hull of in-domain clusters, effectively populating
+low-density regions between intent manifolds. These “hard”
+negatives encourage the model to learn compact and well-
+separated decision boundaries. Synthetic samples generated
+are mixed with open domain negatives to form a balanced OOS
+training set, where the relative proportions of synthetic and
+OD examples are tuned empirically (typically 1:1) to maintain
+calibration stability.
+Unlike prior OOS augmentation strategies that depend on
+large external corpora or adversarial perturbations, this ap-
+proach is self-contained and computationally efficient, requir-
+ing only in-domain data and encoder-derived embeddings.
+Consequently, it provides a scalable mechanism for strength-
+ening boundary learning in low-resource or privacy-sensitive
+dialogue applications.
+Open-Domain (OD) Negatives.: In parallel, following the
+protocol of [13], we adopt the SQuAD 2.0 corpus [33] as a
+source of OD utterances, providing linguistically diverse yet
+semantically unrelated examples. During tuning, the number
+of OD and synthetic outliers was varied over [50, 4000] and
+[50, 16000], respectively. Empirically, a balanced configura-
+tion of approximately 500 OD and 500 synthetic samples per
+epoch yielded the most stable performance across datasets,
+offering sufficient variety without over-saturating the training
+distribution.
+D. Baselines
+We compare against representative intent/OOS methods
+from TEXTOIR [34]: MSP [5], DOC [9], OpenMax [6],
+LOF [7], DeepUnk [29], SEG [30], MDF [8], KNNCL [31],
+ARPL [10], ADB [11], DA-ADB [12], and (K+1)-Way with
+synthetic+open outliers [13]. For fairness with prior reports,
+baselines use bert-base-uncased in TEXTOIR.
+E. Implementation Details
+Models are implemented in Keras/TensorFlow. We use
+AdamW [35] with categorical cross-entropy, batch size 200,
+learning rate 10−3, and a maximum of 1000 epochs with early
+stopping (patience 100) on validation accuracy. Maximum
+sequence length is 512 tokens. Unless otherwise noted, we
+use the operating point of 500 OD and 500 synthetic outliers
+per epoch.
+F. Threshold Calibration
+We select a single threshold T ∈{0.00, 0.02, . . . , 1.00}
+on the validation set, which contains ID examples (from the
+selected known intents) and OD negatives (cf. Table II). We
+compute s(u) = maxi p(c=Ci | u) and choose T maximizing
+validation accuracy for known vs. unknown discrimination; the
+best T was 0.7 in our runs.
+G. Metrics
+We report macro F1 for: (i) Known (over the K in-domain
+classes), (ii) Unknown (the OOS class), and (iii) overall
+(K+1). Let P and R be macro precision/recall over K+1
+classes; then
+F1 = 2PR
+P + R.
+(10)
+Per-class
+precision/recall
+are
+PCi
+=
+T PCi
+T PCi+F PCi
+and
+RCi =
+T PCi
+T PCi+F NCi . Known-only macro-averages use i ∈
+{1, . . . , K}; the OOS F1 uses i = K+1. We present the ag-
+gregate results in the tables; dispersion measures are included
+only where explicitly stated.
+V. EXPERIMENTAL RESULTS & ABLATION
+We evaluate DROID on three benchmark intent datasets—
+CLINC-150 [24], BANKING-77 [3], and STACKOVER-
+FLOW [25]—against representative OOS intent detection
+baselines from TEXTOIR [34]. Unless stated otherwise, we
+report macro F1 for (i) in-domain Known classes and (ii) the
+Unknown (OOS) class under three coverage regimes, where
+25%, 50%, or 75% of intents are treated as Known during
+training. Quantitative comparisons at label ratio 1.0 appear in
+Table III. Trends under varying label ratios are summarized in
+Fig. 3. Component-wise analyses are provided in Figs. 4–6.
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+7
+A. Main Comparative Results
+Table III shows that DROID attains the best mean macro F1
+on both Known and Unknown classes across all datasets and
+intent-coverage settings. On CLINC-150, DROID achieves a
+mean of 93.65% (Known) and 95.88% (Unknown), exceeding
+strong boundary-based methods such as DA-ADB and ADB
+by sizable margins. On BANKING-77, DROID reaches
+87.35% (Known) and 94.07% (Unknown), with the largest
+gains observed for Unknown detection. On STACKOVER-
+FLOW, DROID maintains 87.79% (Known) and 93.78%
+(Unknown), indicating robustness in a setting with many fine-
+grained classes. Across methods, confidence-, density-, and
+boundary-based baselines often exhibit a trade-off: improved
+Known performance coincides with degraded Unknown F1, or
+vice versa. In contrast, DROID sustains high scores on both,
+consistent with its design objective.
+B. Robustness to Limited Supervision
+Fig.
+3
+studies
+sensitivity
+to
+the
+label
+ratio
+({0.2, 0.4, 0.6, 0.8, 1.0}) at each coverage level (25/50/75%).
+DROID remains strong even with scarce labels. For example,
+on CLINC-150 at label ratio 0.2, Known F1 is ≈90%,
+whereas several baselines (e.g., ARPL, DOC, MDF) degrade
+severely under the same setting. As label availability increases,
+DROID is either stable or improves slightly. Crucially, the
+method preserves balanced performance on Known and
+Unknown
+F1
+across
+datasets,
+avoiding
+the
+pronounced
+trade-offs seen in confidence- and density-based alternatives.
+C. Effect of Threshold-Based Reclassification
+We quantify the contribution of the thresholded decision
+rule by ablating it on CLINC-150 (Fig. 4). Adding the
+calibrated threshold consistently improves Unknown F1 at all
+coverage settings; Known F1 is preserved (around 91–92%).
+Where error bars are shown, they indicate variability across
+runs. Similar behavior is observed on BANKING-77 and
+STACKOVERFLOW. These findings support the utility of a
+simple, calibrated threshold for robust OOS rejection without
+harming in-domain accuracy.
+D. Impact of Class-Weighted Loss
+We contrast training with and without class weights in
+Fig. 5. Class weighting is particularly beneficial in extreme
+few-shot regimes: at low label ratios and low coverage, un-
+weighted training may underfit Known classes, while weight-
+ing recovers strong Known F1. Unknown F1 is already high
+without weighting and benefits mainly from stabilization. As
+label ratio approaches 1.0, the gap between weighted and
+unweighted settings narrows, indicating reduced imbalance
+sensitivity when supervision is ample.
+E. Effect of Outlier Quantity
+Fig. 6 varies the count of open-domain and synthetic outliers
+from 10/10 to 1000/1000. Unknown F1 is highly robust,
+typically 95–98% on CLINC-150 and BANKING-77 even
+with few outliers; on STACKOVERFLOW, Unknown F1
+improves as outlier count increases, reflecting greater class-
+space complexity. Known F1 generally benefits or stabilizes
+with more outliers, suggesting tighter in-domain boundaries
+when the model is exposed to diverse negatives. Performance
+saturates around a few hundred per type, with no signs of
+overfitting at 1000/1000.
+F. Effect of Encoding Strategy
+Table IV ablates sentence encoders on BANKING-77.
+The dual-encoder with in-domain TSDAE (TSDAE (CLINC-
+150)+USE) dominates all alternatives across label ratios and
+coverages. Using a generic TSDAE (Roberta) or TSDAE
+adapted on unrelated corpora (AskUbuntu/SciDocs) yields
+intermediate performance; relying on USE alone is least
+effective. These results confirm that (i) unsupervised domain
+adaptation for TSDAE is critical, and (ii) dual encoding
+provides a complementary signal beyond a single encoder.
+Across datasets, coverage regimes, and label budgets,
+DROID consistently delivers state-of-the-art macro F1 on
+Known and Unknown classes. Its calibrated threshold en-
+hances OOS rejection without harming in-domain accuracy;
+class weighting is crucial under extreme few-shot conditions;
+diverse outliers modestly sharpen boundaries; and the dual-
+encoder with in-domain TSDAE is a key contributor to overall
+gains.
+VI. DISCUSSION
+This section reflects on the empirical findings and design
+choices of DROID, relates them to the literature, and outlines
+limitations and future directions. We are emphasizing gener-
+alization, efficiency, and deployability rather than repeating
+numerical results already presented in Section V.
+A. Summary of Findings and Generalization
+Across three dialogue benchmarks—CLINC-150, BANK-
+ING77, and STACKOVERFLOW—DROID delivers con-
+sistently strong macro-F1 on both in-domain (known) and
+out-of-scope (OOS) intents ((Table III). Importantly, these
+gains persist under varying known-intent proportions (25%,
+50%, 75%) and reduced label ratios (Fig. 3), indicating that
+the method is robust to (i) incomplete intent coverage and
+(ii) limited supervision. The absence of a marked trade-off
+between known and OOS performance (Section V) suggests
+that the learned representation and decision rule are well-
+calibrated for open-intent settings.
+B. Dual Representations and a Calibrated Threshold
+DROID’s design integrates two complementary encoders—
+a general-purpose USE branch and a domain-adapted TS-
+DAE branch—fused by a lightweight head (Section III).
+This pairing balances broad semantic coverage with domain-
+sensitive nuance, improving cluster compactness and inter-
+class separability in the embedding space compared to single-
+encoder baselines. A single calibrated threshold—tuned on ID
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+8
+TABLE III
+MACRO F1 (%) ON KNOWN AND UNKNOWN CLASSES AT LABEL RATIO 1.0 UNDER VARYING KNOWN-INTENT COVERAGE (25/50/75%). MEANS ARE
+ACROSS THE THREE COVERAGE SETTINGS. BEST RESULTS ARE BOLD.
+Dataset
+Method
+25%
+50%
+75%
+Mean
+Known
+Unknown
+Known
+Unknown
+Known
+Unknown
+Known
+Unknown
+CLINC-150
+(K+1)-way
+74.02
+90.27
+81.52
+84.25
+86.72
+79.59
+80.75
+84.70
+ADB
+77.85
+92.36
+85.12
+88.60
+88.97
+84.85
+83.98
+88.60
+ARPL
+73.01
+89.63
+80.87
+81.81
+86.10
+74.67
+80.00
+82.04
+DA-ADB
+79.57
+93.20
+85.58
+90.10
+88.43
+86.00
+84.53
+89.77
+DOC
+75.46
+90.78
+83.84
+87.45
+87.91
+83.87
+82.40
+87.37
+DeepUnk
+76.95
+91.61
+83.30
+87.48
+86.57
+82.67
+82.27
+87.25
+KNNCL
+78.85
+93.56
+83.25
+87.85
+86.14
+82.05
+82.75
+87.82
+LOF
+77.77
+91.96
+83.81
+87.57
+87.24
+82.81
+82.94
+87.45
+MDF
+49.43
+84.89
+61.60
+62.31
+72.21
+51.33
+61.08
+66.18
+MSP
+51.02
+59.26
+72.82
+63.71
+83.65
+63.86
+69.16
+62.28
+OpenMax
+73.74
+90.69
+80.59
+85.50
+86.38
+80.44
+80.24
+85.54
+SEG
+46.67
+59.22
+62.57
+61.34
+42.72
+40.74
+50.65
+53.77
+DROID
+93.98
+98.59
+93.76
+96.52
+93.20
+92.52
+93.65
+95.88
+BANKING-77
+(K+1)-way
+67.70
+82.66
+77.97
+72.58
+85.14
+59.89
+76.94
+71.71
+ADB
+70.92
+85.05
+81.39
+79.43
+86.44
+67.34
+79.58
+77.27
+ARPL
+62.99
+83.39
+77.93
+71.79
+85.58
+61.26
+75.50
+72.15
+DA-ADB
+73.05
+86.57
+82.54
+81.93
+85.93
+69.37
+80.51
+79.29
+DOC
+65.16
+76.64
+78.38
+72.66
+84.14
+63.51
+75.89
+70.94
+DeepUnk
+64.97
+76.98
+75.61
+67.80
+81.65
+50.57
+74.08
+65.12
+KNNCL
+65.54
+79.34
+75.16
+67.21
+81.76
+51.42
+74.15
+65.99
+LOF
+62.89
+72.64
+76.51
+66.81
+84.15
+54.19
+74.52
+64.55
+MDF
+44.80
+85.70
+64.27
+57.72
+75.47
+33.43
+61.51
+58.95
+MSP
+50.47
+39.42
+73.20
+46.29
+84.99
+46.05
+69.55
+43.92
+OpenMax
+53.42
+48.52
+75.16
+55.03
+85.50
+53.02
+71.36
+52.19
+SEG
+51.48
+51.58
+63.85
+43.03
+70.10
+37.22
+61.81
+43.94
+DROID
+85.04
+96.63
+87.89
+94.38
+89.11
+91.21
+87.35
+94.07
+STACKOVERFLOW
+(K+1)-way
+50.54
+52.23
+70.53
+51.69
+81.20
+45.22
+67.42
+49.71
+ADB
+77.62
+90.96
+85.32
+87.70
+86.91
+74.10
+83.28
+84.25
+ARPL
+60.55
+72.95
+78.26
+73.97
+85.24
+62.99
+74.68
+69.97
+DA-ADB
+80.87
+92.65
+86.71
+88.86
+87.66
+74.55
+85.08
+85.35
+DOC
+56.30
+62.50
+77.37
+71.18
+85.64
+65.32
+73.10
+66.33
+DeepUnk
+47.39
+36.87
+67.67
+35.80
+80.51
+34.38
+65.19
+35.68
+KNNCL
+41.79
+15.26
+61.50
+8.50
+76.16
+7.19
+59.82
+10.32
+LOF
+40.92
+7.14
+61.71
+5.18
+76.31
+5.22
+59.65
+5.85
+MDF
+48.13
+83.03
+62.60
+50.19
+73.96
+28.52
+61.56
+53.91
+MSP
+51.02
+59.26
+72.82
+63.71
+83.65
+63.86
+69.16
+62.28
+OpenMax
+47.51
+34.52
+69.88
+46.11
+82.98
+49.69
+66.79
+43.44
+SEG
+40.44
+4.19
+60.14
+4.72
+74.24
+6.00
+58.27
+4.97
+DROID
+87.72
+97.22
+87.83
+93.99
+87.81
+90.13
+87.79
+93.78
+validation (Section IV)—implements a transparent inference-
+time rejection rule without post-hoc modules or parametric
+tail assumptions, achieving strong OOS recall while remain-
+ing simple and interpretable, unlike methods that add post-
+hoc scoring models or adversarial objectives [8], [11], [12].
+Ablations in Fig. 4 show that thresholding materially improves
+OOS recognition without eroding ID performance, aligning
+with the intuition that confidence-aware rejection is an effec-
+tive open-set primitive in text classification.
+C. Role of Outlier Data: Synthetic vs. Open-Domain
+Training with a mixture of synthetic feature-space outliers
+and open-domain negatives (Section IV) follows the spirit
+of [13] while embedding it in a dual-representation pipeline.
+Our analyses (Fig. 6) shows that (i) moderate quantities of
+both sources suffices; (ii) synthetic outliers are particularly
+effective for tightening decision regions around known intents
+(benefiting both kown and OOS macro-F1); and (iii) returns
+saturate as counts approach several hundred per type, suggest-
+ing diminishing returns beyond a few hundred diverse samples.
+Practically, this implies that in-domain-informed synthetic out-
+liers are often more valuable than large volumes of unrelated
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+9
+Fig. 3. Macro F1 versus label ratio on CLINC-150, BANKING-77, and STACKOVERFLOW. Top: Known; Bottom: Unknown. Columns correspond to
+Known-intent coverage (25/50/75%). DROID (red) maintains high and balanced performance under limited supervision.
+text, helping populate the boundary region where confusions
+are most likely.
+D. Efficiency and Deployability
+DROID’s trainable footprint is 1,559,808 parameters (Sec-
+tion III), orders of magnitude smaller than many open-intent
+pipelines relying on full Transformer fine-tuning [13]. The
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+10
+Fig. 4. Ablation on the thresholded decision rule (CLINC-150). Incorporating the calibrated threshold improves Unknown F1 at 25/50/75% coverage while
+maintaining Known F1.
+Fig. 5. Effect of class weighting across label ratios and coverages. Weights are most impactful for Known F1 in low-label regimes; Unknown F1 remains
+strong with marginal gains from weighting.
+frozen encoders, lightweight heads, and single-threshold rule
+reduce training complexity and inference latency. This balance
+of accuracy and efficiency is salient for latency-sensitive
+dialogue systems and resource-constrained settings (edge or
+on-device). In contrast to LLM-based open-intent baselines
+(Section II), DROID attains competitive accuracy without
+incurring heavy memory or serving costs.
+E. Limitations and Future Directions
+(i) Scope of evaluation. Experiments cover single-turn En-
+glish utterances on three benchmarks; extending to multi-turn
+settings, multilingual corpora, and domain drift scenarios is a
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+11
+Fig. 6. Macro F1 as a function of open-domain/synthetic outlier counts (rows: Unknown/ Known; columns: coverage 25/50/75%). Adding diverse outliers
+modestly improves boundary sharpness and stabilizes results; gains saturate around a few hundred per type.
+priority. Given TSDAE’s unsupervised adaptation, multilingual
+or domain-specific TSDAE pretraining is a natural path (cf.
+Section IV).
+(ii) Static thresholding. The calibrated threshold is global
+and fixed per setting. While Fig. 4 shows strong utility,
+context-aware or adaptive thresholding (e.g., conditioned on
+utterance uncertainty or class priors) could further stabilize
+OOS rejection under shift.
+(iii) Encoder consolidation. Dual encoders yield com-
+plementary gains (Table IV), but maintaining two branches
+increases memory compared to a single encoder. Future work
+could explore knowledge distillation from the dual-branch
+model into a unified encoder while preserving open-set sepa-
+rability.
+(iv) Outlier generation. Our synthetic outliers are con-
+vex combinations post-encoding. More expressive generators
+(e.g., learned feature perturbations or text-level generators
+constrained by semantic similarity) may populate decision
+boundaries more effectively while controlling for bias.
+F. Positioning within the Literature
+DROID’s contributions sit between open-set decision rules
+and representation learning advances reviewed in Section II:
+it eschews adversarial/boundary-heavy training [11], [12]
+and separate post-hoc detectors [8] in favor of (i) enriched
+sentence-level representations (USE+TSDAE) and (ii) a single
+calibrated threshold within a unified (K+1) classifier. This
+combination yields state-of-the-art results (Table III) with a
+simpler deployment path.
+VII. CONCLUSION
+This work presented DROID, a compact dual-encoder
+framework for robust out-of-scope (OOS) intent detection. By
+combining a general-purpose semantic encoder (USE) with
+a domain-adapted denoising autoencoder (TSDAE), DROID
+learns complementary representations that enhance both in-
+domain discrimination and out-of-domain rejection. The in-
+tegration of a calibrated, threshold-baswhich shareassification
+mechanism further improves reliability without the lead toy
+of adversarial or post-hocreliably modeling. Empirical analss
+CLINC-150, BANKING77, and STACKOVERFLOW con-
+firm consistent performance gains and stability under limited
+supervision.
+Beyond empirical results, DROID highlights a broader
+principle: coupling heterogeneous encoders with calibrated
+confidence estimation offers an efficient pathway toward open-
+world intent understanding. The results suggest that represen-
+tational diversity and explicit decision calibration can jointly
+improve robustness, even in lightweight architectures. This
+insight may inform future work on confidence-aware neural
+classifiers more generally.
+The model’s efficiency—only 1.5M trainable parame-
+ters—demonstrates that strong OOS detection does not require
+large-scale fine-tuning or complex objectives, supporting de-
+ployment in real-time or resource-constrained dialogue sys-
+tems. Future extensions will explore multilingual and continual
+adaptation, aiming to extend the DROID design to evolving,
+multi-lingual intent spaces. Investigating theoretical properties
+of dual-encoder calibration and integrating explainability for
+human-in-the-loop intent verification remain promising av-
+enues for advancing trustworthy conversational AI.
+VIII. ACKNOWLEDGMENTS
+This project has received funding from Enterprise Ireland
+and the European Union’s Horizon 2020 Research and Inno-
+vation Programme under the Marie Skłodowska-Curie grant
+agreement No 847402.
+REFERENCES
+[1] A. Coucke, A. Saade, A. Ball, T. Bluche, A. Caulier, D. Leroy,
+C. Doumouro, T. Gisselbrecht, F. Caltagirone, T. Lavril, M. Primet,
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+12
+TABLE IV
+ABLATION ON ENCODING STRATEGIES FOR BANKING-77: MACRO F1 (%) FOR KNOWN/UNKNOWN ACROSS COVERAGES (25/50/75%) AND LABEL
+RATIOS, UNDER TWO OUTLIER BUDGETS (100/100 AND 500/500).
+Embedding
+No. Open
+No. Syn.
+Label
+Intent Ratio
+domain
+Ratio
+25%
+50%
+75%
+Known
+Unk.
+Known
+Unk.
+Known
+Unk.
+TSDAE (Clinc-150) & USE
+100
+100
+0.2
+86.63
+94.51
+83.46
+88.88
+82.19
+85.83
+0.4
+88.48
+94.41
+86.90
+89.97
+85.39
+86.21
+0.6
+89.34
+94.51
+86.32
+89.55
+88.59
+87.97
+0.8
+87.53
+93.98
+87.96
+89.39
+89.04
+88.13
+1.0
+89.15
+94.18
+87.39
+90.04
+88.01
+86.28
+500
+500
+0.2
+80.15
+92.76
+79.76
+88.34
+79.39
+87.60
+0.4
+88.66
+95.05
+86.35
+90.61
+87.10
+89.18
+0.6
+90.59
+95.50
+88.26
+92.18
+87.65
+89.22
+0.8
+90.84
+95.95
+89.88
+93.23
+89.46
+90.83
+1.0
+90.82
+95.55
+90.33
+92.87
+90.07
+90.49
+TSDAE(Roberta) & USE
+100
+100
+0.2
+57.73
+84.61
+65.53
+81.02
+69.54
+76.02
+0.4
+45.38
+90.12
+70.90
+78.09
+76.81
+77.07
+0.6
+60.97
+84.14
+68.90
+71.06
+81.93
+78.14
+0.8
+61.89
+83.10
+66.71
+75.45
+84.44
+84.34
+1.0
+67.00
+86.57
+67.65
+76.33
+85.21
+84.41
+500
+500
+0.2
+56.31
+86.77
+66.05
+80.08
+76.40
+80.78
+0.4
+59.69
+88.07
+66.01
+77.96
+82.30
+82.25
+0.6
+58.94
+85.82
+69.94
+80.53
+83.22
+82.33
+0.8
+47.09
+90.43
+70.22
+80.91
+83.81
+82.67
+1.0
+65.61
+89.84
+70.77
+78.76
+84.47
+83.83
+TSDAE (Askubuntu) & USE
+100
+100
+0.2
+62.34
+88.89
+70.40
+85.27
+77.11
+79.66
+0.4
+64.19
+87.98
+74.40
+83.69
+80.49
+80.36
+0.6
+65.02
+86.21
+75.33
+84.48
+82.57
+83.39
+0.8
+64.01
+85.66
+74.44
+82.38
+82.59
+81.92
+1.0
+63.40
+86.57
+74.33
+83.75
+85.27
+84.93
+500
+500
+0.2
+59.85
+90.04
+66.82
+84.12
+74.62
+80.27
+0.4
+64.64
+90.16
+73.01
+82.71
+81.05
+81.96
+0.6
+64.51
+89.95
+74.96
+83.73
+82.15
+82.29
+0.8
+64.32
+89.51
+74.24
+84.06
+84.32
+83.35
+1.0
+62.43
+88.52
+76.23
+84.61
+81.77
+82.09
+TSDAE (Scidocs) & USE
+100
+100
+0.2
+62.18
+89.96
+69.10
+83.10
+74.75
+79.13
+0.4
+61.61
+89.69
+71.43
+82.11
+79.44
+80.36
+0.6
+62.20
+89.30
+72.73
+83.45
+79.47
+79.56
+0.8
+56.39
+89.03
+75.03
+82.77
+82.55
+80.66
+1.0
+60.25
+87.83
+72.12
+80.63
+80.96
+82.73
+500
+500
+0.2
+57.58
+90.30
+66.62
+83.40
+73.56
+79.59
+0.4
+63.67
+90.34
+71.55
+84.30
+81.21
+82.02
+0.6
+60.88
+89.05
+69.61
+82.74
+80.06
+80.92
+0.8
+66.22
+89.14
+74.87
+84.00
+82.97
+82.12
+1.0
+56.32
+88.39
+74.77
+84.53
+82.17
+81.45
+USE Only
+100
+100
+0.2
+57.69
+87.31
+64.26
+83.18
+75.41
+79.41
+0.4
+60.84
+83.54
+68.55
+79.24
+64.06
+75.76
+0.6
+61.86
+85.10
+71.21
+77.20
+78.26
+75.22
+0.8
+63.61
+84.21
+66.09
+83.90
+81.60
+82.71
+1.0
+64.12
+85.42
+69.11
+80.65
+82.93
+78.12
+500
+500
+0.2
+58.05
+86.42
+63.38
+81.44
+76.57
+81.02
+0.4
+60.85
+84.71
+61.79
+83.19
+78.98
+80.14
+0.6
+58.76
+88.82
+72.75
+79.96
+68.60
+76.52
+0.8
+63.64
+86.90
+75.80
+84.11
+79.57
+80.11
+1.0
+52.74
+90.00
+76.55
+85.65
+81.09
+77.98
+and J. Dureau, “Snips voice platform: An embedded spoken language
+understanding system for private-by-design voice interfaces,” in arXiv
+preprint arXiv:1805.10190, 2018, pp. 12–16.
+[2] P. Cavalin, V. H. Alves Ribeiro, A. Appel, and C. Pinhanez, “Improving
+out-of-scope detection in intent classification by using embeddings of
+the word graph space of the classes,” in Proceedings of the 2020
+Conference on Empirical Methods in Natural Language Processing
+(EMNLP). Association for Computational Linguistics, 2020, pp. 3952–
+3961.
+[3] I. Casanueva, T. Temˇcinas, D. Gerz, M. Henderson, and I. Vuli´c, “Ef-
+ficient intent detection with dual sentence encoders,” in Proceedings of
+the 2nd Workshop on Natural Language Processing for Conversational
+AI.
+Association for Computational Linguistics, 2020, pp. 38–45.
+[4] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “BERT: Pre-
+training of deep bidirectional transformers for language understanding,”
+in Proceedings of the 2019 Conference of the North American
+Chapter of the Association for Computational Linguistics: Human
+Language Technologies, Volume 1 (Long and Short Papers), J. Burstein,
+
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021
+13
+C. Doran, and T. Solorio, Eds.
+Minneapolis, Minnesota: Association
+for Computational Linguistics, Jun. 2019, pp. 4171–4186. [Online].
+Available: https://aclanthology.org/N19-1423/
+[5] D. Hendrycks and K. Gimpel, “A baseline for detecting misclassified and
+out-of-distribution examples in neural networks,” in arXiv, 1610.02136,
+2018.
+[6] A. Bendale and T. Boult, “Towards open set deep networks,” in IEEE
+Conference on Computer Vision and Pattern Recognition (CVPR).
+IEEE, 2016.
+[7] M. M. Breunig, H.-P. Kriegel, R. T. Ng, and J. Sander, “Lof: Identifying
+density-based local outliers,” in Proceedings of the 2000 ACM SIGMOD
+International Conference on Management of Data.
+New York, NY,
+USA: Association for Computing Machinery, 2000, p. 93–104.
+[8] K. Xu, T. Ren, S. Zhang, Y. Feng, and C. Xiong, “Unsupervised out-
+of-domain detection via pre-trained transformers,” in Proceedings of the
+59th Annual Meeting of the Association for Computational Linguistics
+and the 11th International Joint Conference on Natural Language
+Processing (Volume 1: Long Papers).
+Association for Computational
+Linguistics, 2021, pp. 1052–1061.
+[9] L. Shu, H. Xu, and B. Liu, “DOC: Deep open classification of text
+documents,” in Proceedings of the 2017 Conference on Empirical
+Methods in Natural Language Processing.
+Copenhagen, Denmark:
+Association for Computational Linguistics, Sep. 2017, pp. 2911–2916.
+[10] G. Chen, P. Peng, X. Wang, and Y. Tian, “Adversarial reciprocal
+points learning for open set recognition,” IEEE Transactions on Pattern
+Analysis and Machine Intelligence, vol. 44, no. 11, pp. 8065–8081, 2022.
+[11] H. Zhang, H. Xu, and T.-E. Lin, “Deep open intent classification with
+adaptive decision boundary,” Proceedings of the AAAI Conference on
+Artificial Intelligence, vol. 35, no. 16, pp. 14 374–14 382, may 2021.
+[12] H. Zhang, H. Xu, S. Zhao, and Q. Zhou, “Learning discriminative
+representations and decision boundaries for open intent detection,” in
+IEEE/ACM Transactions on Audio, Speech, and Language Processing,
+vol. 31, 2023, pp. 1611–1623.
+[13] L.-M. Zhan, H. Liang, B. Liu, L. Fan, X.-M. Wu, and A. Y. Lam, “Out-
+of-scope intent detection with self-supervision and discriminative train-
+ing,” in Proceedings of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International Joint Conference
+on Natural Language Processing (Volume 1: Long Papers). Association
+for Computational Linguistics, 2021, pp. 3521–3532.
+[14] G. Chen, Q. Xu, C. Zhan, F. L. Wang, K. Liu, H. Liu, and T. Hao,
+“Improving open intent detection via triplet-contrastive learning and
+adaptive boundary,” EEE Transactions on Consumer Electronics, vol. 70,
+no. 1, pp. 2806–2816, 2024.
+[15] T. Zhang, A. Norouzian, A. Mohan, and F. Ducatelle, “A new approach
+for fine-tuning sentence transformers for intent classification and out-
+of-scope detection tasks,” arXiv preprint arXiv:2410.13649, 2024.
+[16] C. Gautam, S. Parameswaran, A. Kane, Y. Fang, S. Ramasamy, S. Sun-
+daram, S. K. Sahu, and X. Li, “Class name guided out-of-scope intent
+classification,” in Findings of the Association for Computational Lin-
+guistics: EMNLP 2024. Miami, Florida: Association for Computational
+Linguistics, November 2024.
+[17] X. Liu, J. Li, J. Mu, M. Yang, R. Xu, and B. Wang, “Effective open
+intent classification with k-center contrastive learning and adjustable
+decision boundary,” in Proceedings of the AAAI Conference on Artificial
+Intelligence, vol. 37, no. 11, 2023, pp. 13 291–13 299.
+[18] P. Hengst, M. Hein, and E. H¨ullermeier, “Conformal intent classification
+and clarification,” in Proceedings of the 2024 Conference of the North
+American Chapter of the Association for Computational Linguistics:
+Human Language Technologies.
+Mexico City, Mexico: Association for
+Computational Linguistics, June 2024.
+[19] D. Marzag˜ao, C. L. Varrichio, and G. K. Salton, “Beyond the known:
+Investigating LLMs performance on out-of-domain intent detection,” in
+Proceedings of the 2024 Joint International Conference on Computa-
+tional Linguistics, Language Resources and Evaluation (LREC-COLING
+2024).
+Turin, Italy: ELRA and ICCL, May 2024, pp. 1317–1327.
+[20] F. Zhang, W. Chen, F. Ding, M. Gao, T. Wang, J. Yao, and
+J. Zheng, “From discrimination to generation: Low-resource intent
+detection with language model instruction tuning,” in Findings of
+the Association for Computational Linguistics: ACL 2024, L.-W. Ku,
+A. Martins, and V. Srikumar, Eds.
+Bangkok, Thailand: Association
+for Computational Linguistics, Aug. 2024, pp. 10 167–10 183. [Online].
+Available: https://aclanthology.org/2024.findings-acl.605/
+[21] A. Arora and V. Varma, “Intent detection in the age of LLMs: A reality
+check,” in Findings of the Association for Computational Linguistics:
+EACL 2024.
+St. Julian’s, Malta: Association for Computational
+Linguistics, mar 2024, pp. 1273–1280.
+[22] D. Cer, Y. Yang, S. yi Kong, N. Hua, N. Limtiaco, R. S. John,
+N. Constant, M. Guajardo-Cespedes, S. Yuan, C. Tar, Y.-H. Sung,
+B. Strope, and R. Kurzweil, “Universal sentence encoder,” in arXiv
+preprint arXiv:1803.11175, 2018.
+[23] K. Wang, N. Reimers, and I. Gurevych, “Tsdae: Using transformer-based
+sequential denoising auto-encoder for unsupervised sentence embedding
+learning,” in Findings of the Association for Computational Linguistics:
+EMNLP 2021.
+Association for Computational Linguistics, 2021, pp.
+671–688.
+[24] S. Larson, A. Mahendran, J. J. Peper, C. Clarke, A. Lee, P. Hill, J. K.
+Kummerfeld, K. Leach, M. A. Laurenzano, L. Tang, and J. Mars, “An
+evaluation dataset for intent classification and out-of-scope prediction,”
+in Proceedings of the 2019 Conference on Empirical Methods in Natural
+Language Processing and the 9th International Joint Conference on
+Natural Language Processing (EMNLP-IJCNLP).
+Association for
+Computational Linguistics, 2019, pp. 1311–1316.
+[25] J. Xu, P. Wang, G. Tian, B. Xu, J. Zhao, F. Wang, and H. Hao, “Short text
+clustering via convolutional neural networks,” in Proceedings of the 1st
+Workshop on Vector Space Modeling for Natural Language Processing.
+Denver, Colorado: Association for Computational Linguistics, 2015, pp.
+62–69.
+[26] H. M. Zawbaa, W. Rashwan, S. Dutta, and H. Assem, “Improved
+out-of-scope intent classification with dual encoding and threshold-
+based re-classification,” in Proceedings of the 2024 Joint International
+Conference on Computational Linguistics, Language Resources and
+Evaluation (LREC-COLING). Turin, Italy: ELRA and ICCL, May 2024.
+[27] N. Reimers and I. Gurevych, “Sentence-bert: Sentence embeddings using
+siamese bert-networks,” in Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing and the 9th Inter-
+national Joint Conference on Natural Language Processing (EMNLP-
+IJCNLP).
+Association for Computational Linguistics, 2019, pp. 3982–
+3992.
+[28] V. Agarwal, S. D. Shivnikar, S. Ghosh, H. Arora, and Y. Saini, “Lidsnet:
+A lightweight on-device intent detection model using deep siamese
+network,” in 20th IEEE International Conference on Machine Learning
+and Applications (ICMLA), 2021, pp. 1112–1117.
+[29] T.-E. Lin and H. Xu, “Deep unknown intent detection with margin loss,”
+in Proceedings of the 57th Annual Meeting of the Association for Com-
+putational Linguistics.
+Florence, Italy: Association for Computational
+Linguistics, Jul. 2019, pp. 5491–5496.
+[30] G. Yan, L. Fan, Q. Li, H. Liu, X. Zhang, X.-M. Wu, and A. Y.
+Lam, “Unknown intent detection using Gaussian mixture model with
+an application to zero-shot intent classification,” in Proceedings of the
+58th Annual Meeting of the Association for Computational Linguistics.
+Online: Association for Computational Linguistics, Jul. 2020, pp. 1050–
+1060.
+[31] Y. Zhou, P. Liu, and X. Qiu, “KNN-contrastive learning for out-of-
+domain intent classification,” in Proceedings of the 60th Annual Meeting
+of the Association for Computational Linguistics (Volume 1: Long
+Papers).
+Association for Computational Linguistics, 2022, pp. 5129–
+5141.
+[32] Q. Yin, Z. Wang, L. Bai, Y. Song, D. Xu, and X. Yang, “Towards trust-
+worthy dialogue systems with advanced out-of-scope intent detection
+model,” IEEE Transactions on Artificial Intelligence, 2025.
+[33] P. Rajpurkar, R. Jia, and P. Liang, “Know what you don’t know:
+Unanswerable questions for SQuAD,” in Proceedings of the 56th Annual
+Meeting of the Association for Computational Linguistics (Volume 2:
+Short Papers).
+Association for Computational Linguistics, 2018, pp.
+784–789.
+[34] H. Zhang, X. Li, H. Xu, P. Zhang, K. Zhao, and K. Gao, “TEXTOIR:
+An integrated and visualized platform for text open intent recognition,”
+in Proceedings of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International Joint Conference
+on Natural Language Processing: System Demonstrations, Atlanta,
+Georgia, USA, 2021, pp. 167–174.
+[35] D. P. Kingma and J. Ba, “Adam: A method for stochastic optimization,”
+in 3rd International Conference on Learning Representations (ICLR),
+San Diego, CA, USA, 2015.

@@ -1,0 +1,1439 @@
+Less is More: Quality-Aware Training Data Selection
+for Scientific Summarization
+Maria Nefeli Paraskevopoulou, Tatiana Passali and Grigorios Tsoumakas
+School of Informatics
+Aristotle University of Thessaloniki
+Greece
+{mparaskf,scpassali,greg}@csd.auth.gr
+Abstract
+Scientific
+long-document
+summarization
+datasets commonly treat author-written ab-
+stracts as gold reference summaries, although
+their quality and alignment with the source
+article vary.
+At the same time, publicly
+available scientific summarization datasets
+remain limited in scale and structure for
+modern long-context models. In this work, we
+address both challenges by a) constructing and
+releasing one of the largest biomedical and life
+science datasets for long-document summa-
+rization, containing 1.88 million PMC articles,
+and b) analyzing the reference quality of
+author-written abstracts with source-grounded
+and model-based metrics.
+We show that
+author-written abstracts vary in their alignment
+with the full article and that these quality
+signals can guide training-data selection.
+Training on selected high-quality subsets
+outperforms random sampling at matched
+training sizes and can match or exceed larger
+random subsets on factuality-oriented metrics.
+Our findings suggest that reference quality is
+an important factor in scientific summarization
+and that quality-aware data selection can
+improve training efficiency.
+1
+Introduction
+Over 1.5 million biomedical and life science arti-
+cles are indexed in PubMed annually, making it in-
+creasingly difficult for researchers and practitioners
+to keep up with the scientific literature (González-
+Márquez et al., 2024). This has motivated long-
+document abstractive summarization systems de-
+signed to generate concise summaries of full pa-
+pers (Cohan et al., 2018). However, the effective-
+ness and reliability of such systems depend criti-
+cally on the quality of the data used for training
+and evaluation.
+Most scientific summarization benchmarks pair
+each article with its author-written abstract and
+treat the abstract as the reference summary (Gupta
+et al., 2021). Yet, prior work in biomedical and
+healthcare research has shown that abstracts can
+diverge from their corresponding full texts through
+omissions, inconsistencies, selective reporting, or
+overly strong interpretations of the findings (Pitkin
+et al., 1999). These mismatches matter because
+abstracts are used both as supervision during model
+training and as reference targets during evaluation.
+If reference summaries vary substantially in quality,
+then models trained on them may learn to generate
+unreliable summaries, and evaluation against them
+may reward behavior that does not fully reflect
+source-grounded factuality (Zhang et al., 2024).
+Beyond concerns about reference quality, ex-
+isting public benchmarks for biomedical and life
+science article summarization remain limited. The
+PubMed benchmark (Cohan et al., 2018) remains
+one of the most widely used resources for the
+task, with several later resources reusing it (Za-
+heer et al., 2020; Huang et al., 2021; Pang et al.,
+2023) or adapting it for related settings such as
+aspect-based scientific document summarization
+(Soleimani et al., 2022). However, it was intro-
+duced before the emergence of long-context Large
+Language Models (LLMs), and does not preserve
+hierarchical document structure in a format opti-
+mized for such models (Sclar et al., 2024; He et al.,
+2024; Li et al., 2022). Together, these limitations
+raise concerns about both the reliability of super-
+vision signals and the adequacy of current bench-
+marks for modern long-document summarization
+systems.
+To address these limitations, we build and re-
+lease PMC-Large1, a large-scale benchmark from
+PubMed Central (PMC) Open Access research ar-
+ticles, containing 1.88 million full papers. Each
+article is paired with its abstract, and the body
+is encoded in a Markdown-style format that pre-
+serves section hierarchy, filters non-narrative con-
+1https://huggingface.co/datasets/nefelipar/pmc-large
+arXiv:2606.24828v1 [cs.CL] 23 Jun 2026
+
+tent, and normalizes non-textual elements with
+placeholders. Using a subset of this dataset, we
+investigate whether the quality of author-written
+abstracts varies across the corpus. We define qual-
+ity as the degree to which an author-written ab-
+stract is supported by the corresponding article
+body, as measured by source-grounded evaluation
+metrics, including AlignScore (Zha et al., 2023),
+FineSurE (Song et al., 2024), G-Eval (Liu et al.,
+2023), and SummaC (Laban et al., 2022). Finally,
+we test whether selecting higher-quality examples
+for fine-tuning leads to better models than training
+on random samples. Our experiments reveal that
+quality-selected subsets outperform random sub-
+sets at matched training sizes, and smaller quality-
+selected subsets can match or exceed larger random
+ones on factuality-oriented metrics.
+Our main contributions are as follows:
+• We release PMC-Large, a large-scale long-
+document summarization dataset, containing
+1.88M PMC article-abstract pairs, and preserv-
+ing article structure for modern long-context
+LLMs.
+• We analyze the reference quality of author-
+written abstracts on a 10,000-article subset
+using multiple evaluation metrics.
+• We show that author-written abstracts vary in
+source-grounded reference quality, and that
+quality-based data selection outperforms ran-
+dom subsets at matched training sizes and can
+match or exceed larger random subsets.
+2
+Related Work
+2.1
+Scientific summarization
+Scientific summarization aims to produce concise
+summaries of research articles while preserving the
+main scientific findings. Biomedical summariza-
+tion presents additional domain-specific challenges
+such as specialized terminology, abbreviations, nu-
+merical results, methodological details, and a high
+requirement for factual consistency (Mushtaq and
+Veningston, 2026).
+The length of scientific articles introduces addi-
+tional challenges because relevant evidence may be
+distributed across multiple sections of a paper. Ear-
+lier transformer-based models were limited by in-
+put length, which often required truncation, chunk-
+ing or separate content-selection steps (Lewis et al.,
+2020; Zhang et al., 2020). Existing work addresses
+these challenges through long-context architectures
+(Beltagy et al., 2020; Zaheer et al., 2020), content-
+selection pipelines such as retrieve-then-summarize
+(Zhang et al., 2022), and models that incorporate
+discourse or section structure (Cohan et al., 2018;
+Gidiotis and Tsoumakas, 2020).
+2.2
+Scientific summarization datasets
+Scientific summarization datasets cover a range
+of tasks, including lay summarization (Guo et al.,
+2021; Goldsack et al., 2022, 2023), question sum-
+marization (Abacha and Demner-Fushman, 2019),
+and multi-document evidence synthesis (DeYoung
+et al., 2021). However, these resources are not
+directly comparable to full-article scientific sum-
+marization since they use different input types or
+different summary targets.
+Several
+article-based
+PMC
+summarization
+datasets define related but distinct task formula-
+tions. PMC-SA (Gidiotis and Tsoumakas, 2019)
+targets section-aware summarization with struc-
+tured abstract outputs, whereas PubMedCite (Luo
+et al., 2023) augments article inputs with citation-
+derived context from cited papers.
+In contrast,
+our dataset focuses on single-document full-article
+summarization using only the article body as input
+and the author abstract as target.
+The closest datasets to our work are PubMed and
+SumPubMed, which both pair PMC article bod-
+ies with author-written abstracts. PubMed (Cohan
+et al., 2018) contains approximately 133K articles
+and provides article text together with section-level
+information.
+SumPubMed (Gupta et al., 2021)
+contains 34K articles from the BioMed Central
+collection and follows the same article-to-abstract
+formulation. Among these, PubMed is the most
+relevant point of comparison for our work, since
+both datasets are derived from PubMed Central.
+2.3
+Reference quality of abstracts
+Author-written abstracts are commonly treated as
+gold reference summaries in scientific summariza-
+tion datasets because they are widely available and
+provide concise descriptions of the corresponding
+articles. However, prior work in biomedical and
+healthcare research shows that abstracts are not
+always fully consistent with the full text. Stud-
+ies have documented discrepancies between ab-
+stracts and articles, including missing information,
+inconsistent numerical results, incomplete report-
+ing of harms, and conclusions that are stronger than
+the evidence supports (Pitkin et al., 1999; Bernal-
+Delgado and Fisher, 2008; Li et al., 2017; Nasci-
+mento et al., 2021; Kamel and El-Sobky, 2023).
+
+A related concern is spin, where the wording
+or emphasis of an abstract presents findings more
+favorably than justified by the results. Spin can
+appear in biomedical abstracts through selective
+emphasis, causal language, or overconfident inter-
+pretation of findings (Lazarus et al., 2015; Boutron
+and Ravaud, 2018). Taken together, these studies
+suggest that the quality of abstracts is variable and
+that their reliability as reference summaries should
+be examined instead of assumed.
+2.4
+Evaluation of summary quality
+Traditional reference-based metrics,
+such as
+ROUGE and BERTScore, compare generated sum-
+maries with reference summaries using lexical or
+semantic similarity, but they do not directly ver-
+ify whether summary claims are supported by the
+source document. However, high reference similar-
+ity does not necessarily imply factual correctness or
+complete information overlap (Deutsch and Roth,
+2021; Kry´sci´nski et al., 2020). This limitation is
+especially important in scientific summarization,
+where factual errors, unsupported conclusions, or
+missing evidence can change the interpretation of
+scientific findings (Zhang et al., 2023; Fang et al.,
+2024). Recent work has therefore moved toward
+source-grounded and model-based metrics, such
+as SummaC (Laban et al., 2022), AlignScore (Zha
+et al., 2023), FineSurE (Song et al., 2024), and
+G-Eval (Liu et al., 2023), which assess summary
+quality using the input document as evidence.
+2.5
+Training-data selection for summarization
+A related line of work studies how the choice and
+quality of training examples affect summarization
+models. Sun et al. (2023) propose a data-selection
+curriculum for abstractive summarization and show
+that selecting useful examples can improve train-
+ing. Other work focuses on noisy or unfaithful
+supervision. Matsumaru et al. (2020) filter article-
+headline pairs using entailment signals to improve
+the truthfulness of generated headlines, while Nan
+et al. (2021) show that filtering training data with
+factual consistency signals can reduce entity hal-
+lucinations in abstractive summarization. Adams
+et al. (2022) also show that reference summaries
+may contain unsupported information and propose
+revising unfaithful references instead of removing
+them. These works highlight the importance of su-
+pervision quality during training. Our work builds
+on this motivation in the context of biomedical
+and life science long-document summarization by
+analyzing the quality of author-written abstracts
+at scale and studying whether source-grounded
+reference-quality signals can guide training-data
+selection.
+3
+Dataset Creation
+We construct a large-scale long-document summa-
+rization dataset from the PubMed Central Open
+Access (PMC-OA) corpus, which contains biomed-
+ical and life science research articles. The source
+articles are distributed as Journal Article Tag Suite
+(JATS)2 XML files, which encode article text, ab-
+stract, nested sections, citations, equations, figure
+and table mentions, and publication metadata. Each
+dataset instance pairs the processed main body of
+a research article with its author-written abstract.
+The article body is used as the source document
+and the abstract as the reference summary.
+3.1
+Source and record construction
+We convert PMC-OA XML archives into JSONL
+records using a preprocessing pipeline. Each record
+contains the PMC identifier, processed article body,
+processed abstract, and bibliographic metadata. We
+retain only articles with both a non-empty body
+and a non-empty abstract, since both are required
+for supervised summarization. We also restrict
+the corpus to permissively licensed articles (CC
+BY, CC0) and remove cases where the abstract is
+detected as duplicated in the article body, avoiding
+target leakage during supervised fine-tuning.
+3.2
+Structure and normalization
+A central goal of the pipeline is to retain scien-
+tific article structure in a format suitable for long-
+context language models. We therefore serialize ar-
+ticle bodies in a markdown-style format, preserving
+section hierarchy and other structural cues directly
+in the model input. This choice is motivated by
+evidence that LLMs are sensitive to input format-
+ting and that structured or markup-aware document
+representations can improve document understand-
+ing compared to structure-agnostic plain text (Sclar
+et al., 2024; He et al., 2024; Li et al., 2022). Section
+and subsection titles are converted into Markdown
+heading markers, while nested section hierarchy
+is preserved through heading depth. Paragraphs,
+lists, boxed text, display quotes, and other textual
+blocks are serialized in the order in which they
+2https://jats.nlm.nih.gov
+
+appear in the article. This keeps structural infor-
+mation available to the model while adding little
+token overhead.
+We also standardize how scientific elements are
+represented in the text. Non-textual content such as
+figures, tables, and supplementary files is removed,
+while references of citations, figures, tables, ap-
+pendices, boxed text and supplementary material
+are replaced with placeholders (e.g. figure refer-
+ences are replaced with [FIG_REF]). Formula and
+code markup are normalized with placeholders, us-
+ing [MATH] and [CODE], respectively. By doing
+this, the dataset remains focused on the article text
+while still indicating where references, formulas,
+and code occur in the source. Qualitative examples
+of text normalization are shown in Appendix C,
+Table 6. Unlike the dataset of Cohan et al. (2018),
+which applies stronger normalization to scientific
+notation and symbols, our preprocessing preserves
+text-encoded symbols, units, numeric ranges, sub-
+script/superscript notation and related scientific no-
+tation where possible.
+3.3
+Filtering and corpus statistics
+PMC articles contain many sections outside
+the main scientific narrative, including refer-
+ences, acknowledgements, disclosures, and other
+publication-related material that is not usually sum-
+marized by the abstract. Identifying these sections
+is not trivial because PMC articles are heteroge-
+neous. Some are marked by dedicated XML tags,
+others by section-type attributes, and others only
+by their headings. They also do not appear in a
+fixed position within the article.
+We therefore apply a three-step section filter.
+First, we remove sections whose XML tags belong
+to a predefined set of tags that usually indicate extra
+article material rather than the main content. Sec-
+ond, for general section containers, we inspect the
+optional JATS sec-type attribute, which provides
+a functional label for some sections, and remove
+sections whose type indicates publication-related
+material such as data-availability, supplementary-
+material, display-object, or competing-interest
+sections.
+Third, when this metadata is incom-
+plete or inconsistent, we standardize section titles
+and match them against a curated set of regular-
+expression patterns to identify and remove material
+that is not summarized by the abstract. The re-
+sult is a filter that is more robust to the different
+ways PMC articles encode the same kind of con-
+tent. Examples of non-narrative sections removed
+Dataset aspect
+PubMed
+Ours
+Source
+PMC
+PMC-OA
+Target
+Author abstract
+Author abstract
+Pairing
+article-abstract
+article-abstract
+Size
+133K
+1.88M
+Avg. doc. length
+3,016
+3,918
+Avg. sum. length
+203
+218
+Sections
+Level-1
+Nested
+Format
+Plain text
+Markdown
+Section filtering
+Up to conclusion
+Content-aware
+Figures/tables
+Removed
+Removed
+Inline refs
+Not specified
+Placeholders
+Math/Citations
+Special token
+Placeholders
+Code
+Not specified
+Placeholders
+Length filtering
+Length-based
+Percentile-based
+Language filter
+Not reported
+English
+License filter
+Not reported
+CC BY/CC0
+Abstract leakage
+Not reported
+Removed
+Table 1: Comparison of dataset-construction choices
+between the PubMed dataset (Cohan et al., 2018) and
+ours.
+by our filter are shown in Appendix C, Table 8.
+These include, among others, funding statements,
+acknowledgements, consent sections, data avail-
+ability statements, and lists of abbreviations, which
+are retained in the released PubMed dataset of Co-
+han et al. (2018).
+After XML conversion and section filtering, we
+apply corpus-level filters. We keep only English re-
+search articles and retain examples whose body
+and abstract lengths fall between the 10th and
+80th percentiles of their respective token distribu-
+tions. This choice concentrates the corpus on the
+central mass of the distribution and removes ex-
+tremely short articles and very long outliers that
+could skew training and evaluation. A more de-
+tailed analysis of these distributions is provided
+in Appendix A, Figure 2. Token counts are com-
+puted with the Qwen2.5-3B tokenizer, where each
+placeholder (such as [CIT_REF]) is counted as a
+single token. In the final corpus, this corresponds
+to 3,011-8,750 tokens for the article body and 191-
+440 tokens for the abstract.
+The initial conversion stage yields 4,407,836
+cleaned records, which are reduced to 1,884,517
+article-abstract pairs after final filtering. These pre-
+processing and filtering choices are summarized in
+comparison with the dataset of Cohan et al. (2018)
+in Table 1. Our dataset preserves richer document
+structure through nested section representations
+and Markdown serialization, applies more targeted
+content-aware filtering, and uses explicit placehold-
+ers for mentions of non-textual elements, formula
+and code markup. The final corpus is obtained after
+
+applying corpus-level filters for language, length, li-
+censing, and cases where the abstract is duplicated
+in the article body, which could leak the target sum-
+mary into the input.
+4
+Quality Analysis of Abstracts
+Before using author-written abstracts as supervi-
+sion targets, we first evaluate their quality as sum-
+maries of the corresponding article body. This ex-
+periment asks whether abstracts in PMC can be
+treated as uniformly reliable reference summaries,
+or whether their quality varies substantially across
+examples. We sample 10,000 article-abstract pairs
+from our dataset and treat each abstract as the sum-
+mary under evaluation, with the corresponding pro-
+cessed article body as the source document.
+4.1
+Evaluation metrics
+For each article-abstract pair, we compute the fol-
+lowing four source-grounded and model-based met-
+rics that evaluate both author-written abstracts and
+generated summaries against the corresponding ar-
+ticle body. For the judge models of FineSurE and
+G-Eval, we use Gemini 2.5 Flash.
+AlignScore (Zha et al., 2023) measures the align-
+ment between a summary and its source document.
+In our experiments, we use AlignScore to estimate
+how well author-written abstracts and generated
+summaries are supported by the corresponding arti-
+cle body.
+FineSurE (Song et al., 2024) provides fine-
+grained factuality evaluation through sentence-
+level error detection. We use FineSurE to evaluate
+the faithfulness of author-written abstracts and gen-
+erated summaries with respect to the article body.
+SummaC (Laban et al., 2022) is an NLI-based
+metric for evaluating whether summary statements
+are supported by the source document. We use the
+zero-shot variant, SummaC-ZS, with a biomedical
+NLI backbone, PubMedBERT-MNLI-MedNLI3.
+We use this configuration because initial experi-
+ments with the default general-domain SummaC
+settings showed limited suitability for long biomed-
+ical and life science articles.
+G-Eval (Liu et al., 2023) uses an LLM judge
+with prompting to evaluate summary quality ac-
+cording to predefined criteria. We use three criteria,
+factual consistency, coherence, and relevance, and
+report their average as the G-Eval score.
+3https://huggingface.co/pritamdeka/PubMedBERT-
+MNLI-MedNLI
+Unlike standard summarization settings, the
+author-written abstract is itself evaluated as can-
+didate summary, rather than treated only as a ref-
+erence target. Thus, as discussed in Section 2, we
+do not use ROUGE or BERTScore because they
+rely on reference-based similarity and do not di-
+rectly assess whether summaries are supported by
+the source document.
+4.2
+Quality analysis
+We examine whether the score distributions exhibit
+a low-quality tail and whether the metrics agree on
+which abstracts are high or low quality. This analy-
+sis is separate from model training, since it evalu-
+ates the reference abstracts directly and motivates
+subsequent experiments that use quality signals de-
+rived by the metrics for training data selection.
+Figure 1 and Table 2 summarize the reference-
+quality scores for the 10,000 author-written ab-
+stracts. The metrics use different scales, so the
+values should be interpreted within each metric
+rather than compared directly across metrics. Over-
+all, many abstracts receive high scores, especially
+under G-Eval and FineSurE, but the distributions
+also show that reference quality varies across ex-
+amples.
+Figure 1: Score distributions for author-written abstracts
+on the 10,000-example reference-quality analysis set.
+Metric
+Valid
+Mean
+P10
+Med.
+P90
+AlignScore
+10,000
+0.622
+0.473
+0.626
+0.765
+SummaC
+10,000
+0.385
+0.149
+0.377
+0.632
+G-Eval avg
+10,000
+0.902
+0.800
+0.900
+1.000
+FineSurE
+5,775
+0.850
+0.667
+0.875
+1.000
+Table 2: Distribution of reference-quality scores on the
+10,000-example abstract analysis set. G-Eval avg is the
+mean of coherence, factual consistency, and relevance.
+FineSurE is reported only over successful outputs.
+AlignScore has a median score of 0.626, while
+the bottom decile falls below 0.473. G-Eval also as-
+
+signs high average scores, with a median of 0.900.
+FineSurE gives an average faithfulness score of
+0.850 over successful outputs, with a bottom decile
+below 0.667. FineSurE succeeds on 5,775 exam-
+ples, which suggests that it is harder to apply reli-
+ably at this scale and input length.
+The metrics show only partial agreement, as
+shown in Table 3. G-Eval average and FineSurE
+have the strongest association among the main met-
+rics (ρ = 0.518). AlignScore is positively but more
+weakly correlated with FineSurE (ρ = 0.293) and
+G-Eval average (ρ = 0.231). In contrast, Sum-
+maC has weak correlation with the other metrics,
+including AlignScore (ρ = 0.067), G-Eval average
+(ρ = −0.038), and FineSurE (ρ = 0.025).
+These results suggest that author-written ab-
+stracts are useful training targets, but their reference
+quality varies across articles. Some abstracts are
+strongly aligned with their source articles, while
+others receive substantially lower scores. The lim-
+ited agreement between metrics also indicates that
+no single metric should be treated as a complete
+measure of reference quality. This motivates the
+data-selection experiments in Section 5, where we
+test whether these quality signals can be used to
+select better supervision examples.
+5
+Quality-Aware Data Selection
+Next, we investigate whether reference-quality sig-
+nals are useful for sampling training data. The ex-
+periments in this section compare metric-selected
+subsets with random or larger unfiltered subsets
+under the same model and evaluation settings.
+5.1
+Model and Training Setup
+For all Supervised Fine-Tuning (SFT) experiments,
+we use Qwen2.5-3B as the base model. Each article
+body is inserted into a fixed summarization prompt:
+Summarize
+the
+following
+document.\n\n{text}\n\nSummary:
+The target output is the author-written abstract. All
+main SFT runs are trained for one epoch. More de-
+tails regarding the experimental setup are presented
+in Appendix B.
+5.2
+Evaluation Metrics
+All fine-tuned models and zero/few-shot baselines
+are evaluated on the same 500-example test set,
+sampled from PMC-Large and disjoint from the
+10,000-example analysis set and training pools. We
+Align
+SummaC
+G-Eval
+FineSurE
+AlignScore
+1.000
+0.067
+0.231
+0.293
+SummaC
+0.067
+1.000
+-0.038
+0.025
+G-Eval avg.
+0.231
+-0.038
+1.000
+0.518
+FineSurE
+0.293
+0.025
+0.518
+1.000
+Table 3: Spearman correlations between reference-
+quality metrics.
+generate model summaries from the processed arti-
+cle body and evaluate them against the source doc-
+ument using the four metrics introduced in Section
+4.1. FineSurE is reported over successfully parsed
+outputs, with the success rate reported alongside
+the score. For compact comparison within each
+table, we also report an overall score based on aver-
+age rank. For each metric, models are ranked from
+best to worst, and the ranks are averaged across
+AlignScore, SummaC, G-Eval, and FineSurE. We
+report a linearly rescaled version of this average
+rank in the 0–1 range, where higher is better. Over-
+all is only used for comparison within the same
+table.
+5.3
+Quality filter improves sample efficiency
+The first training experiment tests whether
+reference-quality metrics can identify better su-
+pervision samples. We use 5,000 randomly sam-
+pled examples from the 10,000-example reference-
+quality analysis set as a fixed candidate pool for
+training-data selection. Each candidate abstract
+is scored against its article body using Align-
+Score, FineSurE, SummaC-ZS PubMedBERT, and
+G-Eval.
+For each metric, we rank the 5,000 candidate ex-
+amples by score and select the top 1,000 examples
+as a training subset. We train an SFT model for
+each metric-selected subset. In addition, we also
+construct an aggregate score criterion by converting
+each metric score into a percentile rank within the
+candidate pool and averaging the four percentile
+ranks. We then select the 1,000 examples with the
+highest aggregate score and train a fifth SFT model
+on the resulting subset.
+We compare these models with two additional
+SFT baselines, one trained on a randomly sampled
+subset of 1,000 examples and one trained on the
+full 5,000 example pool. This allows us to test
+whether metric-selected training sets outperform
+random training sets at the same size, and whether
+a smaller selected subset can approach or exceed a
+model trained on all available examples. We also
+evaluate the base language model with zero-shot,
+
+Model
+Overall ↑
+Align ↑
+SummaC ↑
+G-Eval ↑
+FineSurE ↑/ Succ.
+Zero-shot
+0.444
+0.735
+0.462
+0.822
+0.847 / 76.6
+One-shot
+0.306
+0.712
+0.409
+0.523
+0.616 / 45.0
+Two-shot
+0.028
+0.652
+0.378
+0.419
+0.526 / 33.6
+Random 1K
+0.361
+0.812
+0.377
+0.831
+0.921 / 93.6
+All 5K
+0.583
+0.825
+0.382
+0.845
+0.921 / 95.8
+AlignScore 1K
+0.778
+0.850
+0.388
+0.839
+0.932 / 95.2
+FineSurE 1K
+0.667
+0.834
+0.395
+0.834
+0.928 / 94.0
+SummaC 1K
+0.472
+0.819
+0.403
+0.819
+0.908 / 94.2
+G-Eval 1K
+0.556
+0.819
+0.382
+0.848
+0.921 / 93.6
+Aggregate 1K
+0.806
+0.844
+0.398
+0.845
+0.931 / 94.8
+Table 4: Experiment 1 results on the 500-example test set. Overall is computed as the average rank across AlignScore,
+SummaC, G-Eval, and FineSurE. FineSurE is reported over successful outputs, with the success rate shown after the
+slash.
+one-shot, and two-shot prompting4.
+Table 4 shows the results of the first training
+experiment. Fine-tuning improves substantially
+on AlignScore, G-Eval, and FineSurE, but not on
+SummaC, where the zero-shot baseline obtains the
+highest score. SummaC is based on natural lan-
+guage inference (NLI), meaning that it evaluates
+whether summary statements can be inferred from
+the source document. One possible explanation
+is that zero-shot summaries make more general
+claims that are easier for the biomedical NLI model
+to verify, whereas fine-tuned models may generate
+more specific abstract-like statements that improve
+other quality dimensions but are harder to classify
+as directly entailed. This is also consistent with
+the weak correlation between SummaC and the
+other metrics in Table 3. Zero-shot prompting is
+the strongest prompting baseline, while one-shot
+and two-shot prompting perform worse, suggesting
+that adding demonstrations does not help in this
+long-document setting.
+Among SFT models, the randomly selected 1K
+subset already improves over the prompting base-
+lines on AlignScore, G-Eval, and FineSurE. How-
+ever, selecting examples by reference quality fur-
+ther improves performance.
+The aggregate 1K
+model outperforms the random 1K model on all
+four metrics and also matches or exceeds the full
+5K model on most metrics.
+The individual selection metrics show different
+behavior. The AlignScore selected model obtains
+the highest AlignScore and FineSurE scores, while
+the G-Eval selected model obtains the highest G-
+Eval score. The SummaC selected model obtains
+the highest SummaC score among SFT models, but
+it still remains below the zero-shot baseline on Sum-
+4The one-shot and two-shot settings use larger maximum
+context lengths so that the demonstrations and test document
+fit in the input context.
+maC, suggesting that SummaC-based selection is
+less effective in this setting. Overall, the aggregate
+selection gives the strongest balance across metrics,
+supporting the use of multiple quality signals rather
+than relying on a single metric alone.
+5.4
+Quality selection remains effective at scale
+We next examine whether quality-based selection
+remains useful when the candidate pool is scaled
+from 5,000 to 100,000 examples. Computing all
+metrics over 100,000 long articles is expensive,
+especially for LLM-based metrics such as G-Eval
+and FineSurE. We therefore use AlignScore as a
+selection metric. AlignScore can be run locally
+and was competitive with the strongest selection
+methods in Section 5.3, making it a practical choice
+for this purpose.
+We sample a 100,000 example candidate pool
+and compute AlignScore for each abstract against
+its corresponding article body. We then construct
+selected training subsets by taking the top 1,000,
+2,000, 5,000, and 10,000 examples according to
+AlignScore. For each training size, we also con-
+struct a random subset of the same size from the
+same candidate pool. In addition to the selected
+and random subsets, we train a model on the full
+100,000 example pool.
+The upper block of Table 5 compares AlignScore
+selected subsets against random subsets from the
+same 100,000 example pool. At every matched
+training size, the AlignScore selected model ob-
+tains a higher overall score than the correspond-
+ing random baseline. Models trained on quality-
+selected subsets also consistently improve Align-
+Score and FineSurE, showing that the benefit of
+quality-based selection remains visible when the
+candidate pool is scaled up.
+The quality-selected subsets also compare favor-
+ably with training on the full 100K pool. The 5K
+
+Model
+Overall ↑
+Align ↑
+SummaC ↑
+G-Eval ↑
+FineSurE ↑/ Succ.
+AlignScore selection from 100K
+Random 1K
+0.036
+0.810
+0.388
+0.838
+0.906 / 94.8
+AlignScore 1K
+0.625
+0.887
+0.405
+0.824
+0.949 / 95.8
+Random 2K
+0.125
+0.816
+0.384
+0.846
+0.916 / 95.0
+AlignScore 2K
+0.571
+0.879
+0.395
+0.841
+0.957 / 95.0
+Random 5K
+0.179
+0.825
+0.392
+0.843
+0.913 / 93.8
+AlignScore 5K
+0.679
+0.883
+0.398
+0.849
+0.957 / 95.4
+Random 10K
+0.250
+0.833
+0.390
+0.848
+0.917 / 94.2
+AlignScore 10K
+0.589
+0.866
+0.397
+0.868
+0.947 / 94.4
+All 100K
+0.429
+0.828
+0.391
+0.874
+0.935 / 95.2
+Aggregate selection inside the top 10K AlignScore pool
+Agg-All 1K
+0.536
+0.867
+0.400
+0.852
+0.947 / 94.2
+Agg-NoSummaC 1K
+0.429
+0.864
+0.392
+0.856
+0.945 / 94.4
+Agg-All 2K
+0.679
+0.877
+0.401
+0.855
+0.954 / 94.6
+Agg-NoSummaC 2K
+0.786
+0.879
+0.401
+0.864
+0.957 / 96.2
+Agg-All 5K
+0.839
+0.876
+0.406
+0.861
+0.961 / 93.6
+Agg-NoSummaC 5K
+0.750
+0.876
+0.399
+0.867
+0.958 / 95.2
+Table 5: Results for the large candidate pool experiments on the 500-example test set. Overall is computed within
+this table using the average-rank score described in Section 5.2. Bold marks the best score within each experimental
+block, and underlining marks the best score across the full table.
+AlignScore selected model is the strongest model
+in the first block by Overall score, and it outper-
+forms the 100K model on AlignScore, SummaC,
+and FineSurE. The 100K model obtains the highest
+G-Eval score, which suggests that larger unfiltered
+training data may still improve some aspects of
+generation quality. Overall, these results show that
+more data is not always better than better selected
+data.
+5.5
+Two-stage quality-based selection
+improves performance
+Finally, we test whether the large-scale setting can
+benefit from the multi-metric selection strategy that
+performed best in Section 5.3. The goal is to test
+whether a more expensive second-stage selection
+step can further improve the quality of the training
+data. We keep AlignScore as a cheap and scal-
+able first-stage filter and test whether reranking its
+highest-scoring examples with additional metrics
+further improves training-data selection.
+We begin with the top 10,000 examples se-
+lected by AlignScore from the 100,000 exam-
+ple pool and we compute the remaining metrics
+for these 10,000 examples. We consider two ag-
+gregate variants: AGGREGATE-ALL which com-
+bines AlignScore, FineSurE, SummaC, and G-Eval
+and AGGREGATE-NOSUMMAC which combines
+AlignScore, FineSurE, and G-Eval, excluding Sum-
+maC, since earlier results showed that it behaved
+less consistently than the other metrics. For each
+aggregate variant, we select the top 1K, 2K, and
+5K examples and train separate SFT models.
+Results are shown in the lower block of Ta-
+ble 5. AGGREGATE-ALL at 5K examples obtains
+the best Overall, SummaC and FineSurE scores
+across the full table, as shown by the underlined en-
+tries. Removing SummaC improves G-Eval at each
+matched size, but it is not uniformly better across
+the other metrics. Overall, these results support a
+two-step selection strategy: first use AlignScore
+as a cheap and scalable filter at scale, and then
+use multiple metrics to refine the selected training
+subset.
+6
+Conclusions
+In this work, we studied reference quality in long-
+document scientific summarization. We introduced
+PMC-Large, a large-scale PMC article-abstract
+dataset that preserves document structure for long-
+context language models, and used it to examine
+whether author-written abstracts can be treated as
+uniformly reliable references. Our analysis shows
+that author-written abstracts vary in their alignment
+with the full article, and that automatic metrics only
+partially agree on reference quality.
+We also showed that these quality signals can
+improve training data selection. Metric-selected
+subsets consistently outperform random subsets at
+matched sizes, and smaller selected subsets can
+match or exceed much larger unfiltered training
+sets.
+Overall, our results suggest that author -
+written abstracts are useful but not uniformly reli-
+able supervision, and that quality-aware selection
+is a simple way to improve training efficiency and
+factuality-oriented performance.
+
+Limitations
+While our results show that reference-quality sig-
+nals are useful for scientific summarization, several
+aspects of the problem remain outside the scope
+of this work. We rely on automatic metrics, which
+may not capture all aspects of summary quality and
+were not specifically designed for biomedical and
+life science articles, so human evaluation would
+provide stronger validation. Due to computational
+cost and resource constraints, we compute qual-
+ity scores and run fine-tuning experiments only on
+subsets of PMC-Large rather than on the full 1.88
+million article–abstract pairs. Our experiments also
+use one base model and one main training setup, so
+the results may not fully generalize to larger mod-
+els, other architectures, or different fine-tuning set-
+tings. In addition, the dataset is limited to English
+PMC Open Access articles with specific licensing
+and length filters, which may affect generalization
+to other domains, languages, or summary types.
+Finally, selecting examples with automatic metrics
+may favor the behavior of those metrics and reduce
+diversity in the training data.
+Ethical Considerations
+Our work studies the reliability of author-written
+abstracts and the use of automatic quality signals
+for training-data selection. Although these meth-
+ods may improve factual consistency in scientific
+summarization, the resulting systems can still gen-
+erate unsupported, incomplete, or misleading sum-
+maries. Generated summaries should therefore not
+be treated as authoritative scientific or clinical evi-
+dence without expert verification.
+The dataset may also reflect existing biases in
+the biomedical literature. Since our training targets
+are author-written abstracts, any inaccuracies or
+interpretive bias present in the original abstracts
+may also be propagated to summarization systems
+trained on this data.
+7
+Acknowledgements
+We used ChatGPT to help revise and improve the
+wording of the manuscript and to support the de-
+velopment of some parts of the code. The authors
+reviewed, verified and edited all AI-assisted outputs
+and take full responsibility for the final manuscript
+and implementation.
+References
+Asma Ben Abacha and Dina Demner-Fushman. 2019.
+On the summarization of consumer health questions.
+In Proceedings of the 57th annual meeting of the as-
+sociation for computational linguistics, pages 2228–
+2234.
+Griffin Adams, Han-Chin Shing, Qing Sun, Christo-
+pher Winestock, Kathleen McKeown, and Noémie
+Elhadad. 2022. Learning to revise references for
+faithful summarization. In Findings of the Associa-
+tion for Computational Linguistics: EMNLP 2022,
+pages 4009–4027.
+Iz Beltagy, Matthew E Peters, and Arman Cohan. 2020.
+Longformer: The long-document transformer. arXiv
+preprint arXiv:2004.05150.
+Enrique Bernal-Delgado and Elliot S Fisher. 2008. Ab-
+stracts in high profile journals often fail to report
+harm. BMC Medical Research Methodology, 8(1):14.
+Isabelle Boutron and Philippe Ravaud. 2018. Misrep-
+resentation and distortion of research in biomedical
+literature. Proceedings of the National Academy of
+Sciences, 115(11):2613–2619.
+Arman Cohan, Franck Dernoncourt, Doo Soon Kim,
+Trung Bui, Seokhwan Kim, Walter Chang, and Nazli
+Goharian. 2018. A discourse-aware attention model
+for abstractive summarization of long documents. In
+Proceedings of the 2018 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+Volume 2 (Short Papers), pages 615–621, New Or-
+leans, Louisiana. Association for Computational Lin-
+guistics.
+Daniel Deutsch and Dan Roth. 2021. Understanding the
+extent to which content quality metrics measure the
+information quality of summaries. In Proceedings of
+the 25th Conference on Computational Natural Lan-
+guage Learning, pages 300–309, Online. Association
+for Computational Linguistics.
+Jay DeYoung, Iz Beltagy, Madeleine van Zuylen, Bai-
+ley Kuehl, and Lucy Lu Wang. 2021. Ms2: Multi-
+document summarization of medical studies. In Pro-
+ceedings of the 2021 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 7494–
+7513.
+Biaoyan Fang, Xiang Dai, and Sarvnaz Karimi. 2024.
+Understanding faithfulness and reasoning of large
+language models on plain biomedical summaries. In
+Findings of the Association for Computational Lin-
+guistics: EMNLP 2024, pages 9890–9911.
+Alexios Gidiotis and Grigorios Tsoumakas. 2019. Struc-
+tured summarization of academic publications. In
+Joint European Conference on Machine Learning and
+Knowledge Discovery in Databases, pages 636–645.
+Springer.
+
+Alexios Gidiotis and Grigorios Tsoumakas. 2020. A
+divide-and-conquer approach to the summarization
+of long documents. IEEE/ACM Trans. Audio, Speech
+and Lang. Proc., 28:3029–3040.
+Tomas Goldsack, Zheheng Luo, Qianqian Xie, Carolina
+Scarton, Matthew Shardlow, Sophia Ananiadou, and
+Chenghua Lin. 2023. Overview of the biolaysumm
+2023 shared task on lay summarization of biomedical
+research articles. In Proceedings of the 22nd Work-
+shop on Biomedical Natural Language Processing
+and BioNLP Shared Tasks, pages 468–477, Toronto,
+Canada. Association for Computational Linguistics.
+Tomas Goldsack, Zhihao Zhang, Chenghua Lin, and
+Carolina Scarton. 2022. Making science simple: Cor-
+pora for the lay summarisation of scientific literature.
+In Proceedings of the 2022 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+10589–10604.
+Rita González-Márquez, Luca Schmidt, Benjamin M
+Schmidt, Philipp Berens, and Dmitry Kobak. 2024.
+The landscape of biomedical research. Patterns, 5(6).
+Yue Guo, Wei Qiu, Yizhong Wang, and Trevor Co-
+hen. 2021. Automated lay language summarization
+of biomedical scientific reviews. In Proceedings of
+the AAAI Conference on Artificial Intelligence, vol-
+ume 35, pages 160–168.
+Vivek Gupta, Prerna Bharti, Pegah Nokhiz, and Harish
+Karnick. 2021. SumPubMed: Summarization dataset
+of PubMed scientific articles. In Proceedings of the
+59th Annual Meeting of the Association for Compu-
+tational Linguistics and the 11th International Joint
+Conference on Natural Language Processing: Stu-
+dent Research Workshop, pages 292–303, Online.
+Association for Computational Linguistics.
+Jia He, Mukund Rungta, David Koleczek, Arshdeep
+Sekhon, Franklin X Wang, and Sadid Hasan. 2024.
+Does prompt formatting have any impact on llm per-
+formance? arXiv preprint arXiv:2411.10541.
+Luyang Huang, Shuyang Cao, Nikolaus Parulian, Heng
+Ji, and Lu Wang. 2021. Efficient attentions for long
+document summarization. In Proceedings of the 2021
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, pages 1419–1436, Online.
+Association for Computational Linguistics.
+Sherif Ahmed Kamel and Tamer A El-Sobky. 2023. Re-
+porting quality of abstracts and inconsistencies with
+full text articles in pediatric orthopedic publications.
+Research Integrity and Peer Review, 8(1):11.
+Wojciech Kry´sci´nski, Bryan McCann, Caiming Xiong,
+and Richard Socher. 2020. Evaluating the factual
+consistency of abstractive text summarization. In
+Proceedings of the 2020 conference on empirical
+methods in natural language processing (EMNLP),
+pages 9332–9346.
+Philippe Laban, Tobias Schnabel, Paul N. Bennett, and
+Marti A. Hearst. 2022. SummaC: Re-visiting NLI-
+based models for inconsistency detection in summa-
+rization. Transactions of the Association for Compu-
+tational Linguistics, 10:163–177.
+Clément Lazarus, Romana Haneef, Philippe Ravaud,
+and Isabelle Boutron. 2015. Classification and preva-
+lence of spin in abstracts of non-randomized studies
+evaluating an intervention. BMC medical research
+methodology, 15(1):85.
+Mike Lewis, Yinhan Liu, Naman Goyal, Marjan
+Ghazvininejad, Abdelrahman Mohamed, Omer Levy,
+Veselin Stoyanov, and Luke Zettlemoyer. 2020. Bart:
+Denoising sequence-to-sequence pre-training for nat-
+ural language generation, translation, and comprehen-
+sion. In Proceedings of the 58th annual meeting of
+the association for computational linguistics, pages
+7871–7880.
+Guowei Li, Luciana PF Abbade, Ikunna Nwosu, Yan-
+ling Jin, Alvin Leenus, Muhammad Maaz, Mei Wang,
+Meha Bhatt, Laura Zielinski, Nitika Sanger, and 1
+others. 2017. A scoping review of comparisons be-
+tween abstracts and full reports in primary biomed-
+ical research. BMC medical research methodology,
+17(1):181.
+Junlong Li, Yiheng Xu, Lei Cui, and Furu Wei. 2022.
+Markuplm: Pre-training of text and markup language
+for visually rich document understanding. In Pro-
+ceedings of the 60th Annual Meeting of the Associa-
+tion for Computational Linguistics (Volume 1: Long
+Papers), pages 6078–6087.
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang,
+Ruochen Xu, and Chenguang Zhu. 2023. G-eval:
+NLG evaluation using gpt-4 with better human align-
+ment. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing,
+pages 2511–2522, Singapore. Association for Com-
+putational Linguistics.
+Zheheng Luo, Qianqian Xie, and Sophia Ananiadou.
+2023. Citationsum: Citation-aware graph contrastive
+learning for scientific paper summarization. In Pro-
+ceedings of the ACM web conference 2023, pages
+1843–1852.
+Kazuki Matsumaru, Sho Takase, and Naoaki Okazaki.
+2020. Improving truthfulness of headline genera-
+tion. In Proceedings of the 58th Annual Meeting of
+the Association for Computational Linguistics, pages
+1335–1346.
+Shafiya Mushtaq and K Veningston. 2026. Biomedi-
+cal text summarization with large language models:
+methodologies, challenges, and future directions. In-
+ternational Journal of Data Science and Analytics,
+22(1):29.
+Feng Nan, Ramesh Nallapati, Zhiguo Wang, Cicero
+dos Santos, Henghui Zhu, Dejiao Zhang, Kathleen
+McKeown, and Bing Xiang. 2021. Entity-level fac-
+tual consistency of abstractive text summarization.
+
+In Proceedings of the 16th conference of the Euro-
+pean chapter of the association for computational
+linguistics: main volume, pages 2727–2733.
+Dafne P Nascimento, Raymond WJG Ostelo, Maurits W
+van Tulder, Gabrielle Z Gonzalez, Amanda C Araujo,
+Adriane A Vanin, and Leonardo OP Costa. 2021. Do
+not make clinical decisions based on abstracts of
+healthcare research: A systematic review. Journal of
+clinical epidemiology, 135:136–157.
+Bo Pang, Erik Nijkamp, Wojciech Kry´sci´nski, Silvio
+Savarese, Yingbo Zhou, and Caiming Xiong. 2023.
+Long document summarization with top-down and
+bottom-up inference. In Findings of the Association
+for Computational Linguistics: EACL 2023, pages
+1267–1284.
+RM Pitkin, MA Branagan, and LF Burmeister. 1999.
+Accuracy of data in abstracts of published research
+articles. JAMA, 281(12):1110–1111.
+Melanie Sclar, Yejin Choi, Yulia Tsvetkov, and Alane
+Suhr. 2024. Quantifying language models’ sensitiv-
+ity to spurious features in prompt design or: How i
+learned to start worrying about prompt formatting.
+In International Conference on Learning Representa-
+tions, volume 2024, pages 25055–25083.
+Amir Soleimani, Vassilina Nikoulina, Benoit Favre,
+and Salah Ait Mokhtar. 2022.
+Zero-shot aspect-
+based scientific document summarization using self-
+supervised pre-training.
+In Proceedings of the
+21st Workshop on Biomedical Language Processing,
+pages 49–62, Dublin, Ireland. Association for Com-
+putational Linguistics.
+Hwanjun Song, Hang Su, Igor Shalyminov, Jason Cai,
+and Saab Mansour. 2024. FineSurE: Fine-grained
+summarization evaluation using LLMs. In Proceed-
+ings of the 62nd Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), pages 906–922, Bangkok, Thailand. Associa-
+tion for Computational Linguistics.
+Shichao Sun, Ruifeng Yuan, Jianfei He, Ziqiang Cao,
+Wenjie Li, and Xiaohua Jia. 2023. Data selection
+curriculum for abstractive text summarization. In
+Findings of the Association for Computational Lin-
+guistics: EMNLP 2023, pages 7990–7995.
+Manzil Zaheer, Guru Guruganesh, Kumar Avinava
+Dubey, Joshua Ainslie, Chris Alberti, Santiago On-
+tanon, Philip Pham, Anirudh Ravula, Qifan Wang,
+Li Yang, and Amr Ahmed. 2020. Big bird: Trans-
+formers for longer sequences. In Advances in Neural
+Information Processing Systems, volume 33, pages
+17283–17297. Curran Associates, Inc.
+Yuheng Zha, Yichi Yang, Ruichen Li, and Zhiting Hu.
+2023. AlignScore: Evaluating factual consistency
+with a unified alignment function. In Proceedings
+of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 11328–11348, Toronto, Canada. Association
+for Computational Linguistics.
+Jingqing Zhang, Yao Zhao, Mohammad Saleh, and Pe-
+ter Liu. 2020. Pegasus: Pre-training with extracted
+gap-sentences for abstractive summarization. In In-
+ternational conference on machine learning, pages
+11328–11339. PMLR.
+Nan Zhang, Yusen Zhang, Wu Guo, Prasenjit Mitra, and
+Rui Zhang. 2023. FaMeSumm: Investigating and
+improving faithfulness of medical summarization.
+In Proceedings of the 2023 Conference on Empir-
+ical Methods in Natural Language Processing, pages
+10915–10931, Singapore. Association for Computa-
+tional Linguistics.
+Tianyi Zhang, Faisal Ladhak, Esin Durmus, Percy Liang,
+Kathleen McKeown, and Tatsunori B. Hashimoto.
+2024. Benchmarking large language models for news
+summarization. Transactions of the Association for
+Computational Linguistics, 12:39–57.
+Yusen Zhang, Ansong Ni, Ziming Mao, Chen Henry Wu,
+Chenguang Zhu, Budhaditya Deb, Ahmed Awadallah,
+Dragomir Radev, and Rui Zhang. 2022. Summn: A
+multi-stage summarization framework for long input
+dialogues and documents. In Proceedings of the 60th
+Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1592–
+1604.
+A
+Additional Dataset Statistics
+This section provides additional corpus statistics
+supporting the dataset construction described in
+Section 3. Figure 2 shows the token-count distribu-
+tions for article bodies and abstracts. These distri-
+butions are used to define the 10th-80th percentile
+length range retained in the final dataset.
+Figure 2: Token-count distributions for article bodies
+and abstracts. These distributions are used to define the
+10th-80th percentile length range retained in the final
+dataset.
+B
+Additional Experimental Details
+This section reports implementation details for the
+supervised fine-tuning experiments described in
+Section 5. In an initial 3-epoch pilot, validation
+loss improved during approximately the first epoch
+and then increased while training loss continued
+to decrease, suggesting overfitting. We therefore
+train all models for one epoch in the main exper-
+iments. During training, we evaluate on 500 vali-
+dation examples and select the best checkpoint ac-
+cording to validation loss. We train on one NVIDIA
+
+PMC ID
+Original PMC
+PubMed (Cohan et al., 2018)
+PMC-Large (Ours)
+PMC4165415
+having ≥3
+having 3
+having ≥3
+PMC3881782
+solution at 37ºC
+solution at 37c
+solution at 37ºC
+PMC4540752
+1–2,3–7,8+
+12 , 37 , 8 +
+1–2,3–7,8+
+PMC4540752
+Wab = Sab/Ka
+wab = sab / ka
+Wab = Sab/Ka
+PMC416487
+(1–2.5%) [3,4,32,33]
+( 12.5%) .
+(1–2.5%) [CIT_REF]
+PMC5008198
+of nano-TiO2
+of nanotio2
+of nano-TiO2
+Table 6: Examples of text normalization. Our preprocessing preserves scientific symbols where possible and
+normalizes citations, figure/table mentions, and mathematical notation into a consistent text representation.
+H100 80GB GPU using bf16 precision and gradient
+checkpointing. For generation, we use greedy de-
+coding with a maximum of 768 new tokens. Table 7
+lists the main training, generation, and hardware
+settings used in the experiments.
+Hyperparameter
+Value
+Base model
+Qwen2.5-3B
+Epochs
+1
+Learning rate
+1.32 × 10−5
+Batch size
+1
+Gradient accumulation
+1
+Weight decay
+0.0374
+Warmup steps
+163
+Max gradient norm
+0.8873
+Evaluation / save interval
+100 steps
+Max sequence length
+12,000
+Max new tokens
+768
+Precision
+bf16
+Hardware
+NVIDIA H100 80GB
+Seed
+42
+Table 7: Main supervised fine-tuning hyperparameters.
+C
+Preprocessing Examples
+This section provides qualitative examples support-
+ing the preprocessing decisions described in Sec-
+tion 3. The examples compare our preprocessing
+with the released PubMed dataset and illustrate two
+main differences: content-aware section filtering
+and text normalization. They are intended as qual-
+itative examples of preprocessing behavior rather
+than as a separate quantitative evaluation.
+Table 8 shows examples of non-narrative sec-
+tions that are retained in the released PubMed
+dataset but excluded by our content-aware section
+filter. Table 6 provides examples of normalization
+decisions, including preserving scientific notation
+where possible and replacing inline references with
+standardized placeholders.
+PMC ID
+Non-narrative sections retained in PubMed
+PMC4165415
+Funding; Footnotes
+PMC165589
+List of Abbreviations; Competing Interests; Authors’
+Contributions; Pre-publication history; Supplementary
+Material; Acknowledgements
+PMC4540752
+Electronic supplementary material; Additional files;
+Acknowledgements; Compliance with ethical guide-
+lines
+PMC4240245
+Data availability; Consent
+PMC4262794
+Ethical Considerations; Conflict of Interest; Funding;
+Authorship; Research Ethics Statement
+Table 8: Examples of non-narrative sections that remain
+in the released PubMed dataset but are removed by our
+content-aware section filter. We report only the differing
+sections rather than the complete section lists.

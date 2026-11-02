@@ -1,0 +1,1744 @@
+LiCQA : A Lightweight Complex Question Answering System
+Sourav Saha
+Indian Statistical Institute
+Kolkata, India
+sourav.saha_r@isical.ac.in
+Dwaipayan Roy
+Indian Institute of Science Education
+and Research
+Kolkata, India
+dwaipayan.roy@iiserkol.ac.in
+Mandar Mitra
+Indian Statistical Institute
+Kolkata, India
+mandar@isical.ac.in
+Abstract
+Over the last twenty years, significant progress has been made in
+designing and implementing Question Answering (QA) systems.
+However, addressing complex questions, the answers to which are
+spread across multiple documents, remains a challenging problem.
+Recent QA systems that are designed to handle complex questions
+work either on the basis of knowledge graphs, or utilise contem-
+porary neural models that are expensive to train, in terms of both
+computational resources and the volume of training data required.
+In this paper, we present LiCQA, an unsupervised question answer-
+ing model that works primarily on the basis of corpus evidence. We
+empirically compare the effectiveness and efficiency of LiCQA with
+two recently presented QA systems, which are based on different
+underlying principles. The results of our experiments show that
+LiCQA significantly outperforms these two state-of-the-art systems
+on benchmark data with noteworthy reduction in latency.
+ACM Reference Format:
+Sourav Saha, Dwaipayan Roy, and Mandar Mitra. 2026. LiCQA : A Light-
+weight Complex Question Answering System. In . ACM, New York, NY,
+USA, 10 pages. https://doi.org/10.1145/nnnnnnn.nnnnnnn
+1
+Introduction
+Open-domain question answering (QA), the task of providing di-
+rect answers to (factoid) questions, has remained an active area
+of research within the Information Retrieval (IR) and Natural Lan-
+guage Processing (NLP) communities. Most recent work in this
+area belongs to one of two paradigms: extracting answers from
+structured knowledge bases (KBs) or knowledge graphs (KGs), and
+extracting answers from unstructured text documents. While KBs
+are high-quality sources of organised information, they also have
+important limitations: real-life KBs that are up-to-date, and have
+both deep and broad coverage remain a holy grail. Much less tech-
+nical machinery is required in order to contribute information to,
+and maintain, predominantly unstructured textual resources like
+the Web in general, and Wikipedia in particular. For the near future,
+therefore, traditional QA architectures based on text retrieval and
+analysis appear to be the paradigm of choice for flexible, open-
+domain QA. In this study, we present one such system, LiCQA. The
+three notable features of LiCQA that together distinguish it from
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+https://doi.org/10.1145/nnnnnnn.nnnnnnn
+most other recently proposed QA systems are: (i) its unsupervised
+nature, (ii) the ability to handle complex questions, and (iii) its
+efficiency. These are discussed in greater detail below.
+Unsupervised nature. An unsupervised QA system attempts to
+answer a user-question Q given only the question, and a corpus
+C [23]. In contrast, many of the best-known, modern QA systems
+are supervised in nature [14, 34, 52, 53]. Given a large number of
+training samples, each consisting of a question, a textual passage
+containing the answer, and the answer itself, such systems generally
+‘learn’ to extract the answer from a given passage that is known to
+contain the answer.
+An unsupervised QA system like LiCQA has some practical ad-
+vantages over supervised systems. First, it is concerned with the
+more general problem of finding answers to a question from a
+collection of documents, rather than finding the precise answer
+to a question from a piece of text that contains the answer. Sec-
+ond, it eliminates the need for large volumes of human-annotated
+training data. Finally, state-of-the-art methods for supervised QA
+systems often employ end-to-end Deep Learning architectures that
+are computationally expensive to develop, and which need GPUs for
+effective deployment. While modules used within the QA pipeline
+in LiCQA do involve supervised / deep learning techniques for
+particular sub-tasks (e.g., a Part of Speech (POS) tagger, trained
+on text annotated with POS tags, and sentence embeddings), we
+bypass the need for the kind of computational resources required
+by end-to-end supervised QA systems.
+Handling complex questions. A query is regarded as complex
+if it involves multiple entities, and multiple relationships between
+them, e.g.,
+Which Nolan films won an Oscar, but missed a Golden Globe?
+In contrast, a query like Who won the Turing Award in 1970? would
+be regarded as ‘simple’. Answers to complex questions will often
+need to be synthesised by combining evidence from multiple doc-
+uments. LiCQA is specifically designed to answer such complex
+queries. None of the labeled datasets that are commonly used for
+training and testing the recent supervised QA systems mentioned
+above contains an adequate number of complex questions, which
+comprise our primary focus.
+Lightweight. To the best of our knowledge, QUEST [28], a recently-
+proposed system, represents the state-of-the-art for unsupervised,
+complex QA systems. For an empirical comparison, therefore, we
+chose QUEST as a baseline, along with DrQA [12]. Our experimen-
+tal results suggest that LiCQA is computationally much less
+expensive than the chosen baselines; yet, it achieves significantly
+better performance on the datasets used.
+arXiv:2602.22182v1 [cs.CL] 25 Feb 2026
+
+Conference’17, July 2017, Washington, DC, USA
+Saha et al.
+Summary of contributions. In sum, this paper describes a light-
+weight, unsupervised QA system for complex questions. An empirical
+comparison with two recent, state-of-the-art baselines suggests that
+the proposed system achieves significant improvements in terms of
+both effectiveness and efficiency. While the techniques presented
+in this report are simple to implement, we make the source code
+available to aid reproducibility, comparisons with other similar
+systems, and further research1.
+2
+Background and Related Work
+Early research on large-scale QA generally considered the task of
+finding answers to factoid queries from a corpus of unstructured
+documents [48]. The traditional strategy established by these early
+methods [32, 41, 42] consisted of retrieving a set of paragraphs/ doc-
+uments for a given question, and subjecting them to more detailed
+analysis (e.g., by extracting and scoring named entities (NEs) from
+them). In [26], the authors argued that the intent behind document
+retrieval for QA and traditional searches can be different. Further,
+they proposed a synthetic test collection for QA tasks.
+More recently, the structured and interlinked information pro-
+vided by Knowledge Graphs and Knowledge Bases has been applied
+to question answering [2, 5, 9, 10]. However, the incompleteness of
+KGs has restricted their use in building general purpose QA systems.
+To overcome this limitation, researchers have successfully used un-
+structured text documents to supplement KGs for QA [18, 19, 37].
+Most recent work on QA has focused on utilising deep learning
+models for the task [17, 45]. Some of these efforts have also resulted
+in the creation of benchmark QA models [5, 12, 38, 47]. However,
+these models require significant training data, and are also compu-
+tationally expensive. DrQA [12] is one of these state-of-the-art QA
+systems. It combines a TF-IDF based document retriever with a mul-
+tilayered bi-LSTM network that encodes the paragraphs from the
+top retrieved documents based on word embeddings before training
+two classifiers to identify the starting and ending locations of the
+potential answers. Nonetheless, it is still distantly supervised on
+SQuAD, TREC Questions, Web Questions, and Wikimovies dataset.
+Although they have proven to be effective for factoid question
+answering, most of the QA systems discussed above are designed
+for questions that have an answer contained within a single doc-
+ument. These techniques often fail to retrieve the correct answer
+for complex questions, where the answers involve multiple enti-
+ties spread across several documents [1, 4, 6, 21, 44]. A method for
+quantitative evaluation of interactive QA systems was proposed
+in [49]. The proposed paradigm, called RUTS, incorporates real
+users, tasks and systems, and unlike the framework presented in
+this article, RUTS is applicable for the evaluation of user-centered
+information-access system.
+Recently, an unsupervised method QUEST has been proposed
+by [28] for answering complex questions. Unlike the other methods
+mentioned above, QUEST does not depend upon any annotated
+datasets for training. It finds answers by building and analysing a
+quasi knowledge graph, constructed from documents retrieved by
+a search engine in response to the question. However, the creation
+of the KG on the fly leads to significant execution latency in finding
+the answers to a given question.
+1https://github.com/souravsaha/licqa
+Figure 1: Architecture of the LiCQA system.
+3
+LiCQA: A lightweight complex question
+answering model
+LiCQA uses a standard pipeline (shown in Figure 1) to process
+questions. The question type is determined. Concurrently, a set
+of documents that are expected to contain the answer is retrieved
+using keywords from the question. Since answers to most questions
+are entities, they are extracted from these documents as potential
+answers. These entities are then scored, and finally returned in the
+form of a ranked list. In the following subsections, each stage of
+the pipeline is described in detail.
+3.1
+Question Type Classification
+The question classifier (QC) module tries to classify a given question
+according to the predicted type of its answer. For example, consider
+the question: “Which actor played in Troy and Seven?” Its answer is
+a named entity of the PERSON type. Similarly, the answer to “Where
+in New Zealand is the Tomb of the Unknown Warrior located?” is a
+PLACE-type entity. QC is generally considered an essential early
+stage in traditional QA pipelines [33], and has been the focus of
+much research [7, 31, 40, 46]. For this stage of LiCQA, we experi-
+mented with both traditional (‘shallow’) and deep learning based
+methods, discussed below.
+Traditional machine learning based classifier. Support Vector
+Machines (SVMs) are reported to perform well for question clas-
+sification [40]. Following [24] and [25], we construct the feature
+vector of a question 𝑄using:
+(I) all named entities (NEs) in 𝑄, and
+(II) the lemma and POS tag of each word in 𝑄.
+If all the questions in a test collection together contain 𝑚distinct
+NEs, 𝑛distinct lemmata, 𝑛′ distinct lemma-bigrams, 𝑝distinct POS
+tags, and 𝑝′ distinct POS tag bigrams, then the feature vector is a
+binary vector of 𝑚+ 𝑛+ 𝑛′ + 𝑝+ 𝑝′ dimensions (see Figure 1). A
+linear SVM was then trained using the 5500 annotated questions
+provided by [25].
+Neural classifiers. We also try a neural classifier for this stage. A
+question 𝑄is encoded employing the Universal Sentence Encoder
+
+A Lightweight Complex Question Answering System
+Conference’17, July 2017, Washington, DC, USA
+(USE) [11], a state-of-the-art sentence encoder that is reported to
+work well for question classification [35]. This encoder embeds 𝑄
+into a 256-dimension vector space by passing the average embed-
+ding of word-level unigrams and bigrams present in 𝑄to DAN, a
+deep feed-forward averaging network. Next, the embedding for 𝑄
+is fed to a feed-forward neural network with one dense layer, and
+a softmax layer at the output level. The network is trained on the
+same set of 5500 questions as above, using the Adam optimizer,
+with ReLU as the activation function, and cross entropy as the loss
+function.
+3.2
+Answer Extraction and Filtering
+Given a question 𝑄, it is submitted as a query to a standard IR
+engine (or search service) to retrieve D, a set of 𝑘documents,
+from a given collection (or the open Web). Each document 𝐷∈D
+is preprocessed: accented characters are replaced by their non-
+accented equivalents using unicodedata from the Python standard
+library; and contractions like can’t are expanded to cannot.
+Next, we extract the set of NEs present in 𝐷using Flair [3], a
+recent method based on contextualised embeddings (where a single
+word is mapped to different embeddings, corresponding to the
+different sentential contexts in which the word occurs). Each entity
+is tagged using a label from the OntoNotes 5 tagset [50].
+Answer Type in [25]
+OntoNotes 5 Entity Type
+HUMAN
+PERSON
+LOCATION
+GPE, LOC, ORG
+ENTITY
+NORP, FAC, PRODUCT, EVENT
+LANGUAGE, LAW, WORK_OF_ART
+NUMERIC
+DATE, TIME, PERCENT, MONEY
+QUANTITY, ORDINAL, CARDINAL
+money
+MONEY
+date
+DATE
+group
+ORG
+Table 1: Mapping question / answer types to OntoNotes tags.
+Answer types in uppercase correspond to top-level categories,
+while lowercases refer to second-level sub-categories.
+The final step within this stage involves selecting only entities
+whose label (or type) matches the expected answer type for the
+current question. Using Flair for NE extraction poses an opera-
+tional problem, however. The tags assigned to candidate answers
+by Flair and the tags assigned by the QC module (trained using
+labels defined by [25]) are different. To circumvent this issue, we
+use a handcrafted table (Table 1) to map the labels provided in [25]
+to their equivalents in OntoNotes 5. Thus, for a question of type
+LOCATION, all entities labelled GPE, LOC or ORG are selected as
+candidate answers.
+3.3
+Answer Scoring
+The next step involves scoring the selected entities (denoted by
+E = {𝑒1,𝑒2, . . .}), based on their presumed relevance to the given
+question. From the example questions cited above (i.e., 𝑄= “Which
+actor played in Troy and Seven?”), it is clear that the answer entity
+itself is unlikely to occur in 𝑄, but contexts in which the answer
+occurs and is recognisable as such (i.e., “Pitt’s portrayal of Achilles
+in Troy (2004) . . . Detective Mills in Seven . . .” etc.) will probably
+have a substantial overlap. Accordingly, the key idea in our scoring
+approach involves measuring the semantic similarity between 𝑄
+and the sentences in which a candidate answer occurs.
+To keep computational costs down (in keeping with our objective
+of designing a system that would be usable in near real-time), we
+first compute the document frequency (df ) of each entity 𝑒in D as
+follows.
+df (𝑒) = |{𝐷∈D | 𝑒occurs in 𝐷; its tag is of the desired type(s)}|
+(1)
+If E contains more than 100 entities, these entities are ranked in
+decreasing order of df, and only the top 1002 are retained for further
+processing.
+Next, we extract from D all sentences in which any 𝑒∈E
+occurs. Let 𝑆𝑒= {𝑠(𝑒)
+1 ,𝑠(𝑒)
+2 , . . . , } denote the sentences in D that
+contain 𝑒, and let S = Ð
+𝑒∈E 𝑆𝑒. The match between any 𝑠(𝑒)
+𝑖
+and 𝑄
+is measured using cos(Q, s(e)
+i
+), the cosine similarity between the
+embeddings of 𝑠(𝑒)
+𝑖
+and 𝑄. Two types of embeddings were tried.
+InferSent. In this method proposed by [15], a pre-trained GloVe
+embedding of words (300 dimension) are used to get vector rep-
+resentation of the words in the sentences. Further, a bidirectional
+LSTM (Bi-LSTM) network is trained on the Stanford Natural Lan-
+guage Inference (SNLI) [8] dataset. Applying a max pooling over
+the hidden states of the network, it encodes each sentence to obtain
+a 4096-dimensional encoded version of the sentence.
+Sentence-Bert. It fine-tunes a pretrained BERT [16]/RoBERTa [27]
+based on the input sentences, and applies a mean pooling over
+the output vectors to create the sentence embedding. As discussed
+in [35], it works significantly faster than BERT and gives better
+representation.
+Finally, we need to compute a single score(𝑒) for each candidate
+answer 𝑒by aggregating the scores of all the sentences in 𝑆𝑒. Three
+aggregation methods were tried.
+• Simple averaging: In this case, score(𝑒), denoted by avg-score(𝑒),
+is given by
+score(𝑒) = avg-score(𝑒) =
+1
+|𝑆𝑒|
+∑︁
+𝑠∈𝑆𝑒
+cos(Q, s)
+(2)
+• Averaging over the best matching sentence from each
+document: For each document 𝐷∈D, we first pick the
+sentence 𝑠𝐷containing 𝑒that has the maximum similarity
+with 𝑄(see Equation 3).
+𝑠𝐷= arg max
+𝑠∈𝐷∩𝑆𝑒cos(Q, s)
+(3)
+We then compute the average of these scores over all 𝐷∈D.
+score(𝑒) = avg-maxscore(𝑒) =
+1
+|D|
+∑︁
+𝐷∈D
+cos(Q, sd)
+(4)
+2This number was fixed at 100 so as to avoid yet another tunable parameter in our
+system.
+
+Conference’17, July 2017, Washington, DC, USA
+Saha et al.
+• Considering only the single best match: In this case, we
+consider the score of the best matching sentence in 𝑆𝑒as
+score(𝑒).
+score(𝑒) = max-score(𝑒) = max
+𝑠∈𝑆𝑒cos(Q, s)
+(5)
+3.4
+Answer Ranking
+The final ranking of the answers is based on an arithmetic combi-
+nation of the similarity score obtained above and the (normalised)
+document frequency of the entities. This was motivated by observa-
+tions from the query expansion / relevance feedback literature that
+document frequency is a useful factor for selecting / weighting ex-
+pansion terms. To combine the two factors, we tried both weighted
+addition and simple multiplication.
+• Weighted addition: The semantic similarity score and the
+normalized df were combined as follows.
+comb-score+ = 𝛼× score(𝑒) + 𝛽× df (𝑒)
+|D|
+(6)
+Here 𝛼and 𝛽are parameters to be tuned.
+• Simple multiplication: In this variant, we simply multi-
+plied the semantic similarity with the normalized df.
+comb-score∗= score(𝑒) × df (𝑒)
+|D|
+(7)
+Finally, a list of the entities corresponding to the five highest com-
+bined scores is returned as the set of answers for 𝑄. This list is
+only partially ordered, since LiCQA can assign the same rank (one
+through five) to all entities that obtain the same combined score.
+4
+Experimental Setup
+4.1
+Baselines
+To compare the effectiveness of LiCQA with methods having diverse
+working principles, we adopt two state-of-the-art complex question
+answering models, specifically QUEST [28] and DrQA [12] as our
+baselines. Two additional graph-based question answering models,
+BFS [43] and ShortestPaths [28], are also considered for comparing
+the performance of LiCQA.
+LiCQA is designed for answering complex questions (having
+answers that need to be constructed from multiple documents) in a
+real-time application (for which computational cost is an essential
+factor). Therefore, neither end-to-end QA systems that are heavily
+supervised, nor computationally expensive systems based on recent
+deep neural models (e.g., BERT [16], RoBERTa [27]) would be ap-
+propriate as baselines for our studies. Note that we do use distilled
+versions of some of these models in some stages of our pipeline,
+however, and compare their effect with that of other alternatives.
+4.2
+Datasets
+Datasets that have been commonly used to evaluate QA systems
+include SQuAD [34], Natural Questions [22] and WikiMovies [30].
+As mentioned before, these datasets are not focused on complex
+questions, and are designed for supervised QA systems. In order
+to experiment with various types of complex questions, and to
+allow a fair comparison with our chosen baselines, we use the
+same dataset as QUEST. Specifically, we use two sets of questions —
+WikiAnswers (CQ-W), and Google Trends (CQ-T) — for evaluation.
+Each set contains 150 complex questions of varying difficulty.
+Document collection. Recall from Figure 1 that one of the first
+steps in LiCQA involves performing a keyword-based retrieval from
+a corpus with the question to obtain a set of documents containing
+the potential answers. In principle, we treat the open Web as our
+target document collection, and use a search service like the Google
+API to retrieve documents. However, the Web is dynamic. To ensure
+reproducibility, the dataset provided by [28] includes the 10 top-
+ranked documents that they actually retrieved in the course of their
+experiments for each query. We refer to this set (comprising the 10
+top-ranked documents for each question) as Top10. Given Top10,
+we skip the retrieval step during our experiments, and start by
+analysing this set of documents.
+To minimize the effect of the QA components apparently built
+into Google’s search engine and to simulate variations in the search
+algorithm, five additional document collections were constructed
+using stratified sampling from the top 50 documents returned by
+Google. These collections are named Strata-1 through Strata-5.
+These collections also contain 10 documents per query, with 𝑥1%
+documents selected from within the top 10 ranks, 𝑥2% from docu-
+ments ranked 11 through 25, and 𝑥3% from ranks 26 to 50. Table 2
+shows the values of 𝑥1, 𝑥2, and 𝑥3 chosen for each these collections.
+Collection
+𝑥1
+𝑥2
+𝑥3
+Top10
+100
+0
+0
+Strata-1
+60
+30
+10
+Strata-2
+50
+40
+10
+Strata-3
+50
+30
+20
+Strata-4
+40
+40
+20
+Strata-5
+40
+30
+30
+Table 2: Values of 𝑥1, 𝑥2 and 𝑥3 for the document collections
+used in this article.
+4.3
+Evaluation metrics
+Following standard practice [13, 28], we evaluate QA systems in
+terms of precision at rank 1 (P@1), mean reciprocal rank (MRR), and
+hit at 5 (Hit@5). The commonly used definitions of these metrics
+are intended for use with a ranked list that does not have any ties.
+However, QA systems (including QUEST and LiCQA) sometimes
+do produce ties, i.e., multiple answers that are assigned the same
+rank. In fact, this would be the correct response to some questions
+like Which Nobel Laureate was in the Manhattan Project?) for which
+multiple correct answers are possible (Neils Bohr, Enrico Fermi,
+etc.). In addition to the above metrics, therefore, we use tie-aware
+versions of these metrics [29, 36] — tP@1, tMRR and tHit@5 — for
+a more realistic comparison of different systems.
+4.4
+LiCQA configuration
+Other than the parameters involved within the various commodity
+components used in our pipeline, the only parameters in LiCQA
+are 𝛼and 𝛽(see Equation 6). These were varied over [0.1, 0.7] in
+steps of 0.1.
+
+A Lightweight Complex Question Answering System
+Conference’17, July 2017, Washington, DC, USA
+Stages of pipeline
+Evaluation metrics
+Type classification
+Sentence embedding
+Scoring
+Ranking
+tMRR
+tP@1
+tHit@5
+Traditional (SVM)
+comb-score∗
+0.412
+0.282
+0.633
+max-score
+comb-score+
+0.406
+0.275
+0.626
+comb-score∗
+0.123
+0.063
+0.242
+avg-maxscore
+comb-score+
+0.124
+0.063
+0.242
+comb-score∗
+0.387
+0.253
+0.620
+InferSent
+avg-score
+comb-score+
+0.386
+0.253
+0.620
+comb-score∗
+0.411
+0.280
+0.633
+max-score
+comb-score+
+0.398
+0.280
+0.613
+comb-score∗
+0.116
+0.060
+0.216
+avg-maxscore
+comb-score+
+0.118
+0.060
+0.220
+comb-score∗
+0.408
+0.260
+0.640
+Sent_BERT
+avg-score
+comb-score+
+0.393
+0.260
+0.613
+Neural (USE)
+comb-score∗
+0.407
+0.282
+0.626
+max-score
+comb-score+
+0.401
+0.275
+0.620
+comb-score∗
+0.117
+0.056
+0.208
+avg-maxscore
+comb-score+
+0.117
+0.056
+0.225
+comb-score∗
+0.385
+0.260
+0.613
+InferSent
+avg-score
+comb-score+
+0.385
+0.260
+0.613
+comb-score∗
+0.399
+0.273
+0.620
+max-score
+comb-score+
+0.389
+0.273
+0.600
+comb-score∗
+0.106
+0.050
+0.226
+avg-maxscore
+comb-score+
+0.104
+0.050
+0.206
+comb-score∗
+0.389
+0.246
+0.620
+Sent_BERT
+avg-score
+comb-score+
+0.387
+0.260
+0.600
+Table 3: Performance of different stages of pipeline for CQ-W questions in terms of tie aware version of MRR, P@1 and Hit@5.
+5
+Result and Discussions
+Recall that the LiCQA pipeline contains four components for which
+multiple options were explored. We first present a comprehensive
+comparison across all the different combinations to determine what
+works best. This also allows us to carefully analyse the effect of the
+choice for any individual module, by fixing the choices for the other
+modules. In the next subsection, we present an overall comparison
+between LiCQA and the baselines mentioned in the previous sec-
+tion. While this does involve selecting the most effective design for
+the pipeline, it does not amount to retrospectively training parame-
+ters on the test data. Finally, by way of a qualitative comparison
+with QUEST, as well as failure analysis, we provide an anecdotal
+discussion of the results for some specific questions.
+5.1
+Analysis of pipeline components
+To verify the prominence of each component and the robustness
+of LiCQA, we vary the different modules and check the performance.
+Table 3 shows the performance of different stages of the pipeline
+for CQ-W question-set. The performance variation with questions
+from CQ-T has been seen to be similar; hence we are reporting the
+performances on the CQ-W question-set for the sake of brevity. We
+choose the best module in each stage and report our performance
+of LiCQA.
+While comparing the overall performance of the question type
+classifiers, we note that the SVM based classifier works slightly
+better than the neural classifier. After extracting the set of sen-
+tences from the retrieved documents, the next stage of LiCQA in-
+volves scoring of the entities in those sentences which consists
+of a semantic and a statistical comparison. The semantics-based
+similarity is computed between the question and the extracted sen-
+tences containing entities of same type as of the answer. Among
+the two sentence encoding techniques experimented with, InferSent
+has been seen to be working better than Sent_BERT in a major-
+ity of cases although the performances are mostly comparable. As
+part of the statistical comparison between the question and the
+extracted sentences with the NEs, max-score (Equation 5) has been
+observed to be superior than the other scoring functions (presented
+in Equation 2, 4, 5) irrespective of the other components. At the final
+phase, LiCQA ranks the entities based on the computed similarity
+scores. The best performance is discerned when the normalized
+document frequency is multiplied with the score of the individual
+entities using comb-score∗(Equation 7). Overall, the optimal per-
+formance is reported when the SVM based classifier is used with
+
+Conference’17, July 2017, Washington, DC, USA
+Saha et al.
+System
+Metric
+Top10
+Strata-1
+Strata-2
+Strata-3
+Strata-4
+Strata-5
+ShortestPaths
+0.240
+0.261
+0.249
+0.237
+0.259
+0.270
+BFS
+0.249
+0.256
+0.266
+0.212
+0.219
+0.254
+DrQA
+MRR
+0.226
+0.237
+0.257
+0.256
+0.215
+0.248
+QUEST
+0.355
+0.380
+0.340
+0.302
+0.356
+0.318
+LiCQA
+0.432∗§†‡
+0.424∗§†‡
+0.431∗§†‡
+0.420∗§†‡
+0.426∗§†‡
+0.416∗§†‡
+% improvement
+21.6%
+11.5%
+26.7%
+39%
+19.6%
+30.8%
+ShortestPaths
+0.147
+0.173
+0.193
+0.140
+0.147
+0.187
+BFS
+0.160
+0.167
+0.193
+0.113
+0.100
+0.147
+DrQA
+P@1
+0.184
+0.199
+0.221
+0.215
+0.172
+0.200
+QUEST
+0.268
+0.315
+0.262
+0.216
+0.258
+0.216
+LiCQA
+0.293∗†
+0.280§
+0.320∗§
+0.273∗§
+0.306∗§†
+0.280§
+% improvement
+9.32%
+-11.1%
+22.13%
+26.3%
+18.6%
+29.6%
+ShortestPaths
+0.347
+0.367
+0.387
+0.327
+0.393
+0.340
+BFS
+0.360
+0.353
+0.347
+0.327
+0.327
+0.360
+DrQA
+Hit@5
+0.313
+0.315
+0.322
+0.322
+0.303
+0.340
+QUEST
+0.376
+0.396
+0.356
+0.344
+0.401
+0.358
+LiCQA
+0.646∗§†‡
+0.673∗§†‡
+0.633∗§†‡
+0.653∗§†‡
+0.626∗§†‡
+0.640∗§†‡
+% improvement
+71.8%
+69.9%
+77.8%
+89.8%
+56.1%
+78.7%
+Table 4: Performance comparison of baseline methods with LiCQA for CQ-W questions in terms of MRR, P@1 and Hit@5. A
+superscript ∗, §, † and ‡ respectively indicate that LiCQA is statistically significant (t-test with 𝑝< 0.05) with the ShortestPaths,
+BFS, DrQA and QUEST. The percentage improvement of LiCQA with the best performing baseline (QUEST) is presented in the
+last row of each group.
+InferSent as the sentence embedding technique while scoring and
+ranking of the entities are performed respectively using max-score
+and comb-score∗. Hence, we report the performance of LiCQA based
+on this configuration and compare the result with the baselines.
+5.2
+End-to-end evaluation
+5.2.1
+Evaluation using MRR, P@1 and Hit@5. Table 4,5 compare
+the overall performance of LiCQA and the baselines for both ques-
+tion sets, WikiAnswers (CQ-W) and Google Trends (CQ-T), in terms
+of MRR, P@1 and Hit@5. We observe that LiCQA achieved the best
+performance across all metrics for CQ-W; it yields an improvement
+of 21.6% and 71.8% over the next best system (QUEST) in terms of
+MRR and Hit@5, respectively, for the Top10 dataset. Similar trends
+are observed for Strata 1–5. The improvements over ShortestPaths,
+BFS and the strong baselines, QUEST and DrQA, are statistically
+significant (paired t-test with 𝑝< 0.05) for almost all document
+sets.
+For CQ-T, LiCQA achieves the best Hit@5 across document sets,
+but QUEST does consistently better for P@1, and also achieves
+better MRR for the Top10 and Strata-1 sets. It turns out, however,
+that the difference between QUEST and LiCQA is not statistically
+significant in these cases.
+Across query and document sets, LiCQA’s ability to consistently
+retrieve at least one correct answer within the top 5 ranks is partic-
+ularly encouraging. In this regard, it is successful for at least 63% of
+the questions, significantly more than the next best system (usually
+QUEST).
+5.2.2
+Evaluation using tMRR, tP@1 and tHit@5. Of the various
+systems whose performance we seek to compare, QUEST and
+LiCQA both produce ranked lists of answers that may contain
+ties. The figures reported above are thus likely to over-estimate
+the accuracy of these two systems. Table 6 shows an example ex-
+plaining this possibility. In the example, the answers returned by
+QUEST contains 20 entities at rank 2, all of which are incorrect,
+but because a correct answer is retrieved at rank 5 (before ties are
+broken), the values of traditional MRR and Hit@5 values are 0.2
+and 1, respectively.
+In this section, therefore, we compare the performance of the
+best systems using tie-aware versions of the above evaluation mea-
+sures, viz., tMRR, tP@1 and tHit@5. The values of these metrics for
+
+A Lightweight Complex Question Answering System
+Conference’17, July 2017, Washington, DC, USA
+System
+Metric
+Top10
+Strata-1
+Strata-2
+Strata-3
+Strata-4
+Strata-5
+ShortestPaths
+0.266
+0.224
+0.248
+0.219
+0.232
+0.222
+BFS
+0.287
+0.256
+0.265
+0.259
+0.219
+0.201
+DrQA
+MRR
+0.355
+0.330
+0.356
+0.369
+0.365
+0.380
+QUEST
+0.467
+0.436
+0.426
+0.460
+0.409
+0.384
+LiCQA
+0.443∗§
+0.407∗§
+0.472∗§†‡
+0.476∗§†‡
+0.422∗§
+0.468∗§†‡
+% improvement
+-5.1%
+-6.6%
+10.8%
+3.4%
+3.1%
+21.8%
+ShortestPaths
+0.190
+0.140
+0.160
+0.160
+0.150
+0.130
+BFS
+0.210
+0.170
+0.180
+0.180
+0.140
+0.130
+DrQA
+P@1
+0.286
+0.267
+0.287
+0.300
+0.287
+0.320
+QUEST
+0.394
+0.360
+0.347
+0.377
+0.333
+0.288
+LiCQA
+0.306∗
+0.260∗
+0.346∗§
+0.340∗§
+0.273∗§
+0.320∗§
+% improvement
+-22.3%
+-27.7%
+-0.2%
+-9.8%
+-18.0%
+11.1%
+ShortestPaths
+0.350
+0.320
+0.340
+0.310
+0.330
+0.290
+BFS
+0.380
+0.360
+0.370
+0.360
+0.310
+0.320
+DrQA
+Hit@5
+0.453
+0.440
+0.473
+0.487
+0.480
+0.480
+QUEST
+0.531
+0.496
+0.510
+0.500
+0.503
+0.459
+LiCQA
+0.646∗§†‡
+0.633∗§†‡
+0.680∗§†‡
+0.673∗§†‡
+0.640∗§†‡
+0.686∗§†‡
+% improvement
+21.6%
+27.6%
+33.3%
+34.6%
+27.2%
+49.4%
+Table 5: Performance comparison of baseline methods with LiCQA for CQ-T questions in terms of MRR, P@1 and Hit@5. A
+superscript ∗, §, † and ‡ respectively indicate that LiCQA is statistically significant (t-test with 𝑝< 0.05) with the ShortestPaths,
+BFS, DrQA and QUEST. The percentage improvement of LiCQA with the best performing baseline (QUEST) is presented in the
+last row of each group.
+Question: which country borders mali and ghana?
+Rank
+Answers
+1
+countries | three countries
+2
+central bank of west african states | . . . | africa ohada
+3
+attack
+4
+accra
+5
+burkina faso | burkina faso burkina
+Table 6: Example ranked list returned by QUEST. Rank 2
+contains 20 answers. Correct answers are in bold face.
+DrQA, QUEST and LiCQA are shown in Table 7. Note that DrQA,
+ShortestPaths and BFS return single answers at each rank; the val-
+ues of the conventional and tie-aware metrics would be the same
+for these methods. We have excluded the relatively weak baselines
+— ShortestPaths and BFS — from the table.
+Once again, the results show that that LiCQA consistently out-
+performs both DrQA and QUEST in terms of tMRR, tP@1 as well as
+tHit@5 on both sets of questions. The table also confirms that tra-
+ditional metrics grossly over-report the accuracy of QUEST. When
+evaluated using tie-aware measures, DrQA’s performance is ob-
+served to be significantly better than QUEST’s. In hindsight, this is
+unsurprising, since QUEST produces lists that often contain many
+different entities at a particular rank. Naturally, the improvement
+of LiCQA over QUEST is statistically significant for all three met-
+rics. More importantly, the tMRR and tHit@5 figures for LiCQA
+are, almost without exception, also statistically significantly higher
+than the corresponding figures for DrQA.
+Figure 2 graphically compares the performance of LiCQA, DrQA
+and QUEST using both conventional and tie-aware metrics on CQ-
+W and CQ-T for the Top10 collection. Each plot contains five bars
+that correspond respectively to each of the classical and tie-aware
+metrics for QUEST (in khaki and olive), DrQA (teal) and LiCQA
+(in skyblue and steelblue). As noted before, DrQA always retrieves
+a single entity at any rank, so both metrics have the same value.
+From the figure, it is clear that the skyblue bars are generally the
+tallest, except for P@1 on CQ-T, where QUEST performed the best.
+For the tie-aware metrics, LiCQA consistently achieves the best
+performance (steelblue bar) in all cases.
+
+Conference’17, July 2017, Washington, DC, USA
+Saha et al.
+CQ-W
+CQ-T
+System
+Metric
+Top10
+Strata-1
+Strata-2
+Strata-3
+Strata-4
+Strata-5
+Top10
+Strata-1
+Strata-2
+Strata-3
+Strata-4
+Strata-5
+DrQA
+0.226
+0.237
+0.257
+0.256
+0.215
+0.248
+0.355
+0.330
+0.356
+0.369
+0.365
+0.380
+QUEST
+tMRR
+0.067
+0.116
+0.066
+0.067
+0.077
+0.055
+0.065
+0.075
+0.066
+0.076
+0.069
+0.057
+LiCQA
+0.412†‡
+0.411†‡
+0.408†‡
+0.398†‡
+0.418†‡
+0.399†‡
+0.433‡
+0.388†‡
+0.443†‡
+0.455†‡
+0.399†‡
+0.434†‡
+% improvement
+82.3%
+73.4%
+58.7%
+55.4%
+94.4%
+60.8%
+21.9%
+17.5%
+24.4%
+23.3%
+9.31%
+14.2%
+DrQA
+0.184
+0.199
+0.221
+0.215
+0.172
+0.200
+0.286
+0.267
+0.287
+0.300
+0.287
+0.320
+QUEST
+tP@1
+0.040
+0.093
+0.043
+0.042
+0.053
+0.034
+0.043
+0.042
+0.036
+0.048
+0.035
+0.031
+LiCQA
+0.282†‡
+0.270‡
+0.292‡
+0.255‡
+0.303†‡
+0.262‡
+0.296‡
+0.242‡
+0.312‡
+0.320‡
+0.250‡
+0.290‡
+% improvement
+53.2%
+35.6%
+32.1%
+18.6%
+76.1%
+31.0%
+3.4%
+-9.3%
+8.7%
+6.6%
+-12.8%
+-9.3%
+DrQA
+0.313
+0.315
+0.322
+0.322
+0.303
+0.340
+0.453
+0.440
+0.473
+0.487
+0.480
+0.480
+QUEST
+tHit@5
+0.155
+0.194
+0.144
+0.144
+0.162
+0.120
+0.154
+0.169
+0.147
+0.165
+0.149
+0.121
+LiCQA
+0.640†‡
+0.655†‡
+0.614†‡
+0.649†‡
+0.620†‡
+0.635†‡
+0.646†‡
+0.620†‡
+0.657†‡
+0.662†‡
+0.616†‡
+0.664†‡
+% improvement
+104.4%
+107.9%
+90.6%
+101.5%
+104.6%
+86.7%
+42.6%
+40.9%
+38.9%
+35.9%
+28.3%
+38.3%
+Table 7: Performance comparison of baseline methods with LiCQA for CQ-W and CQ-T questions in terms of tMRR, tP@1 and
+tHit@5. A † and ‡ indicate that LiCQA is statistically significant (t-test with 𝑝< 0.05) than DrQA and QUEST respectively.
+Percentage improvement of LiCQA with best performing baseline (DrQA) is presented in last row of each group.
+Quest-MRR
+Quest-tMRR
+DrQA-MRR
+LiCQA-MRR
+LiCQA-tMRR
+0.0
+0.1
+0.2
+0.3
+0.4
+0.355
+0.067
+0.226
+0.432
+0.412
+(a) CQ-W - MRR, tMRR
+Quest-P@1
+Quest-tP@1
+DrQA-P@1
+LiCQA-P@1
+LiCQA-tP@1
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.268
+0.040
+0.184
+0.293
+0.282
+(b) CQ-W - P@1, tP@1
+Quest-Hit@5 Quest-tHit@5 DrQA-Hit@5 LiCQA-Hit@5LiCQA-tHit@5
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.376
+0.155
+0.313
+0.646
+0.640
+(c) CQ-W - Hit@5, tHit@5
+Quest-MRR
+Quest-tMRR
+DrQA-MRR
+LiCQA-MRR
+LiCQA-tMRR
+0.0
+0.1
+0.2
+0.3
+0.4
+0.355
+0.067
+0.226
+0.432
+0.412
+(d) CQ-T - MRR, tMRR
+Quest-P@1
+Quest-tP@1
+DrQA-P@1
+LiCQA-P@1
+LiCQA-tP@1
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.394
+0.043
+0.286
+0.306
+0.296
+(e) CQ-T - P@1, tP@1
+Quest-Hit@5 Quest-tHit@5 DrQA-Hit@5 LiCQA-Hit@5LiCQA-tHit@5
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.531
+0.154
+0.453
+0.646
+0.646
+(f) CQ-T - Hit@5, tHit@5
+Figure 2: Performance analysis of LiCQA, DrQA and QUEST on CQ-W and CQ-T question set on the Top10 dataset. First and
+second barplots (shown in ‘khaki’ and ‘olive’ color) denote QUEST result with normal and tie-aware metrics respectively.
+Similarly fourth and fifth barplots (shown in ‘skyblue’ and ‘steelblue’ color) denote LiCQA result with normal and tie-aware
+metrics respectively. Middle bar with teal color presents result of DrQA (as it retrieves a single entity per rank position).
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(a) Diff. in MRR
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(b) Diff. in P@1
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(c) Diff. in Hit@5
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(d) Diff. in tMRR
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(e) Diff. in tP@1
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(f) Diff. in tHit@5
+Figure 3: A per-query performance analysis between LiCQA and QUEST on CQ-W question set for Top10 dataset. Bars above
+x-axis correspond to questions for which LiCQA has achieved better performance than QUEST.
+5.3
+Qualitative comparison
+Next, we take a closer look at the relative performance of QUEST
+and LiCQA. Figures 3 and 4 show the per-query performance dif-
+ference between the two systems on the Top10 dataset. In these
+figures, a bar above the x-axis indicates that LiCQA performed
+better than QUEST for the corresponding question. Figures 3a–3c
+and Figures 4a-4c) show that LiCQA performs better for a majority
+of the questions on both sets. Note that, for a single question, the
+values of P@1 and Hit@5 are binary (0 or 1), and the difference in
+these values can be 1, 0 or −1.
+In contrast, the tie-aware measures have non-binary values. The
+per-query difference with respect to these metrics are shown in
+Figure 3d-3f and Figure 4d-4f, for CQ-W and CQ-T, respectively.
+Once again, it is clear from these figures that LiCQA outperforms
+QUEST for most questions.
+
+A Lightweight Complex Question Answering System
+Conference’17, July 2017, Washington, DC, USA
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(a) Diff. in MRR
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(b) Diff. in P@1
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(c) Diff. in Hit@5
+ 
+ 
+ 
+−0.4
+−0.2
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+(d) Diff. in tMRR
+ 
+ 
+ 
+−0.5
+0.0
+0.5
+1.0
+(e) Diff. in tP@1
+ 
+ 
+ 
+−1.0
+−0.5
+0.0
+0.5
+1.0
+(f) Diff. in tHit@5
+Figure 4: A per-query performance analysis between LiCQA and QUEST on CQ-T question set for Top10 dataset. Bars above
+x-axis correspond to questions for which LiCQA has achieved better performance than QUEST.
+Question Set
+Question
+Answer
+LiCQA rank
+QUEST rank
+DrQA rank
+CQ-W
+What
+movie
+starred
+Bruce
+Willis and Haley Joel Osment?
+The Sixth Sense
+1
+>5
+3
+Who founded Apple and Pixar?
+Steve Jobs
+1
+2
+5
+CQ-T
+Which 2018 studio album is per-
+formed by Playboi Carti and fea-
+tures Nicki Minaj?
+Die Lit
+1
+>5
+2
+Which American professional
+golfer is married to Taylor
+Dowd Simpson and played for
+Wake Forest University?
+Simpson
+1
+>5
+>5
+Table 8: Some example questions for which LiCQA has been
+able to retrieve the correct answer at rank 1 where as QUEST
+and DrQA have failed to retrieve the answers in the top rank.
+Some example questions for which LiCQA was able to retrieve
+the correct answer at top rank, but QUEST and DrQA failed, are
+presented in Table 8.
+5.4
+Latency analysis
+Finally, we compare LiCQA with DrQA and QUEST in terms of the
+average time taken to produce the list of answers for a given set of
+questions. Each system is made to run in a loop for five iterations,
+and computes the answers for all questions in CQ-W and CQ-T
+in every iteration. The average of the time taken over these five
+iterations is reported in Table 9.
+All our experiments were conducted on an Intel(R) Core(TM) i9-
+7900X CPU@3.30GHz and 24 GB Nvidia Titan RTX GPU machine
+with 132 GB RAM. Among the methods, QUEST takes the highest
+time in producing the results, spending a significant time in creating
+the quasi knowledge graph with the retrieved documents. The
+latency of DrQA is also close to QUEST. In contrast, the execution
+time of LiCQA is significantly less than both the baselines. More
+specifically, we observe an 8× speedup for LiCQA compared to
+the baselines in the total running time taken to process the two
+question sets for all the document sets (Top10 and Strata1–5).
+6
+Conclusion and Future Work
+In this paper, we present LiCQA, a low-resource, unsupervised,
+complex question answering system that uses various forms of
+corpus evidence. To evaluate LiCQA, experiments were conducted
+on diverse question sets taken from public forums like WikiAnswers
+and Google Trends. LiCQA was compared with state-of-the-art
+systems DrQA and QUEST using MRR, P@1, Hit@5, and their tie-
+aware variants. LiCQA achieved significant improvements over all
+System
+Query set
+Top10
+Strata-1
+Strata-2
+Strata-3
+Strata-4
+Strata-5
+LiCQA
+CQ-W
+13
+15
+17
+14
+16.5
+14.3
+QUEST
+144
+148
+151
+156
+149
+162
+DrQA
+120
+131
+119
+124.6
+128
+129
+speedup
+9.23×
+8.73×
+7×
+8.9×
+7.75×
+9.02×
+LiCQA
+CQ-T
+14.5
+16
+18
+15.8
+18
+17.6
+QUEST
+155
+159
+162
+178
+189.5
+195.4
+DrQA
+130
+135
+138.6
+132.8
+142
+137
+speedup
+8.96×
+8.43×
+7.7×
+8.40×
+7.88×
+7.78×
+Table 9: Per query latency (in second) analysis of different
+QA models. Least latency highlighted in bold. Speedup row
+indicates the reduction in execution time than the baseline
+with the minimum latency (DrQA).
+baselines in a majority of cases, while simultaneously reducing
+computational cost (as measured by the average time taken to
+answer a question).
+Recently developed neural models for representing complex con-
+cepts via low dimensional vectors [39, 51] have been successfully
+applied to different text processing and information extraction
+tasks [20]. In future, we plan to explore such embedding models to
+further improve our answer extraction module.
+References
+[1] Abdalghani Abujabal, Mohamed Yahya, Mirek Riedewald, and Gerhard Weikum.
+2017. Automated Template Generation for Question Answering over Knowledge
+Graphs. In Proc. of 26th WWW. 1191–1200.
+[2] David Ahn, Valentin Jijkoun, Gilad Mishne, Karin Müller, Maarten de Rijke, and
+Stefan Schlobach. 2004. Using Wikipedia at the TREC QA Track. In Proc. of
+Thirteenth TREC (NIST Special Publication), Vol. 500-261.
+[3] Alan Akbik, Tanja Bergmann, and Roland Vollgraf. 2019. Pooled Contextualized
+Embeddings for Named Entity Recognition. In NAACL 2019. 724 – 728.
+[4] Hannah Bast and Elmar Haussmann. 2015. More Accurate Question Answering
+on Freebase. In Proc. of 24th ACM CIKM. 1431–1440.
+[5] Jonathan Berant, Andrew Chou, Roy Frostig, and Percy Liang. 2013. Semantic
+Parsing on Freebase from Question-Answer Pairs. In Proc. of 2013 EMNLP. 1533–
+1544.
+[6] Nikita Bhutani, Xinyi Zheng, Kun Qian, Yunyao Li, and H. Jagadish. 2020. Answer-
+ing Complex Questions by Combining Information from Curated and Extracted
+Knowledge Bases. In Proc. of First Workshop on Natural Language Interfaces. 1–10.
+[7] Phil Blunsom, Krystle Kocik, and James R. Curran. 2006. Question Classification
+with Log-Linear Models. In Proceedings of 29th SIGIR. 615–616.
+[8] Samuel R. Bowman, Gabor Angeli, Christopher Potts, and Christopher D. Man-
+ning. 2015. A large annotated corpus for learning natural language inference. In
+Proc. 2015 EMNLP. 632–642.
+[9] Davide Buscaldi and Paolo Rosso. 2006. Mining Knowledge from Wikipedia for
+the Question Answering task. In Proc. of Fifth LREC. 727–730.
+[10] Qingqing Cai and Alexander Yates. 2013. Large-scale Semantic Parsing via
+Schema Matching and Lexicon Extension. In Proc. of 51st ACL. 423–433.
+
+Conference’17, July 2017, Washington, DC, USA
+Saha et al.
+[11] Daniel Cer, Yinfei Yang, Sheng-yi Kong, Nan Hua, Nicole Limtiaco, Rhomni
+St. John, Noah Constant, Mario Guajardo-Cespedes, Steve Yuan, Chris Tar, Brian
+Strope, and Ray Kurzweil. 2018. Universal Sentence Encoder for English. In Proc.
+2018 EMNLP: System Demonstrations. 169–174.
+[12] Danqi Chen, Adam Fisch, Jason Weston, and Antoine Bordes. 2017. Reading
+Wikipedia to Answer Open-Domain Questions. In Proceedings of 55th ACL 2017.
+1870–1879.
+[13] Philipp Christmann, Rishiraj Saha Roy, Abdalghani Abujabal, Jyotsna Singh,
+and Gerhard Weikum. 2019. Look before You Hop: Conversational Question
+Answering over Knowledge Graphs Using Judicious Context Expansion. In Proc
+of 28th ACM CIKM (CIKM ’19). 729–738.
+[14] Christopher Clark and Matt Gardner. 2018. Simple and Effective Multi-Paragraph
+Reading Comprehension. In Proc. of 56th ACL. 845–855.
+[15] Alexis Conneau, Douwe Kiela, Holger Schwenk, Loïc Barrault, and Antoine
+Bordes. 2017. Supervised Learning of Universal Sentence Representations from
+Natural Language Inference Data. In Proc. of 2017 EMNLP. 670–680.
+[16] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT:
+Pre-training of Deep Bidirectional Transformers for Language Understanding. In
+Proc. of NAACL. 4171–4186.
+[17] Li Dong, Furu Wei, Ming Zhou, and Ke Xu. 2015. Question Answering over
+Freebase with Multi-Column Convolutional Neural Networks. In Proc. of 53rd
+ACL. 260–269.
+[18] Anthony Fader, Luke Zettlemoyer, and Oren Etzioni. 2014. Open question an-
+swering over curated and extracted knowledge bases. In The 20th ACM SIGKDD.
+1156–1165.
+[19] Anthony Fader, Luke S. Zettlemoyer, and Oren Etzioni. 2013. Paraphrase-Driven
+Learning for Open Question Answering. In Proc. of 51st ACL. 1608–1618.
+[20] Irina Gruzdo, Iryna Kyrychenko, Glib Tereshchenko, and Olga Cherednichenko.
+2020. Applıcatıon of Paragraphs Vectors Model for Semantıc Text Analysıs. In
+Proc. of 4th COLINS (CEUR Workshop Proceedings), Vol. 2604. 283–293.
+[21] Tushar Khot, Ashish Sabharwal, and Peter Clark. 2017. Answering Complex
+Questions Using Open Information Extraction. In Proc. of 55th ACL 2017. 311–316.
+[22] Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur
+Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Matthew Kelcey, Jacob
+Devlin, Kenton Lee, Kristina N. Toutanova, Llion Jones, Ming-Wei Chang, Andrew
+Dai, Jakob Uszkoreit, Quoc Le, and Slav Petrov. 2019. Natural Questions: a
+Benchmark for Question Answering Research. TACL (2019).
+[23] Patrick Lewis, Ludovic Denoyer, and Sebastian Riedel. 2019. Unsupervised Ques-
+tion Answering by Cloze Translation. In Proc. of 57th ACL. 4896–4910.
+[24] Fangtao Li, Xian Zhang, Jinhui Yuan, and Xiaoyan Zhu. 2008. Classifying What-
+Type Questions by Head Noun Tagging. In Proc. of 22nd Coling. 481–488.
+[25] Xin Li and Dan Roth. 2002. Learning Question Classifiers. In Proc. of 19th COLING
+(COLING ’02). 1–7.
+[26] Jimmy Lin and Boris Katz. 2006. Building a Reusable Test Collection for Question
+Answering. J. Am. Soc. Inf. Sci. Technol. 57, 7 (May 2006), 851–861.
+[27] Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer
+Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov. 2019. RoBERTa: A
+Robustly Optimized BERT Pretraining Approach. CoRR abs/1907.11692 (2019).
+arXiv:1907.11692
+[28] Xiaolu Lu, Soumajit Pramanik, Rishiraj Saha Roy, Abdalghani Abujabal, Yafang
+Wang, and Gerhard Weikum. 2019. Answering Complex Questions by Joining
+Multi-Document Evidence with Quasi Knowledge Graphs. In Proc. of 42nd SIGIR
+(SIGIR’19). 105–114.
+[29] Frank McSherry and Marc Najork. 2008. Computing Information Retrieval
+Performance Measures Efficiently in the Presence of Tied Scores. In Proc. of 30th
+ECIR (ECIR’08). 414–421.
+[30] Alexander Miller, Adam Fisch, Jesse Dodge, Amir-Hossein Karimi, Antoine Bor-
+des, and Jason Weston. 2016. Key-Value Memory Networks for Directly Reading
+Documents. In Proc. 2016 EMNLP. 1400–1409.
+[31] Alaa Mohasseb, Mohamed Bader-El-Den, and Mihaela Cocea. 2018. Question
+categorization and classification using grammar based approach. Information
+Processing & Management 54, 6 (2018), 1228–1243.
+[32] Dan Moldovan, Sanda Harabagiu, Marius Pasca, Rada Mihalcea, Richard
+Goodrum, Roxana Girju, and Vasile Rus. 1999. LASSO: A Tool for Surfing the
+Answer Net. In Proc. of Eighth TREC 1999, Vol. 500-246.
+[33] Dan Moldovan, Marius Pasca, Sanda Harabagiu, and Mihai Surdeanu. 2002. Per-
+formance Issues and Error Analysis in an Open-Domain Question Answering
+System. In Proceedings of 40th ACL. 33–40.
+[34] Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and Percy Liang. 2016.
+SQuAD: 100,000+ Questions for Machine Comprehension of Text. In Proc. of 2016
+EMNLP. 2383–2392.
+[35] Nils Reimers and Iryna Gurevych. 2019. Sentence-BERT: Sentence Embeddings
+using Siamese BERT-Networks. In Proc. of 2019 EMNLP. 3982–3992.
+[36] Sourav Saha, Dwaipayan Roy, and Mandar Mitra. 2022. On modifying evaluation
+measures to deal with ties in ranked lists. In Proceedings of the 22nd ACM/IEEE
+Joint Conference on Digital Libraries (JCDL ’22). Association for Computing
+Machinery, New York, NY, USA, Article 12, 4 pages.
+https://doi.org/10.1145/
+3529372.3533291
+[37] Denis Savenkov and Eugene Agichtein. 2016. When a Knowledge Base Is Not
+Enough: Question Answering over Knowledge Bases with External Text Data. In
+Proc. of 39thSIGIR. 235–244.
+[38] Uma Sawant, Saurabh Garg, Soumen Chakrabarti, and Ganesh Ramakrishnan.
+2019. Neural Architecture for Question Answering Using a Knowledge Graph and
+Web Corpus. Inf. Retr. 22, 3–4 (aug 2019), 324–349. https://doi.org/10.1007/s10791-
+018-9348-8
+[39] Walid Shalaby, Wlodek Zadrozny, and Hongxia Jin. 2019. Beyond word embed-
+dings: learning entity and concept representations from large scale knowledge
+bases. Inf. Retr. J. 22, 6 (2019), 525–542.
+[40] João Silva, Luísa Coheur, Ana Cristina Mendes, and Andreas Wichert. 2010.
+From symbolic to sub-symbolic information in question classification. Artificial
+Intelligence Review 35, 2 (Nov. 2010), 137–154.
+[41] Amit Singhal, Steven P. Abney, Michiel Bacchiani, Michael Collins, Donald Hindle,
+and Fernando C. N. Pereira. 1999. AT&T at TREC-8. In Proc. of Eighth TREC 1999,
+Vol. 500-246.
+[42] Rohini K. Srihari and Wei Li. 2000. A Question Answering System Supported by
+Information Extraction. In 6th ANLP, Seattle, Washington, USA. 166–172.
+[43] F. M. Suchanek, G. Weikum, M. Ramanath, G. Kasneci, and M. Sozio. 2009. STAR:
+Steiner-Tree Approximation in Relationship Graphs. In 2013 IEEE 29th ICDE.
+868–879.
+[44] Alon Talmor and Jonathan Berant. 2018. The Web as a Knowledge-Base for
+Answering Complex Questions. In Proc. of NAACL-HLT. 641–651.
+[45] Chuanqi Tan, Furu Wei, Qingyu Zhou, Nan Yang, Bowen Du, Weifeng Lv, and
+Ming Zhou. 2018. Context-Aware Answer Sentence Selection With Hierarchical
+Gated Recurrent Neural Networks. IEEE ACM Trans. Audio Speech Lang. Process.
+26, 3 (2018), 540–549.
+[46] Harish Tayyar Madabushi and Mark Lee. 2016.
+High Accuracy Rule-based
+Question Classification using Question Syntax and Semantics. In Proc. of the 26th
+COLING 2016. 1220–1230.
+[47] Ricardo Usbeck, Axel-Cyrille Ngonga Ngomo, Bastian Haarmann, Anastasia
+Krithara, Michael Röder, and Giulio Napolitano. 2017. 7th Open Challenge on
+Question Answering over Linked Data (QALD-7). 59–69.
+[48] Ellen M. Voorhees. 1999. The TREC-8 Question Answering Track Report. In In
+Proc. of TREC-8. 77–82.
+[49] Nina Wacholder, Diane Kelly, Paul B. Kantor, Robert Rittman, Ying Sun, Bing
+Bai, Sharon G. Small, Boris Yamrom, and Tomek Strzalkowski. 2007. A model for
+quantitative evaluation of an end-to-end question-answering system. J. Assoc.
+Inf. Sci. Technol. 58, 8 (2007), 1082–1099. https://doi.org/10.1002/asi.20560
+[50] Ralph Weischedel, Martha Palmer, Mitchell Marcus, Eduard Hovy, Sameer Prad-
+han, Lance Ramshaw, Nianwen Xue, Ann Taylor, Jeff Kaufman, Michelle Fran-
+chini, Mohammed El-Bachouti, Robert Belvin, and Ann Houston. 2013. Ontonotes
+release 5.0. LDC2011T03, Philadelphia, Penn.: Linguistic Data Consortium (2013).
+[51] Ikuya Yamada, Akari Asai, Jin Sakuma, Hiroyuki Shindo, Hideaki Takeda,
+Yoshiyasu Takefuji, and Yuji Matsumoto. 2020. Wikipedia2Vec: An Efficient
+Toolkit for Learning and Visualizing the Embeddings of Words and Entities from
+Wikipedia. arXiv preprint 1812.06280v3 (2020).
+[52] Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W. Cohen, Ruslan
+Salakhutdinov, and Christopher D. Manning. 2018. HotpotQA: A Dataset for
+Diverse, Explainable Multi-hop Question Answering. In EMNLP. 2369–2380.
+[53] Chen Zhao, Chenyan Xiong, Xin Qian, and Jordan Boyd-Graber. 2020. Complex
+Factoid Question Answering with a Free-Text Knowledge Graph. In Proc. of Web
+Conference 2020 (WWW ’20). 1205–1216.

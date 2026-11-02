@@ -1,0 +1,2364 @@
+1
+Extracting Training Dialogue Data from Large
+Language Model based Task Bots
+Shuo Zhang, Junzhou Zhao, Junji Hou, Pinghui Wang, Chenxu Wang, Jing Tao
+Abstract—Large Language Models (LLMs) have been widely
+adopted to enhance Task-Oriented Dialogue Systems (TODS) by
+modeling complex language patterns and delivering contextually
+appropriate responses. However, this integration introduces
+significant privacy risks, as LLMs, functioning as soft knowledge
+bases that compress extensive training data into rich knowledge
+representations, can inadvertently memorize training dialogue
+data containing not only identifiable information such as phone
+numbers but also entire dialogue-level events like complete travel
+schedules. Despite the critical nature of this privacy concern,
+how LLM memorization is inherited in developing task bots
+remains unexplored. In this work, we address this gap through
+a systematic quantitative study that involves evaluating existing
+training data extraction attacks, analyzing key characteristics
+of task-oriented dialogue modeling that render existing methods
+ineffective, and proposing novel attack techniques tailored for
+LLM-based TODS that enhance both response sampling and
+membership inference. Experimental results demonstrate the
+effectiveness of our proposed data extraction attack. Our method
+can extract thousands of training labels of dialogue states with
+best-case precision exceeding 70%. Furthermore, we provide an
+in-depth analysis of training data memorization in LLM-based
+TODS by identifying and quantifying key influencing factors and
+discussing targeted mitigation strategies.
+Index Terms—Large language model, task-oriented dialogue
+system, training data extraction attack, privacy leakage
+I. INTRODUCTION
+T
+ASK-Oriented Dialogue Systems (TODS), or task bots,
+play a vital role in assisting users with specific tasks such
+as travel bookings and medical consultations [1]. Trained on
+massive datasets that encompass a broad spectrum of human
+knowledge, Large Language Models (LLMs) have substan-
+tially enhanced the performance of TODS by enabling more
+accurate understanding of user intentions and generate relevant
+responses [2]–[7]. Despite the substantial advancements, the
+integration of LLMs introduces significant privacy risks as
+LLMs possess the capability to memorize and inadvertently leak
+sensitive training data [8]–[10]. Training data memorization
+is commonly attributed to the necessity of retaining specific
+information for effective response generalization, wherein
+models rely on copying and interpolating from individual
+training examples [11].
+While training data memorization in LLMs has been studied
+previously, there remains a research gap in understanding how
+such memorization is inherited when LLMs are finetuned for
+S. Zhang, J. Zhao, J. Hou, P. Wang, C. Wang and J. Tao are with the
+MOE Key Laboratory for Intelligent Networks and Network Security, Xi’an
+Jiaotong University, P.O. Box 1088, No. 28, Xianning West Road, Xi’an,
+Shaanxi 710049, China. E-mail: {zs412082986, 15955192}@stu.xjtu.edu.cn,
+{junzhou.zhao, phwang, cxwang, jtao}@mail.xjtu.edu.cn (Corresponding
+author: Junzhou Zhao.)
+Domain { Slot = Value }
+ Find me a nice Spanish restaurant. There will be 3 of us.
+ How about Casa Mono? It has great reviews.
+ Sounds perfect! Make a reservation for us at 7 p.m.
+ Certainly. May I have your phone number?
+ Sure, it's 123456.
+Restaurant {food = Spanish, people = 3, 
+name = Casa Mono, time = 19:00,  phone = 123456}
+Request
+Inform
+Greet
+Offer Booking
+ Generation 
+ All done, your reservation number is 333666. 
+ Policy 
+ Understanding 
+ Casa Mono, Spanish,  One Star in Michelin 2024 ... 
+ Database Retrieval 
+Action
+Response
+Dialogue
+State
+Database
+Entity
+Dialogue History
+(a) Case example of the interactions between a user and a task bot.
+Prefix:
+Target Model
+(Task Bot)
+name = Casa Mono, time = 19:00, phone = 123456}
+Adversary
+Where did
+the Smith
+famliy go?
+Suffix:
+Belief State: Restaurant {food = Spanish, people = 3,
+(b) Dialogue state extraction attack for LLM-based task bots.
+Fig. 1. (a) LLM-based task bot utilizes a single neural auto-regressive model to
+parameterize the sequential dialogue pipeline. (b) Our dialogue state extraction
+attack extracts the training labels of Dialogue States (S) without access to
+the corresponding conditioning text of dialogue histories.
+TODS. This research gap is particularly concerning given the
+pervasive deployment of TODS in real-world applications
+worldwide. These systems inherently handle sensitive and
+personal data, including not only identifiable information such
+as phone numbers and personal addresses but also dialogue-
+level events that encapsulate detailed user personal schedules
+and preferences such as travel plans and hobbies. Let us
+consider the following example.
+Example 1 (Restaurant Booking Assistant Bot). A restaurant
+booking assistant bot helps users find restaurants and make
+reservations. As illustrated in Fig. 1, a dialogue comprises
+multiple turns of user-system utterances. At each turn, the bot
+tracks the dialogue state based on the dialogue history. The
+dialogue state represents a collection of user preferences and
+constraints such as food type and booking time, extracted
+from prior user utterances. The bot then queries the database
+arXiv:2603.01550v1 [cs.CL] 2 Mar 2026
+
+2
+Rank w.
+  Prefixes
+Suffix Decoding 
+Membership Inference
+Belief State: Restaurant (price = 
+cheap, name = pizza hut) Train
+(departure = Cambridge, destination 
+= London Kings Cross, people = 2)
+Belief
+State: 
+Restaurant
+Train
+  Restaurant  
+Pruned
+Vocabulary
+name
+price
+price ... 
+
+Limit Word Choice
+Pruned
+Vocabulary
+ChatGPT
+Pretend to be a human user
+to explore the service scope
+of a dialogue model ...
+Probed Schema
+Conditional
+Debiasing 
+How strongly does the bot
+link prefix and suffix?
+How familiar is the bot
+with the suffix?
+(a) Dialogue State Extraction Attack and Evaluation Pipeline
+(c) Debiased Membership Inference
+Sorted Suffixes
+Suffixes
+Choose   Top 100
+Evaluation
+Attack
+Deduplication
+Check Memorization
+Debaised
+Conditional Perplexity
+Schema-Guided
+Sampling
+Schema-Guided
+Sampling
+Fig. 2. (a) Workflow of the dialogue state extraction attack: We begin with Suffix Decoding, generating many samples from the LLM-based task bot by
+seeding the model with either empty inputs (for untargeted attack) or partial dialogue state prefixes (for targeted attack). Membership Inference metrics are
+then applied to rank each generation, with higher ranks indicating a greater likelihood of originating from the training data. For evaluation, we deduplicate
+generations, keep the top 100, and mark each generation as either memorized or not memorized by comparing them with the dialogue states from the training
+dataset. (b) Schema-Guided Sampling §IV-B2 generates more valid results by constraining word choices for sampling domains and slots using the dialogue
+schema (i.e., service scope), which is automatically explored by simulating user interactions with ChatGPT. (c) Debiased Conditional Perplexity §IV-C
+reduces bias toward favoring common generic dialogue state components.
+according to the dialogue state, predicts the appropriate
+system actions, e.g., offering a reservation, and generates
+an appropriate response. In practice, the dialogue state is a
+part of the training data. Consequently, an adversary with
+access to the task bot API may maliciously induce the bot to
+output its dialogue state, e.g., “Restaurant(name=Casa
+Mono,food=Spanish,time=19:00,phone=123456,
+people=3)”, thus leaking a user’s private information.
+In this work, we investigate how LLM-based task bots mem-
+orize training dialogue data—specifically, dialogue states that
+maintain constraints from the dialogue history—by performing
+training data extraction attacks [8], [10], [11]. These attacks
+aim to recover training labels from a fine-tuned language model
+via score-based black-box query access, and typically follow
+a two-stage pipeline. As illustrated in Fig. 2, the first stage
+prompts the model to generate numerous candidate dialogue
+states through various sampling strategies in a suffix decoding
+step. The second stage applies membership inference metrics
+to rank these candidates, flagging those most likely to have
+originated from the training dataset.
+Extracting training dialogue states from LLM-based task bots
+is inherently challenging due to the structural characteristics of
+TODS. Unlike open-ended dialogue models, a TODS is never
+trained to reproduce user input utterances—thus, raw inputs are
+not memorized and cannot be extracted from the model. Instead,
+the model is optimized to predict structured dialogue states
+conditioned on preceding context, making extraction possible
+only through the output space. Furthermore, a TODS must
+maintain consistency and coherence across multiple dialogue
+turns [1]. When the preceding context is partially observed
+or truncated, recovering the correct subsequent state becomes
+extremely challenging. Finally, even when the entire context is
+known, the one-to-many nature of dialogue responses (i.e.,
+multiple correct replies can exist for the same preceding
+context) further complicates data extraction, as an extracted
+response may not necessarily reflect the original training data.
+To address these challenges, we make two primary contri-
+butions. First, we observe that incomplete preceding context
+typically causes existing suffix decoding methods to generate
+incoherent or nonsensical dialogue states. To mitigate this,
+we propose a schema-guided sampling method that leverages
+the dialogue schema (i.e., service scope) to constrain word
+choices, ensuring diversity and validity in the generated outputs.
+Second, we find that the one-to-many nature of dialogue leads
+to model bias in existing membership inference metrics, which
+tend to favor information-poor, generic dialogue fragments
+(e.g., greetings). To overcome this, we introduce a debiased
+conditional perplexity metric, which evaluates input–output
+entailment while mitigating the model’s overfamiliarity with
+generic fragments.
+Experimental results demonstrate that our method effectively
+extracts hundreds to thousands of training dialogue states. We
+consider two extraction settings, i.e., targeted extraction and
+untargeted extraction. Targeted extraction prompts the task bot
+with partial dialogue state, while untargeted extraction does not.
+In the untargeted extraction setting, we find that values in the
+dialogue states (e.g., name) exhibit a relatively higher privacy
+leaking risk, with a maximum extraction precision reaching
+67%, while full dialogue states present less concern, with a
+maximum precision of 26%. In the targeted extraction setting,
+our method shows a significant increase in precision, achieving
+a best-case scenario of 100% precision for individual values
+and over 70% for event-level states, indicating a substantially
+greater privacy leaking concern. Furthermore, we identify
+critical factors affecting task bot memorization, i.e., increased
+substring repetition inherent in turn-level dialogue training
+data, which enhances memorization, and the one-to-many
+feature of dialogues, where multiple responses can correspond
+
+3
+to a single prompt, which can reduce memorization. Based on
+our findings, we further discuss practical mitigating strategies
+including dialogue-level modeling to address substring repe-
+tition and the value copy mechanism to mitigate contextual
+correlations.
+Our contributions are summarized as follows:
+• To the best of our knowledge, this is the first work to
+investigate the training data memorization issue in LLM-
+based task bots, where privacy leakage emerges at the level
+of structured belief states and cross-slot task semantics
+rather than isolated utterance fragments.
+• We present the first systematic investigation including
+(i) framing the TODS data extraction threat model, (ii)
+systematically benchmarking existing techniques in this
+new context, (iii) identifying domain-specific biases and
+challenges, and (iv) proposing two targeted methodolog-
+ical adaptations tailored for this task: a schema-guided
+sampling strategy that efficiently generates valid dialogue
+state candidates by leveraging task schema constraints,
+and a debiased conditional perplexity metric that corrects
+for schema frequency bias in existing perplexity-based
+membership inference approaches.
+• Extensive experiments across various configurations
+demonstrate the severe and practical implications of our
+attack techniques, highlighting substantial privacy leaking
+risks. We identify factors influencing memorization in
+LLM-based task bots and discuss targeted mitigation
+strategies to guide future implementations.
+II. PRELIMINARIES AND RELATED WORK
+In this section, we first elaborate some background on LLM-
+based task bots and the finetuning process, then we introduce
+existing training data extraction attacks.
+A. Large Language Model based Task Bots
+Task-oriented dialog systems, or task bots, are designed to
+help users complete specific tasks through multi-turn dialogues
+such as making reservations and medical consultations [1].
+Recent advances in LLMs have revolutionized task bots, making
+pretrained LLMs the backbones of implementations [2]–[6].
+These approaches involve finetuning the pretrained causal
+transformer model such as GPT series with task-oriented
+dialogue data. SimpleTOD [5] represents a foundational method
+by recasting task-oriented dialogue as a conditional language
+modeling task. Specifically, it finetunes the pre-trained GPT-
+2 model to generate intermediate labels, such as dialogue
+states and dialogue actions, as well as the final response,
+based on the dialogue context and results retrieved from
+the database. SOLOIST [3] improves the above approach by
+omitting dialogue action prediction to reduce error propagation
+and incorporating a contrastive objective to enhance response
+generation. Further improvements include AuGPT [2], which
+adds auxiliary tasks such as user intent and system action
+classifications, and UBAR [4], which extends to session-level
+examples by including dialogue states and actions in the history.
+While task bots based on encoder-decoder LLMs like T5 [6]
+also present promising results, this work remains focused on
+decoder-only LLMs as a foundational step in this line of
+research. In practice, task bots are often updated continually
+or periodically to repeatedly absorb recent, dialog data into
+their parameters.
+B. Causal Language Modeling for Task-Oriented Dialogues
+As shown in Fig. 1, at a high level, LLM-based
+task
+bots
+are
+essentially
+trained
+to
+model
+the
+joint
+probability distribution p(St, Dt, At, Rt|Ht). Here Ht
+≜
+{U0, R0, . . . , Ut−1, Rt−1, Ut} denotes the dialogue history,
+which comprises both user utterances {Ui}0≤i≤t and system
+responses {Rj}0≤j<t. Given Ht, the model first predicts the
+dialogue state St that tracks a collection of user constraints
+mentioned during previous chatting.
+Consider this textual dialogue state example: “Belief
+state: Restaurant {food = Italian, area =
+center} Hotel {phone = 12345}”.
+Each
+dialogue
+state consists of one or more domain–slot–value triplets, such
+as (Restaurant, food, Italian) or (Hotel, phone, 12345). Here,
+the domain specifies the topic (e.g., restaurant), each slot
+denotes an attribute (e.g., food), and each value represents
+the user’s preference or provided information. The dialogue
+state is dynamically updated as the conversation progresses
+whenever the user adds, modifies, or removes a constraint.
+The dialogue state is then used to retrieve relevant data
+Dt from the domain database to satisfy user constraints. The
+model then jointly utilizes the dialogue history, dialogue state,
+and the retrieved data to predict an action At, which consists
+of the intent and the associated slot-values. For example, the
+action “inform(domain=hotel,price=expensive)”
+has the intent inform, meaning that the user is informing the
+system to constrain the search to expensive hotels. Finally, the
+system generates the system response Rt based on dialogue
+history, dialogue state, retrieved data, and action. Therefore,
+the joint probability can be factorized as
+p(St, Dt, At, Rt|Ht) =
+p(St|Ht)
+|
+{z
+}
+state prediction
+p(At|Ht, St, Dt)
+|
+{z
+}
+action prediction
+p(Rt|Ht, St, Dt, At)
+|
+{z
+}
+response generation
+where p(Dt|Ht, St) is omitted as the retrieved data Dt is
+obtained using deterministic constraint matching and hence
+p(Dt|Ht, St) = 1. This decomposition divides the language
+modeling task into three sub-tasks, i.e., state prediction, action
+prediction, and response generation.
+During finetuning, the LLM is optimized against all three
+tasks in an end-to-end manner. That is, given a training se-
+quence xt
+train = {(Ht, St, Dt, At, Rt)}, the LLM parameterized
+by θ is trained to minimize the negative log-likelihood loss
+Lθ(xt
+train) = −log pθ(St|Ht) −log pθ(At|Ht, St, Dt)
+−log pθ(Rt|Ht, St, Dt, At).
+C. Training Data Extraction Attacks
+Large language models can memorize training data owing
+to the huge number of parameters. Carlini et al. [8] pioneered
+the exploration of model knowledge extraction and defined
+
+4
+κ-eidetic memorization, demonstrating the feasibility of re-
+covering individual training examples from GPT-2 through
+targeted queries. In Carlini et al. [8], internet contexts are
+utilized as prefixes to elicit suffixes potentially indicative of
+the training data. These examples are then checked if they are
+from the training dataset using membership inference attacks.
+Subsequent studies [9], [12] found that data repetition, context
+length, and model size significantly influences this phenomenon
+of memorization. Yu et al. [10] enhanced the efficacy of data
+extraction from pretrained language models by improving text
+decoding and membership inference strategies. In the black-
+box setting, aligned production LLMs such as ChatGPT, a
+novel attack is introduced in [13] that disrupts chatbot-style
+outputs by forcing the language model to endlessly repeat the
+word “poem”, leading to a divergence after several hundreds
+of iterations. Carlini et al. [11] applied similar techniques
+to diffusion models, while Qi et al. [14] devised methods
+for extracting database information from retrieval-augmented
+generation systems through prompt injection. Zeng et al. [15]
+further investigates whether fine-tuned models memorize input
+sequences and can be prompted to reproduce them.
+However, all of the above research targets either pre-training
+memorization or open-ended generation. These models are
+optimized to freely reproduce input or output text, which makes
+verbatim recovery feasible. In contrast, task-oriented dialogue
+systems (TODS) are trained with a conditional language
+modeling objective to predict structured dialogue states rather
+than raw utterances. In TODS, even if a context is frequently
+seen during training, it is used only as conditioning input and
+is not optimized for generation—hence, the input sequences
+are not memorized. The potential leakage instead lies in
+the structured slot–value pairs that appear in model outputs.
+This difference is fundamental: while open-ended dialogue
+memorization concerns free-form text reproduction, TODS
+memorization involves schema-constrained, copy-like mappings
+between utterances and structured states that are highly context-
+dependent. Consequently, methods developed for open-ended
+extraction cannot be directly applied to TODS, as they fail
+to elicit valid structured outputs without appropriate schema
+grounding.
+Our study therefore fills this gap. Rather than examining
+pre-training or open-ended memorization, we conduct the first
+systematic investigation of training-data extraction in LLM-
+based task bots, revealing how memorization manifests in the
+structured, conditional generation process. Through compre-
+hensive experiments, we quantify where existing decoding
+and membership-inference methods break down under schema
+constraints and propose targeted, task-aware adaptations to
+better measure and mitigate this risk.
+III. THREAT MODEL
+A. Definition of Memorization
+In this work, we explore the ability of extracting training
+dialogue states from LLM-based task bots, which learn to
+predict dialogue states given the corresponding dialogue
+histories as context. Unlike existing attacks, we assume the
+lack of access to the training dialogue history during dialogue
+state extraction. Hence, we define dialogue state memorization
+by restricting the prefix to only include the preceding dialogue
+state as follows.
+Definition 1 (Dialogue State Memorization for Task Bots). A
+dialogue state string s is considered memorized by the model
+fθ, with a prefix consisting l domain-slot-value triplets if there
+exists a partial dialogue state prefix x of length l such that
+the concatenation x||s presents in the training data, and fθ
+yields s when prompted solely with x using greedy decoding,
+without conditioning on the corresponding dialogue history.
+For example, if the training data contains the following
+sequence.
+User: I would like to find an expensive
+restaurant that severs Chinese food.
+System: Sure, which area do you prefer?
+User: Northern part of the town.
+Belief State: Restaurant(price_range=
+expensive,food=Chinese,area=north)
+When provided with only a length one partial dialogue state
+without the dialogue history as prefix, e.g., “Belief State:
+Restaurant(price_range=expensive”, the model
+most likely generates “food=Chinese,area=north)” as
+the output. This part of dialogue state can be considered
+extractable or memorized. Note that the prefix can be further
+reduced to simply “Belief State:”. We refer to this
+inherently more challenging scenario as untargeted extraction,
+while the incorporation of a partial state prefix is termed
+targeted extraction.
+B. Target and Adversary
+1) Adversary’s Objective: The adversary’s objective is to
+extract the memorized training dialogue data from LLM-based
+task bots. At first glance, one might consider directly extracting
+the dialogue history Ht by prompting the LLM. However, this is
+infeasible as the model is specifically trained to predict dialogue
+states and subsequent responses, rather than the dialogue history,
+given by §II-B. Instead, the dialogue history is solely utilized
+as a conditioning context during training the task bot. As a
+result, the dialogue history is not memorized, making direct
+extraction of the dialogue history data impossible. Thus, we
+aim to extract dialogue states that summarize the dialogue
+history (see Fig. 1) which is a major difference comparing
+with existing work on training data extraction from LLMs [8].
+Specifically, we attack the TODS under a score-based black-
+box assumption where we only have input-output access to an
+LLM-based task bot parameterized by θ. By prompting the
+task bot with a dialogue state beginning phrase P, such as
+“Belief State:” and “[BOS]”1, we obtain the probability
+distribution of the next-word prediction pθ(xi|P, x1, . . . , xi−1),
+from which we sample the output text sequence, and keep the
+dialogue state part as our extraction candidates. Next, we use
+several membership inference measures to rank these candidates
+and determine whether these extractions originate from the
+1Dialogue states are usually marked by phrases like “Belief State:”
+or special tokens such as “[BOS]”, to enable the model to distinguish between
+tasks. An attacker could easily generate a sample to determine which tokens
+or phrases are in use.
+
+5
+training dataset. Here, we pursue two adversarial goals, i.e.,
+training dialogue state extraction and membership inference.
+• Dialogue State Extraction: The adversary aims to prompt
+the task bot to generate a large and diverse set of unique
+dialogue states, thus maximizing the coverage of the
+training dataset.
+• Membership Inference: The adversary seeks to accurately
+determine whether a specific dialogue state, schema, or
+value is present in the training dataset, enabling the
+effective elimination of noise candidates.
+2) Adversary Capabilities: In real-world deployments, large
+language models (LLMs) such as ChatGPT do not disclose
+their underlying parameters. Accordingly, this work focuses
+on scenarios where an adversary has score-based black-box
+access to an LLM-driven task bot. Specifically, the adversary
+can query the system to obtain the probability (score) of
+arbitrary sequences and the next-word predictions, while being
+strictly forbidden from accessing any internal weights or
+hidden representations, including attention matrices. Some
+platforms may further harden their security by providing only
+textual outputs and concealing all probability information from
+users. While we fully agree that the strict black-box setting
+is important, we emphasize that partial-state leakage is both
+plausible and impactful in real deployments.
+In practice, partial exposure of dialogue states can occur
+through several channels. For instance, insider engineers or
+third-party service providers may access debugging logs that
+contain fragments of dialogue states; platform APIs may expose
+shadow endpoints for monitoring or integration; and end-users
+themselves may inadvertently reveal partial states through cross-
+application synchronization. To illustrate the risk concretely,
+consider a scenario where a malicious actor learns fragments of
+a user’s travel plan through side information and then queries
+a dialogue system to infer further details about the itinerary.
+Such cases do not require access to the full training corpus but
+still demonstrate how limited leakage of dialogue-state traces
+can create meaningful privacy risks.
+This work focuses on this partial-access threat model as
+an intermediate but practically plausible scenario. It reflects
+situations where adversaries can observe fragments of dialogue
+states without having direct access to the underlying model
+weights or training data. Studying this middle-ground setting
+enables us to systematically assess potential privacy leakage
+under weaker yet realistic assumptions, and to inform the design
+of future defenses applicable to fully black-box systems.
+3) Target Model: In this work, as an example, we utilize
+the state-of-the-art Llama2 (7B) [16] as the backbone LLM
+to construct the target task bot for our attack. Note that our
+technique can be easily extended to other LLMs. The LLM is
+finetuned on the MultiWOZ benchmark [17] with the method
+described in §II-B. Please refer to §V-A for more details about
+the MultiWOZ dataset and model finetuning.
+IV. DIALOGUE STATE EXTRACTION METHODOLOGY
+In this section, we first introduce a strawman method
+that leverages existing methods designed for pretraining data
+extraction from LLMs, and discuss its limitations when used
+for training dialogue state extraction from LLM-based task bots.
+Then, we design novel methods to address these limitations.
+A. A Strawman Method for Dialogue State Extraction
+Recall that prior works have explored universal training data
+extraction attacks [8]–[10]. Then, a strawman method is to
+directly leverage existing text generation methods to extract
+training dialogue states. The strawman method consists of two
+steps, i.e., candidate dialogue state generation and membership
+inference.
+1) Candidate Dialogue State Generation: For dialogue state
+generation, we follow the untargeted extraction attack setting
+where neither the training dialogue history nor dialogue state
+information is provided to guide the generation. Specifically,
+we simply prompt the task bot with “Belief State:” and
+proceed to sample tokens from the model in an auto-regressive
+manner, allowing the model to generate responses based solely
+on this minimal prompt. Our goal is to produce sequences that
+the model deems highly likely, based on the assumption that
+these likely sequences are indicative of memorized text.
+However, we observe that the task bot tends to generate an
+empty dialogue state, leading to generic responses like “How
+can I help you?”. This behavior arises from a discrep-
+ancy between the training and testing (extraction) settings.
+Specifically, during training, the task bot is finetuned for
+conditional language modeling tasks, with access to contextual
+information such as dialogue history and partial dialogue states
+(see §II-B). In contrast, during training data extraction, the
+task bot lacks such context. When generating by selecting
+words with the highest probability, the task bot encounters a
+situation where the “End-of-State” or “[EOS]” token2
+has the highest likelihood, causing premature termination of
+the dialogue state content generation. To promote dialogue
+state generation, we explore various sampling strategies to
+encourage the model to generate more diverse tokens.
+• Temperature Sampling [18] samples tokens from a
+flattened next-word probability distribution. Specifically,
+the original softmax probability distribution softmax(z)
+is replaced to softmax(z/t), where t is the temperature,
+and z = fθ(x1, . . . , xi−1) represents the output of the
+language model, i.e., the predicted probability distribution
+over the vocabulary. A higher temperature t leads to a
+less confident but more varied model output.
+• Sampling with a Decaying Temperature [8] further
+improves temperature sampling by starting at a higher
+initial temperature and decreasing at each generation step.
+In the early stage, it allows the model to explore a wide
+range of prefixes, enhancing generation diversity. As time
+advances, the temperature decreases, and the model is
+more likely to focus on generating high-confidence, less
+random paths, making the outputs more valid.
+• Beam Search [19] evaluates the top-B hypotheses at each
+time step and eventually chooses the hypothesis that has
+the overall highest probability for the entire sequence.
+This has the advantage of identifying high-probability
+2The “End-of-State” or “[EOS]” token is a special token used to
+indicate the end of a dialogue state.
+
+6
+sequences that start with a lower probability initial tokens
+and would have been ignored by the greedy search.
+• Group Beam Search [20] groups the beams and intro-
+duces an intra-group diversity term to encourage diversity.
+• Beam Sampling [21] replaces the top-B with multinomial
+sampling to encourage diversity. We apply temperature
+sampling to further amplify this diversity.
+2) Membership Inference: After the previous step, we can
+generate a large number of dialogue state candidates; however,
+many of them may not in the original training dataset at all.
+We thus need to perform membership inference to determine
+whether each candidate indeed belongs to the training dataset.
+The membership inference attack leverages the observation that
+models tend to assign higher confidence to samples that they
+have encountered during training [8]. Specifically, we rank the
+extracted dialogue state candidates, each of which is treated
+as a token sequence, according to two metrics broadly used in
+previous works [8], [10].
+• Perplexity (PPL) [22] is a measure of how predictably
+a language model generates text. A lower perplexity
+indicates that the model finds the sequence less surprising,
+meaning that it likely assigns a higher average probability
+to each token in the sequence. Formally, for a sequence
+x = (x1, . . . , xn) and a LLM fθ, we have
+PPL(x) ≜exp
+ 
+−1
+n
+n
+X
+i=1
+log fθ(xi|x1, . . . , xi−1)
+!
+.
+• PPL-zlib adjusts the perplexity of a generation by scaling
+it with the information entropy of the generated sequence,
+where the entropy is quantified through the zlib compres-
+sion of the sequence [23]. This approach mitigates the
+bias in PPL toward favoring trivial generations that exhibit
+low information content such as a text with repetitive
+subsequences, e.g., “123123123”.
+3) Limitations of the Strawman Method: There are sev-
+eral drawbacks in the strawman method. For candidate
+dialogue state generation, existing methods suffer from
+probing common and low diverse dialogue states. For in-
+stance, we observe that “Restaurant(name=yippee
+noodle bar)” duplicates hundreds of times in our ex-
+periments. For membership inference, existing measures
+are prone to false positives, inaccurately assigning high
+likelihoods to non-memorized samples. This issue is par-
+ticularly evident with long sequences and repeated sub-
+strings such as “Restaurant(name=yippee noodle
+bar) Attraction(name=yippee noodle bar)”.
+The frequent generation of trivial or generic content can be
+attributed to inherent characteristics of task-oriented dialogues.
+In practice, users often initiate conversations with common
+requests such as “Please book me a restaurant in
+town”. These initial interactions typically lead to an expansion
+of the dialogue, which incorporates a variety of topics based on
+the user’s evolving preferences. As a result, early interactions
+are more prone to repetition. Consequently, training data
+extracted using traditional methods tends to focus on these early
+turns, which are often superficial and lack substantial detail.
+Moreover, due to the coherent nature of dialogues, it is common
+for the same value to be repeated across multiple turns, e.g., a
+taxi’s arrival address matching a restaurant’s address. While
+not conditioning on dialogue history, the task bot can easily
+adopt this value copy mechanism and erroneously replicate
+values where they may not logically apply.
+B. Schema-Guided Targeted Dialogue State Generation
+The candidate dialogue state generation of the strawman
+method suffers from two major issues: 1) generating dialogue
+states with limited diversity, and 2) generating illegal dialogue
+states that either contain out-of-scope domains, slots, and values,
+or lack a legal format. To address these issues, we first propose a
+targeted extraction setting that leverages partial dialogue states
+for context. Then, we introduce a schema-guided sampling
+method that probes the service scope of task bots to restrict the
+word choice range during sampling, enabling the extraction of
+more relevant and legitimate dialogue states from the task bot.
+1) Targeted Dialogue State Extraction: Sampling dialogue
+states without any conditioning context tends to result in
+generating only generic text patterns that occurred in the
+training dataset. For instance, all the restaurants are generated
+as “Pizza Hut” because “name=Pizza Hut” appears
+multiple times in the training data. To overcome this issue, we
+explore the use of partial dialogue states, either obtained from
+the strawman attack or crafted by an attacker, as prompts, to
+produce more detailed and targeted samples. For example, if
+an attacker knows part of someone’s travel plan, the attacker
+could prompt the model to reveal the rest.
+In this work, we use examples from the origin training dataset
+of the task bot for a quantitative proof-of-concept analysis.
+We do not simulate real attackers to generate trigger cues to
+prevent our methods from being easily misused. Specifically,
+we utilize partial dialogue states from the training dataset
+as controlled-length conditioning context, e.g., “Belief
+State: Restaurant(name=pizza hut,” serving as a
+prefix with length one, i.e., one domain-slot-value triplet.
+2) Schema-Guided Sampling: In the strawman method, a
+significant portion of the generated dialogue states were either
+out of scope or disorganized in format. To address these issues,
+we draw inspiration from constrained decoding methods [24]
+and propose to first extract the service scope of the task bot
+and then use it to prune the exploration scope. Specifically,
+we start by extracting the dialogue schema from the task bot,
+which includes domains and slots3 that define the bot’s service
+scope. Then, in the process of extracting dialogue states, when
+sampling domains and slots, we strictly confine our token
+selections to those within this extracted schema. This ensures
+that the generated candidate dialogue states are both relevant
+to the scope and maintain the required structured format.
+To extract dialogue schema from the task bot, we first collect
+various dialogue states, which may contain errors, and then
+extracting domains and slots within these states using regular
+expressions. In this process, prioritizing recall is crucial, as
+missing any element means certain domains or slots will not
+be generated during the state extraction attack. To this end,
+3We do not pre-define the scope of values (e.g., “12345” is a value for
+the slot “phone”) as they are strongly dependent on user utterances.
+
+7
+ Can you recommend a expensive restaurant in the area?
+ Belief state: restaurant (price range = expensive)...
+Update
+ {
+ "domain": "restaurant",
+ "slots": ["price range"]
+} 
+Schema
+Extraction
+Task Bot
+ChatGPT
+Collected
+Schema
+Pretend to be a human user
+to explore the dialogue schema 
+of a dialogue model ... 
+Diverse
+ Decoding 
+Question
+ Augmentation 
+Confident
+Decoding
+(a) Model-against-Model Loop
+(b) Improved Exploration w. Inter-Temperature Consistency
+Fig. 3. Schema extraction with ChatGPT. In (a) model-against-model loop, based on the collected schema (none for the first loop), ChatGPT is prompted to
+simulate a user asking the task bot questions to uncover additional domains and slots. To improve precision and exploration, we further propose to enhance the
+basic loop with (b) inter-temperature consistency. When decoding the answer from the task bot as in (a), we use high-temperature settings to generate
+diverse belief states, which may include incorrect domains and slots. We then filter these errors through a verification process, where ChatGPT is prompted to
+ask corresponding questions about the extracted (probably incorrect) states, and the task bot decodes answers under low-temperature settings to generate
+confident answers that exclude those illegal domains and slots.
+we conduct initial state extraction using temperature sampling
+with a high temperature to maximize exploration and collect
+schema from the extracted states. However, our experimental
+results show that while this method excels in achieving high
+recall, it tends to yield excessively low precision due to the
+generation of corrupted outputs containing irrelevant domains
+and slots. Besides, achieving a high recall requires thousands
+of task bot generations, which is computationally inefficient.
+To overcome this limitation, we propose a heuristic model-
+against-model method, disguising ChatGPT as a user to interact
+with the task bot and probe its service scope. Conditioning
+on those ChatGPT questions ensures that the task bot replies
+with high confidence. This method not only ensures higher
+precision under high recall but also reduces the number of task
+bot generations required. Specifically, this iterative question-
+asking phase is refined by incorporating previously collected
+domains and slots into the prompts. As shown in Fig. 3, the
+process starts with ChatGPT posing questions based on the
+explored schema (if any). We design a question generation
+protocol and prompt the LLM with the instruction in Table I.
+Despite its effectiveness, exploring solely with ChatGPT
+is inefficient as it lacks prior knowledge of the task bot
+and can easily pose out-of-scope questions. To address this
+issue, we propose a variant that enhances exploration through
+inter-temperature consistency. This method first uses high-
+temperature sampling to obtain diverse dialogue states and
+then converts them back into questions (the instruction is sim-
+ply: “Please try to generate questions based
+on the following dialogue states:”) to probe
+confident outputs with low-temperature sampling. Domains
+and slots that do not consistently appear in both high and
+low temperature samples are filtered out. This further boosts
+exploration without the loss of precision.
+After extracting the dialogue schema, we use the identified
+schema to constrain the sampling of specific domains and
+slots. Specifically, we employ a hard-constrained sampling
+method that limits the vocabulary from which we sample to
+only those extracted domains and slots. Given a candidate
+set of words or phrases, denoted by C, we first compute
+TABLE I
+LLM PROMPT FOR GENERATING SCHEMA-PROBING QUESTIONS
+Generate questions for the dialogue system given the existing schema
+following these steps:
+Review
+the
+Existing
+Schema:
+Carefully
+examine
+the
+provided
+Validated and Confirmed Schema. Make sure you fully un-
+derstand each domain, slot, and value listed within.
+Craft Simulated Task-oriented Queries: Based on each existing domain,
+create a series of questions that deviate slightly from the known scope.
+These queries should help probe potential new slots or values within
+those domains. For example, if you have a domain weather and a
+slot city, you might ask: “How’s the weather for outdoor activities
+tomorrow?” If there is a domain restaurant, you could say: “Can
+you suggest vegan restaurants near Tokyo?”
+Implement Cross-Domain Probing: Combining known slots and values,
+try constructing cross-domain queries. For example, you could ask: “Are
+there any music events happening in London when it’s forecasted to
+rain?” Or, “Can I get a taxi from Beijing Duck to the nearest cinema?”
+Initiate Random Task-oriented Queries: Design and propose a series of
+random task-oriented questions aiming to discover potential domains, slots,
+or values not covered by the current schema. The generated questions
+should be completely IRRELEVANT to the existing schema and based
+on a wide range of domains.
+Validated
+and
+Confirmed
+Schema:
+{schema: {domain:
+Restaurant, slots:[price_range, name]}}
+Your questions:
+the probability of each candidate given a prefix, forming a
+probability distribution. From this distribution, we sample a
+candidate to determine the domain and slots. Formally as
+w = Sample(P(w′|prefix), w′ ∈C), where w is the selected
+word or phrase from C.
+C. Debiased Membership Inference
+The membership inference methods in the strawman method
+suffer from a high false positive rate, particularly when dealing
+with repetitive substrings and long sequences. This issue is
+primarily attributed to inconsistency between training and
+validation. Typically, task bots learn to generate dialogue states
+based on the given dialogue history. However, measures such as
+perplexity and its variants (e.g., zlib scaling [8], [10]) treat the
+dialogue state as an independent sequence without conditioning
+context. A more reasonable approach would consider the
+
+8
+conditional nature of the sequence. Specifically, if a sequence
+is familiar given the dialogue history, it is more likely to be a
+training example.
+Given the lack of access to the training dialogue history, we
+propose an approximate measure of conditional perplexity (C-
+PPL), which focuses solely on the probability of the sequence’s
+suffix, rather than the entire sequence, i.e.,
+C-PPL(x) ≜exp
+
+−1
+Ls
+Lp+Ls
+X
+i=Lp+1
+log fθ(xi|x1, . . . , xi−1)
+
+
+where x = (x1, . . . , xLp, xLp+1, . . . , xLp+Ls), with Lp denot-
+ing the length of the prefix and Ls the suffix. For the untargeted
+setting, this prefix is simply “Belief State:”.
+Additionally, to address false positives where the suffix,
+rather than the whole sequence, is over-familiar to the task bot,
+we introduce a debiased version of C-PPL, named Debiased
+Conditional Perplexity (DC-PPL), that scales C-PPL with the
+perplexity of the suffix itself, i.e.,
+DC-PPL(x) ≜log(C-PPL(x))
+log(PPL(xsuffix))
+=
+PLp+Ls
+i=Lp+1 log fθ(xi|x1, . . . , xi−1)
+PLp+Ls
+i=Lp+1 log fθ(xi|xLp+1, . . . , xi−1)
+where PPL(xsuffix) is calculated as usual for the standalone
+sequence of the suffix. We apply a logarithm transformation
+of perplexity for a more normal distribution.
+V. EVALUATIONS
+In this section, we evaluate the performance of different
+training data extraction methods on a large-scale public
+available task-oriented dialogue dataset.
+A. Dataset and Evaluation Metrics
+1) Dataset: We evaluate different training data extraction
+methods on the MultiWOZ dataset [17], which is the most
+widely used gold-standard large-scale task-oriented dialogue
+dataset. The MultiWOZ dataset consists of 8,438 dialogues,
+totaling 113,556 turns. On average, each dialogue has 13.46
+turns and each turn includes 13.13 tokens. Overall, the dataset
+spans 7 domains, incorporates 24 slots, and covers 4,510
+distinct values.
+2) Model Finetuning: Using the MultiWOZ dataset, we
+finetune the Llama2 (7B) model, and the finetuned Llama2
+(7B) will be the task bot that we aim to attack. However,
+directly finetuning LLMs on the MultiWOZ dataset can easily
+lead to overfitting due to data sparsity, as the model memorizes
+the data instead of learning to generalize, and hence makes
+the model vulnerable to data extraction attacks. For a more
+convincing evaluation of our attack’s effectiveness, we finetune
+the target model with Low-Rank Adaptation (LoRA) [25],
+which is a parameter-efficient LLM finetuning technique that
+reduces overfitting by limiting trainable parameters, while still
+ensuring performance on par with full-parameter finetuning.
+The finetuned task bot, now more fortified against attacks,
+presents a bigger challenge to data extraction attacks, allowing
+us to better evaluate the efficiency of our attack strategy. As
+we focus on extracting training dialogue states, we assess
+the performance of the task bot in dialogue state tracking,
+evaluating its ability to predict dialogue states based on dialogue
+history. The finetuned task bot achieves 91.43%, 71.52%,
+and 80.26% for precision, recall, and F1 score, respectively,
+demonstrating its effectiveness.
+3) Evaluation Metrics: We evaluate the quantity of mem-
+orized examples and their precision within both the overall
+extracted dialogue states and the specific values (e.g., phone
+numbers) they contain. Note that even if the entire dialogue
+state does not align perfectly, individual values may still be
+accurately extracted from the training dataset. The metrics are
+as follows.
+• Number of Extracted Dialogue States (#States). The
+total count of dialogue states extracted by the attack.
+Each dialogue state is represented as a set of do-
+main–slot–value triplets, e.g., Restaurant{name =
+pizzahut, phone = 12345}. A dialogue state is
+considered successfully extracted if it exactly matches or
+is a subset of any ground-truth state in the training set
+after triplet decomposition.
+• Dialogue State Extraction Precision (SP). The propor-
+tion of extracted dialogue states that correctly appear in
+the training dataset:
+SP = Ncorrect states
+Nextracted states
+.
+This metric evaluates accuracy at the state level, after
+deduplicating identical states.
+• Average Number of Domain–Slot–Value Triplets per
+Extracted State (#Triplets). The average number of do-
+main–slot–value triplets (e.g., Restaurant-name-pizzahut)
+contained within each successfully extracted state:
+#Triplets =
+PNcorrect states
+i=1
+|Ti|
+Ncorrect states
+,
+where Ti denotes the set of triplets in the i-th correct
+dialogue state. This metric reflects the information richness
+of each reconstructed dialogue state.
+• Number of Extracted Slot Values (#Values). The total
+number of unique slot values appearing in all extracted
+dialogue states, after deduplication across states. For
+example, if “pizzahut” appears in multiple states, it is
+counted once.
+• Slot Value Extraction Precision (VP). The proportion
+of extracted slot values that exist in the training dataset:
+VP = Ncorrect values
+Nextracted values
+.
+This metric evaluates the fidelity of value-level recovery,
+independent of state structure.
+B. Evaluation Results of the Strawman Method
+1) Settings: For each dialogue state generation method, we
+generate 10, 000 samples using the task bot. We then dedupli-
+cate the extractions and rank the suffixes using membership
+inference metrics, retaining only the top 100 samples for further
+
+9
+TABLE II
+MEMBERSHIP INFERENCE RESULTS FOR UNTARGETED DIALOGUE STATE EXTRACTION ATTACK. METHODS WITH FEWER THAN 100 STATES ARE EXCLUDED,
+AS THE TOP 100 EXTRACTIONS ARE RETAINED AFTER RANKING.
+State Precision (%)
+#Triplets
+Value Precision (%)
+Extraction Method
+None
+PPL%
+PPL-zlib
+None
+PPL%
+PPL-zlib
+None
+PPL%
+PPL-zlib
+Vanilla Sampling
+14.37
+26.00
+26.00
+1.60
+2.27
+2.00
+15.00
+60.52
+54.9
+Temperature Sampling
+4.59
+19.00
+11.00
+1.29
+1.53
+1.45
+5.76
+38.56
+33.00
+Beam Sampling
+11.95
+23.00
+21.00
+1.95
+2.52
+2.71
+10.73
+66.97
+68.1
+TABLE III
+UNTARGET EXTRACTION USING THE STRAWMAN METHOD
+Method
+#States SP% #Triplets #Values VP%
+Vanilla Sampling
+336 14.37
+1.60
+231 15.00
+Temperature Sampling
+207
+4.59
+1.29
+234
+5.76
+Decaying Temperature
+75
+3.32
+1.51
+223 17.13
+Beam Search
+5
+100
+1.2
+4
+100
+Group Beam Search
+15 65.22
+1.47
+16 64.00
+Beam Sampling
+715 11.95
+1.95
+315 10.73
+analysis. We conducted an extensive hyperparameter search
+to identify the optimal settings for each generation method
+introduced in §IV-A1. The chosen configurations are as follows:
+1) Temperature Sampling: The temperature is set to 2; 2)
+Sampling with a Decaying Temperature: We initiate the process
+with a high temperature of 5 to promote diverse initial outputs,
+then decrease the temperature by 2 at each subsequent step
+until it stabilizes at 1; 3) Beam Search: A large beam size
+of 50 is utilized, with all beams retained to enhance output
+diversity and maximize training data coverage; 4) Group Beam
+Search: The number of groups is set equal to the beam count,
+and a diversity penalty of 1 is applied; 5) Beam Sampling: The
+beam size is set to 5 and the temperature is configured at 2.
+2) Dialogue
+State
+Extraction
+Performance:
+We
+find
+various
+training
+dialogue
+states
+without
+conditioning
+on their corresponding dialogue histories. For example,
+“Restaurant(price_range=expensive) Train
+(departure=Cambridge,destination=London
+Kings Cross,people=2)”
+describes
+a
+conversation
+about someone planning an expensive meal in Cambridge
+before taking a train to London Kings Cross with another
+person. We also find examples of single-domain bookings, such
+as “Train(day=Friday,people=2)”. These examples
+demonstrate that, even in an untargeted attack setting, it is
+possible to extract private information from a task bot.
+Next, we provide quantitative results in Table III. We see
+that the number of correctly extracted dialogue states across
+all variants of the strawman method is notably low, with
+less than 3.36% among the generations. Although the beam
+sampling method may appear to generate more outputs, it
+actually produces beam size times more outputs than the basic
+sampling method. Thus, the actual proportion of correctly
+extracted dialogue states is even lower. Besides, temperature
+sampling and its decaying variant were ineffective in our
+context, which is contrary to previous studies [8], [10]. We
+attribute this discrepancy to the highly structured nature of
+dialogue states, which these methods disrupt, leading to invalid
+outputs. We also observe that both beam search and group beam
+search show high precision owing to their deterministic nature,
+but failed to produce diverse outputs due to computational
+constraints limiting beam size: despite 10, 000 iterations, the
+output diversity was constrained to the number of beams. Beam
+sampling allowed for a broader exploration of dialogue states
+by combining beam search with temperature sampling, yet
+the number of dialogue states uncovered remained limited.
+Moreover, the average length (#Triplets) of the correct dialogue
+state extractions was notably short, typically under 2 and at
+most 4. These often included simple details about restaurants
+or train schedules, information that is likely to appear at the
+beginning of the dialogues and appear multiple times in the
+training dataset, making it less sensitive.
+3) Membership Inference Performance: As shown in Ta-
+ble II, the results underscore the effectiveness of membership
+inference in enhancing both the precision of extractions and
+the lengths of the extracted states. However, despite these
+improvements, the overall privacy risk remains moderate. While
+individual values exhibit a relatively higher risk, with maximum
+precision reaching 67%, event-level states present a significantly
+lesser concern, with a maximum precision of 26%.
+4) Limitations of the Strawman Method: Our experimental
+results uncover several limitations of the strawman method.
+Primarily, it suffers from probing common and low diverse
+dialogue states. For instance, “Restaurant(name=yippee
+noodle bar)” duplicates hundreds of times. Furthermore,
+the membership inference measures are prone to false positives,
+inaccurately assigning high likelihoods to non-memorized
+examples. This issue is particularly evident with long sequences
+and repeated substrings, e.g., “Restaurant(name=yippee
+noodle bar) Attraction(name=yippee noodle
+bar)”. In dialogues, it is common for the same value to
+appear multiple times due to the coherent nature of the
+conversation, such as a taxi’s arrival address matching a
+restaurant’s address. However, without conditioning on
+dialogue history, the task bot may mistakenly adopt this
+pattern, erroneously replicating values where they might not
+logically apply.
+C. Dialogue Schema Extraction Results
+Since the performance of our targeted schema-guided dia-
+logue state extraction method depends on the extracted dialogue
+schema, we first present the schema extraction results before
+discussing the dialogue state extraction results.
+1) Settings: In this section, we evaluate our model-against-
+model dialogue schema probing strategy (see §IV-B2). We
+evaluated five major metrics. For accuracy analysis, we consider
+the precision and recall for domains and slots, respectively. For
+cost analysis, we consider the number of questions posed by
+ChatGPT required to achieve coverage.
+
+10
+Temperature Sampling
+Best Case Cond.
+Conditioning on ChatGPT
+Best Case Cons.
+Cond. w. Consistency
+1
+5
+10
+Temperature
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Domain Precision
+1
+5
+10
+Temperature
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Domain Recall
+1
+5
+10
+Temperature
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Slot precision
+1
+5
+10
+Temperature
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Slot recall
+Fig. 4. Schema extraction performance over different temperatures. We report
+the mean values over three runs per method, along with the best-case results.
+2) Extraction Performance: As shown in Fig. 4, with the
+proposed model-against-model method, the best case with tem-
+perature 5 achieves full 100% coverage of the dialogue schema,
+with domain precision exceeding 82% and slot precision over
+60%. Compared to temperature sampling, our method shows
+significantly higher precision while also improving recall. The
+inter-temperature consistency has proven effective in further
+improving recall with minimal loss of precision.
+We further delve into error analysis and found the primary
+false positive slots include: 1) coreferences or alternative
+expressions of slots, e.g., “people” versus “number of
+people”, and 2) slots and their variants from other domains.
+However, our next experiment will show that these issues do
+not lead to a severe performance drop in enhancing dialogue
+state extraction.
+3) Cost Analysis: We evaluate the computational cost using
+the Number of Questions Required for Convergence (#Ques-
+tions), which calculates the minimal number of times the task
+bot must be queried for optimal schema extraction performance.
+For an attacker, fewer interactions signify better efficiency.
+As depicted in Fig. 5, the proposed model-against-model
+method requires about 3 to 5 times fewer interactions compared
+to traditional temperature sampling. Moreover, the variant
+employing inter-temperature consistency further improves
+efficiency in domain extraction and slot extraction. Besides,
+we find that the cost can increase at higher temperatures. The
+reason is that diverse sampling gradually uncovers hard-to-
+detect marginal slots and coreferences or alternative expressions
+of slots through successive discoveries, thereby requiring more
+interactions to achieve convergence.
+D. Schema-Guided Targeted Dialogue State Extraction Results
+1) Settings: We condition the task bot on partial dia-
+logue states from the training dataset to perform a proof-
+w/o Consistency
+w. Consistency
+w/o Consistency
+w. Consistency
+1
+5
+10
+Temperature
+0
+500
+1000
+1500
+2000
+2500
+# Questions
+Domain Extraction
+1
+5
+10
+Temperature
+0
+500
+1000
+1500
+2000
+2500
+3000
+# Questions
+Slot Extraction
+Fig. 5. Minimum number of questions required for ChatGPT to achieve the
+performance upper bound in schema extraction. For temperature sampling,
+10, 000 samples are generated to reach the reported performance.
+of-concept quantitative analysis on targeted dialogue state
+extraction (see §IV-B1). Specifically, we control the num-
+ber of domain-slot-value triplets of the partial belief state
+(Prefix Length) for extracting the remainder suffix. These
+input partial dialogue states are obtained by truncating di-
+alogue states from the training dataset that exceed the con-
+trolled length. The resulting prefixes, e.g., “Belief State:
+Restaurant(name=pizza hut”, are used to promote the
+task bot to generate suffixes. Note that the prefix does not
+include the training dialogue history, but only partial dialogue
+states. Since different dialogue segments may share the same
+dialogue state—for example, when they all involve making a
+restaurant reservation—we deduplicate the prefixes to avoid
+redundancy, resulting in a number of unique prefixes. After
+extraction, we perform further deduplication before calculating
+the evaluation metrics.
+Please revisit §IV-A1 and §IV-B2 for a detailed description
+of the baseline and our proposed schema-guided suffix decoding
+methods. Note that the schema we use here is obtained
+through the model-against-model method with inter-temperature
+consistency.
+2) Targeted Dialogue State Extraction Results: As shown
+in Fig. 6, our method manages to extract thousands of training
+dialogue states from the task bot when seeding it with
+partial dialogue states. The proposed schema-guided sampling
+method outperforms all baselines by a notable margin and
+performs only slightly worse than the gold schema upper
+bound, demonstrating its effectiveness in probing the task bot
+by restricting the sampling space. Surprisingly, greedy search
+remains a strong baseline, outperforming both beam search and
+temperature decay in terms of the number of valid states and
+state precision. The reason is that, with a conditioning context,
+all methods generate the same number of outputs; however,
+diversity-enhancing techniques produce a wider variety of
+values (as evidenced by the #Values and value precision results).
+When these diverse outputs are combined into states, they are
+more likely to be invalid. In contrast, greedy search consistently
+produces a fixed set of values that align closely with the training
+data, leading to more valid states overall.
+As shown by the gray bars on the left in Fig. 6, there is
+variability in the number of deduplicated prefixes of partial
+dialogue states, resulting in varying total extractions for
+different prefix lengths. Therefore, we further evaluate the
+precision of each method. As shown in Fig. 6, schema-guided
+
+11
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+0
+500
+1000
+1500
+2000
+2500
+3000
+3500
+4000
+# States
+0
+2500
+5000
+7500
+10000
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.45
+Greedy
+Beam Search
+Sampling
+w. Temperature Decay
+w. Gold Schema
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+100
+150
+200
+250
+300
+350
+400
+450
+500
+# Values
+0
+2500
+5000
+7500
+10000
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+ Value Precision
+Greedy
+Beam Search
+Sampling
+w. Temperature Decay
+w. Gold Schema
+Schema-Guided Sampling
+ State Precision
+# Prefixes 
+# Prefixes 
+Fig. 6.
+Targeted state extraction results. We report the total number of
+successfully extracted training dialogue states, the memorized values within
+these states, and the extraction precision. The gray bars represent the number
+of deduplicated prefixes.
+sampling continues to outperform other methods. Interestingly,
+we observe that as the length of the prefixes increases, precision
+decreases. This finding contradicts the previous study [9], which
+suggests that more context leads to increased precision. We
+will further discuss this observation in §V-D4.
+3) Impact Analysis of Sampling Configurations: In this
+section, we examine how adjustments to the sampling configu-
+rations, i.e., hyperparameters, affect dialogue state extraction
+results. The results are presented in Fig. 7.
+Top-k [26] is set to restrict the vocabulary to the top-k
+tokens based on probability, aiming to focus generation on
+the most likely outcomes. As shown in Fig. 7(a), a larger k
+increases the diversity of values but reduces the number of
+valid dialogue states.
+Temperature (§IV-A1) is set to adjust the probability dis-
+tribution of the tokens. From Fig. 7(b) we see that a lower
+temperature leads to more valid but less diverse dialogue states.
+For relatively higher temperatures, we observe that more valid
+states are extracted, albeit with fewer values. This may occur
+because, although most cases are invalid, certain slots are
+successfully extracted and then high-confidence values, which
+are strongly memorized, are frequently sampled even at higher
+temperatures.
+Typical-ϕ [27] is set to recommend selecting a token whose
+information content is close to the expected information
+content given prior context, enhancing sentence consistency
+and reducing degenerate repetitions. As shown in Fig. 7(c),
+performance varies non-monotonically with different ϕ values,
+which is consistent with [10].
+Nucleus-η [28] is set to assure the output be sampled from the
+smallest set of the most likely tokens whose total probabilities
+are equal to or exceed η. In Fig. 7(d), we observe that lower
+values of η enhance state extraction, analogous to the Top-k
+method discussed above.
+1.0
+5.0
+10.0
+15.0
+20.0
+25.0
+30.0
+35.0
+40.0
+45.0
+50.0
+Top-k
+2200
+2300
+2400
+2500
+2600
+2700
+2800
+2900
+3000
+# State
+345
+360
+375
+390
+405
+420
+435
+450
+465
+# Value
+(a) Top-k
+0.1
+0.5
+1.0
+2.0
+3.0
+4.0
+5.0
+6.0
+7.0
+8.0
+9.0
+10.0
+Temperature
+750
+1000
+1250
+1500
+1750
+2000
+2250
+2500
+2750
+3000
+# State
+0
+50
+100
+150
+200
+250
+300
+350
+400
+450
+# Value
+(b) Temperature
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Typical-
+2240
+2320
+2400
+2480
+2560
+2640
+2720
+2800
+# State
+392
+400
+408
+416
+424
+432
+440
+448
+456
+# Value
+(c) Typical-ϕ
+0.2
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+0.95
+0.99
+Nucleus-
+2300
+2400
+2500
+2600
+2700
+2800
+2900
+3000
+# State
+345
+360
+375
+390
+405
+420
+435
+450
+# Value
+(d) Nucleus-η
+1.0
+1.2
+1.5
+2.0
+5.0
+10.0
+20.0
+Repetition Penalty
+250
+500
+750
+1000
+1250
+1500
+1750
+2000
+2250
+2500
+# State
+100
+150
+200
+250
+300
+350
+400
+450
+# Value
+(e) Repetition penalty
+Fig. 7. Number of training dialogue states and values extracted under different
+sampling configurations. Results are reported for a prefix length of 3, with
+the largest sample size to provide statistically significant results.
+Repetition Penalty [29] is set to modify the generation
+probability of each token depending on whether it repeats
+a previous token. The logit of the repeated token is di-
+vided by the penalty before being processed by the soft-
+max layer. Our results, shown in Fig. 7(e), indicate that a
+proper repetition penalty has a positive impact on dialogue
+state extraction. The reduction in repetition helps prevent
+the task bot from mistakenly copying values directly from
+the prefix to the suffix, e.g., “Restaurant(name=pizza
+hut,area=pizza hut)”.
+4) Cause Analysis: Why Longer Context Leads to Lower
+Precision in State Extraction: In §V-D2, we see that state
+extraction precision declines as the length of the input partial
+dialogue state prefixes increases. This trend continues until the
+prefixes reach a certain length (greater than 6 in our analysis),
+at which point the precision begins to improve again. This
+finding contradicts the prior study [9], which suggests that an
+increase in the number of context tokens enhances the ability
+to extract memorized text. To understand why, we explore
+the unique characteristics of finetuned task bots considering:
+1) how dialogue data repeats in the training dataset and 2)
+the one-to-many nature of dialogue, where a single dialogue
+history can lead to multiple valid responses.
+Regarding training dialogue data repetition: When training
+a task bot with task-oriented dialogue data, the dialogue is
+decomposed into turns consisting of dialogue history, dialogue
+state, and so on (see Fig. 1). With this decomposition, the
+dialogue state that appears early in the dialogue is repeated
+
+12
+1 2 3 4 5 6 7 8 9 10
+Prefix Length
+0
+25
+50
+75
+100
+125
+150
+175
+Repetitions per Member
+Greedy
+0.08
+0.16
+0.24
+0.32
+0.40
+0.48
+0.56
+State Precision
+1 2 3 4 5 6 7 8 9 10
+Prefix Length
+0
+20
+40
+60
+80
+100
+120
+140
+160
+180
+Repetitions per Member
+Beam Search
+0.06
+0.12
+0.18
+0.24
+0.30
+0.36
+0.42
+0.48
+0.54
+0.60
+State Precision
+1 2 3 4 5 6 7 8 9 10
+Prefix Length
+0
+15
+30
+45
+60
+75
+90
+105
+120
+135
+Repetitions per Member
+Sampling
+0.08
+0.16
+0.24
+0.32
+0.40
+0.48
+0.56
+State Precision
+1 2 3 4 5 6 7 8 9 10
+Prefix Length
+0
+25
+50
+75
+100
+125
+150
+175
+200
+Repetitions per Member
+Schema Sampling
+0.15
+0.20
+0.25
+0.30
+0.35
+0.40
+0.45
+0.50
+0.55
+0.60
+State Precision
+Fig. 8. Repetitions per member under different prefix lengths: This measures
+how many times successfully extracted training dialogue states are repeated
+in the training dataset. Results are reported under a 99% confidence interval.
+Additionally, we include the state precision for different extraction methods
+(gray line).
+1 2 3 4 5 6 7 8 910
+Prefix Length
+1.4
+1.6
+1.8
+2.0
+Avg. Rank (<5)
+1 2 3 4 5 6 7 8 910
+Prefix Length
+20
+40
+60
+Rank #1 Examples (%)
+1 2 3 4 5 6 7 8 910
+Prefix Length
+0
+20
+40
+60
+80
+Rank >5 Examples (%)
+Correct Slot
+Correct Value
+Both Correct
+Fig. 9.
+Gold answer ranking based on task bot decoding probability. We
+report results for slots, values, and the combined pairs. Avg. Rank (<5) refers
+to the average rank of examples that appear within the top 5. A lower rank
+indicates that the true answer is more confidently decoded by the task bot.
+Rank #1 and Rank >5 represent the percentage of true examples that rank
+at top-1 and those not within the top-5, respectively. A higher percentage of
+Rank #1 and a lower percentage of Rank >5 suggest greater certainty of the
+task bot in decoding the correct answers.
+more frequently in the training data. For instance, in a
+dialogue with 10 turns, the dialogue state of the first turn,
+e.g., “price=cheap”, will also appear in the subsequent
+9 turns unless the user requests to modify the price range.
+Previous studies have shown that repetition can strengthen
+memorization [8], [9]. Therefore, states of greater length,
+despite having more context, may be harder to extract.
+To verify this, we count how many times the true positive
+examples we extracted repeated in the training dataset. As
+shown in Fig. 8, repetitions per member decrease logarithmi-
+cally with increasing prefix length. When the context provided
+is insufficient, this sharp decline in repetitions can overwhelm
+the benefits gained from the increased context, making state
+extraction more challenging and leading to decreased state
+extraction precision. However, once the context reaches a
+sufficient length, the advantage shifts towards the extended
+context, resulting in a gradual improvement in precision.
+Regarding the one-to-many feature of task-oriented dia-
+logues: The state extraction results in Fig. 6 show that while
+state precision decreases, value precision concurrently increases.
+This suggests that although we can extract values present in the
+training dataset, these values do not always constitute a true
+entailment for the current prefix. We hypothesize that this is due
+to the inherent one-to-many nature of task-oriented dialogues,
+where the same context can lead to different valid responses
+from different users, thereby associating multiple possible
+values with the same prefix. To investigate this further, we ana-
+lyzed how the gold slot, gold value, and their combinations are
+ranked regarding the decoding probability under different prefix
+lengths. As shown in Fig. 9, the average ranks decrease as the
+prefix length increases. However, the instances where the gold
+Slots rank first rise significantly, from 40% to 70%, indicating
+a strong contextual dependency. In contrast, the percentage of
+gold Values ranking first remains low, only fluctuating between
+20% and 30%, which indicates a weaker contextual dependency.
+Despite not frequently ranking first, gold values are increasingly
+found within the top five positions, verifying the one-to-many
+nature that diverse potential responses can emerge from a single
+dialogue context.
+E. Debiased Membership Inference Results
+1) Settings: We rank the extractions based on several mem-
+bership inference measures and retain the top 100 examples
+for evaluation. Please revisit §IV-A2 and §IV-C for a detailed
+introduction to the membership inference methods.
+2) Results on Targeted Dialogue State Extraction: Given
+the dialogue states extracted using various methods, we apply
+membership inference measures to these dialogue states and
+report the precision of the final obtained dialogue state and
+slot value. As shown in Fig. 10, we see that both the proposed
+Conditional PPL and Debiased Conditional PPL show a
+marginal improvement in dialogue state precision and also
+lead in slot value precision. Notably, Debiased Conditional
+PPL performs best, with the best case achieving over 70%
+in dialogue state precision and 100% in slot value precision.
+We also notice that PPL and PPL-zlib perform worse than
+random ranking in dialogue state precision but perform well
+in value precision. This discrepancy arises because PPL and
+PPL-zlib evaluate the full prefix-suffix sequence. In targeted
+extraction, however, the prefixes come directly from the training
+data and are thus inherently familiar to the dialogue model.
+Consequently, even when paired with wrong suffixes, these
+familiar prefixes tend to receive high rankings, introducing a
+bias that undermines performance.
+To further study how well different membership inference
+measures distinguish extractions, we report score distributions
+for ground-truth members and non-members. Fig. 11 reveals
+that for PPL and ppl-zlib, the distributions completely overlap,
+making it impossible to distinguish members and non-members.
+In contrast, although Conditional PPL and Debiased Condi-
+tional PPL show some overlap, members can be flagged in the
+lower score range, demonstrating the effectiveness.
+3) Results on Untargeted Dialogue State Extraction:
+Targeted extraction employs partial gold prefixes from the
+training dataset, potentially disadvantaging PPL and PPL-zlib.
+Therefore, we also report the results under an untargeted
+extraction attack setting, where no partial dialogue state is
+included. In this setting, the context for Conditional PPL and its
+variant is simply “Belief State:” as described in §IV-A1.
+
+13
+TABLE IV
+STATE AND VALUE PRECISION FOR UNTARGETED DIALOGUE STATE EXTRACTION UNDER VARIOUS MEMBERSHIP INFERENCE MEASURES. “D” AND “C”
+DENOTES “DEBIASED” AND “CONDITIONAL”, RESPECTIVELY.
+State Precision (%)
+Value Precision (%)
+Extraction Method
+None
+PPL
+PPL-zlib
+C-PPL
+DC-PPL
+None
+PPL
+PPL-zlib
+C-PPL
+DC-PPL
+Vanilla Sampling
+14.37
+26.00
+26.00
+24.00
+42.00
+15.00
+60.52
+54.90
+55.00
+70.27
+Temperature Sampling
+4.59
+19.00
+11.00
+14.00
+23.00
+5.76
+38.56
+33.00
+36.95
+46.45
+Beam Sampling
+11.95
+23.00
+21.00
+29.00
+40.00
+10.73
+66.97
+68.10
+70.19
+76.34
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+State Precision
+1
+2
+3
+4
+5
+6
+7
+8
+9 10
+Prefix Length
+0.55
+0.60
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Value Precision
+None
+Perplexity (PPL)
+ Conditional PPL
+Debiased Conditional PPL
+zlib
+PPL-
+Fig. 10. Dialogue state and slot value precision for targeted dialogue state
+extraction after membership inference. We report the results averaged across
+various extraction methods detailed in §V-D. Shaded areas represent the
+performance range from the best to the worst extraction methods.
+2.5
+5.0
+7.5
+10.0
+Score
+0
+10
+20
+30
+40
+50
+60
+70
+80
+90
+# Dialogue State
+Perplexity(PPL)
+0.05
+0.10
+0.15
+Score
+0
+15
+30
+45
+60
+75
+90
+105
+120
+# Dialogue State
+zlib
+1.0
+1.5
+2.0
+Score
+0
+20
+40
+60
+80
+100
+120
+140
+160
+# Dialogue State
+Conditional PPL
+0.00
+0.05
+0.10
+Score
+0
+15
+30
+45
+60
+75
+90
+# Dialogue State
+Debiased Conditional PPL
+Non-member
+Member
+PPL-
+Fig. 11. Membership inference score distribution for extracted dialogue states.
+We compare dialogue states that appear in the training dataset (Members) with
+those excluded (Non-Members).
+As shown in Table IV, our proposed Debiased Conditional
+PPL continues to outperform baseline methods significantly
+in both dialogue state and slot value precision, demonstrating
+its effectiveness in detecting training dialogue states. However,
+Conditional PPL does not perform as well, as without a partial
+dialogue state, it exaggerates the inherent bias of perplexity
+towards repetitive or longer sequences.
+F. Privacy Level Analysis Results
+To quantitatively assess the privacy sensitivity of the ex-
+tracted information, we conducted a fine-grained privacy level
+analysis. This experiment was designed to validate our core
+argument that privacy risk arises not only from direct PII
+(e.g., names, phone numbers) but also from combinational PII,
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prefix Length
+1.4
+1.5
+1.6
+1.7
+1.8
+1.9
+2.0
+2.1
+PII Score
+Greedy
+Beam Search
+Sampling
+w. Temperature Decay
+Schema-Guided Sampling
+(a)
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prefix Length
+0.1
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Marginal Privacy Score
+Greedy
+Beam Search
+Sampling
+w. Temperature Decay
+Schema-Guided Sampling
+(b)
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prefix Length
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+PII Score
+None
+Perplexity (PPL)
+PPL-zlib
+Conditional PPL
+Debiased Conditional PPL
+(c)
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prefix Length
+0.0
+0.1
+0.2
+0.3
+0.4
+Marginal Privacy Score
+None
+Perplexity (PPL)
+PPL-zlib
+Conditional PPL
+Debiased Conditional PPL
+(d)
+Fig. 12. PII score and marginal privacy score under different training data
+extraction (a) (b) and membership inference methods (c) (d).
+where seemingly innocuous data points can reveal sensitive
+information when combined. To this end, we employed the
+prompt-based deepseek-rl-671B model as an expert assessor to
+evaluate the privacy degree of each extracted belief state (event-
+level) against a strict protocol. The model assigned an overall
+privacy score from 0 (no concern) to 5 (very high), adhering
+to a critical monotonicity rule: a longer belief state (superset)
+could not receive a lower score than any of its subsets, ensuring
+that added information never reduces perceived sensitivity.
+Two specific metrics are computed:
+• PII Score: The privacy score for a single suffix, obtained
+by first scoring each of its constituent domain-slot-value
+triplets individually and then averaging these scores. This
+metric reflects the inherent sensitivity of the suffix when
+its components are viewed in isolation.
+• Marginal Privacy Score: This metric quantifies the
+relative increase in privacy risk introduced by incorpo-
+rating the extracted suffix into the existing context. It is
+calculated as the ratio of the increase in privacy score to
+the original score of the prefix, formally as:
+Marginal Privacy Score = Sprefix + suffix −Sprefix
+Sprefix
+where Sprefix and Sprefix + suffix are the overall privacy scores
+of the prefix and the combined state, respectively. A higher
+
+14
+value indicates a greater amplification of privacy sensi-
+tivity, thereby pinpointing instances where combinational
+PII is created.
+As shown in Fig. 12, the results reveal a notable distinction
+between the extraction methods. Traditional decoding and
+membership inference methods generally yielded suffixes with
+higher individual PII scores, indicating a tendency to extract
+locally sensitive information in isolation. In contrast, our
+schema sampling and debiasd membership inference methods,
+while not achieving the highest individual PII scores, achieved
+comparable or even higher marginal privacy scores. We further
+verified the reliability of the automated assessor via human
+evaluation, and observed substantial agreement between model
+scores and human judgments, with geometric mean Cohen’s
+κ of 0.858 (Marginal Privacy Score) and 0.761 (PII Score).
+This finding is significant because it demonstrates that our
+approach is more effective at uncovering meaningful event-
+level information from a holistic context, precisely by revealing
+combinational PII. Crucially, this superior capability to expose
+the privacy risks arising from data combinations is achieved
+while our method extracts a substantially larger number of
+valid events with much higher membership inference accuracy,
+thereby establishing a more conservative lower bound on
+potential privacy risks.
+VI. TOWARDS DEFENSE AND PROTECTING PRIVACY
+As discussed in §V-D4, we identify two issues significantly
+affecting extraction results. 1) Data repetition from turn-level
+modeling, i.e., the dialogue state in the first turn appears in
+all subsequent turns, enhances memorization. 2) The one-to-
+many nature of dialogue, where a given dialogue history might
+yield multiple valid user choices, leading to no single certain
+gold answer, reduces memorization. Given these features, we
+propose two potential privacy-enhancing methods:
+1) Dialogue-Level Modeling: To reduce data repetition
+associated with turn-level modeling, we could model dialogue
+at the dialogue level, passing the entire dialogue per training
+instance. Specifically, given a full dialogue consisting of multi-
+ple turns, Ht = {U0, R0, . . . , Ut−1, Rt−1, Ut}, which includes
+both user utterances and previous system responses. The current
+training methodology utilizes turn-level data, represented as
+{U0, R0, . . . , Rt−1, Ut, St, Dt, At, Rt}, where t ranges from 1
+to T. We propose to transform it into a dialogue-level model
+input: {U0, S′
+0, D0, A0, R0, . . . , UT , S′
+T , DT , AT , RT }. Here,
+S′ captures the dialogue state of the current turn rather than
+the full dialogue history, thus preventing previous turn dialogue
+states from appearing multiple times. Training in this manner
+involves conditional language modeling and loss calculation
+on the dialogue states, actions, and responses to update the
+model. Note that while this reduces repetition, it also demands
+more GPU memory and more data.
+2) Value Copy Mechanism: Given the one-to-many nature
+of task-oriented dialogues, a more privacy-preserving variant
+of task bots could adopt a value copy mechanism, in which
+slot values are not newly generated from contextual modeling
+but are directly copied from the dialogue history. Under
+this mechanism, without the history, value generation would
+produce a blank, thus preventing unintended reproduction of
+memorized values.
+Practically, such behavior can be encouraged through coun-
+terfactual data augmentation that randomly replaces or removes
+slot values in both the dialogue history and the corresponding
+belief states during training. This procedure diversifies value
+distributions and weakens the model’s dependence on specific
+values while keeping the semantic structure of dialogues intact.
+Since task-oriented dialogue performance mainly depends on
+accurate schema tracking and turn-level reasoning rather than
+memorization of concrete slot values, this augmentation regular-
+izes value generation without causing significant performance
+degradation. In essence, the approach improves robustness and
+privacy safety by encouraging the model to generalize over slot
+patterns instead of memorizing specific user-provided values.
+VII. CONCLUSION
+This work explores how LLMs memorize and regenerate
+training data when finetuned for the downstream application of
+task-oriented dialogue systems, i.e., task bots. By performing
+training data extraction attacks, we first show that LLM-based
+task bots do memorize and inadvertently leak training labels
+of dialogue states even without conditioning on any context.
+Our results show that values such as phone numbers are easier
+to extract, with maximum precision reaching 67%, and the full
+dialogue states present a significantly lesser concern, with a
+maximum precision of only 26%. We further investigate the
+targeted extraction setting where we seed the task bot with
+partial dialogue states as conditioning context to extract the rest,
+and make several improvements regarding suffix decoding and
+membership inference. Empirical results showed a significant
+improvement, reaching a best-case scenario of 100% extraction
+precision for values and a maximum of over 70% for dialogue
+states. We also investigate the factors influencing memorization
+and pose several potential mitigating strategies to guide further
+development of LLM-based task bots.
+ACKNOWLEDGMENT
+This work was supported in part by National Key Research
+and Development Plan in China (2023YFC3306100) and
+National Natural Science Foundation of China (62272372).
+REFERENCES
+[1] A. Algherairy and M. Ahmed, “A review of dialogue systems: current
+trends and future directions,” Neural Computing and Applications, pp.
+1–27, 2023.
+[2] J. Kulh´anek, V. Hudeˇcek, T. Nekvinda, and O. Duˇsek, “AuGPT: Auxiliary
+tasks and data augmentation for end-to-end dialogue with pre-trained
+language models,” arXiv:2102.05126, 2021.
+[3] B. Peng, C. Li, J. Li, S. Shayandeh, L. Liden, and J. Gao, “Soloist:
+Building task bots at scale with transfer learning and machine teaching,”
+Transactions of the Association for Computational Linguistics, vol. 9,
+pp. 807–824, 2021.
+[4] Y. Yang, Y. Li, and X. Quan, “Ubar: Towards fully end-to-end task-
+oriented dialog system with GPT-2,” in Proceedings of the AAAI
+Conference on Artificial Intelligence, 2021.
+[5] E. Hosseini-Asl, B. McCann, C.-S. Wu, S. Yavuz, and R. Socher, “A
+simple language model for task-oriented dialogue,” Advances in Neural
+Information Processing Systems, vol. 33, pp. 20 179–20 191, 2020.
+[6] H. Sun, J. Bao, Y. Wu, and X. He, “Mars: Modeling context & state
+representations with contrastive learning for end-to-end task-oriented
+dialog,” arXiv:2210.08917, 2022.
+
+15
+[7] W. He et al., “Galaxy: A generative pre-trained model for task-oriented
+dialog with semi-supervised learning and explicit policy injection,” in
+Proceedings of the AAAI conference on artificial intelligence, vol. 36,
+no. 10, 2022, pp. 10 749–10 757.
+[8] N. Carlini et al., “Extracting training data from large language models,”
+in Proceedings of the 30th USENIX Security Symposium, 2021, pp.
+2633–2650.
+[9] N. Carlini, D. Ippolito et al., “Quantifying memorization across neural
+language models,” arXiv:2202.07646, 2022.
+[10] W. Yu, T. Pang, Q. Liu, C. Du, B. Kang, Y. Huang, M. Lin, and S. Yan,
+“Bag of tricks for training data extraction from language models,” in
+International Conference on Machine Learning, 2023, pp. 40 306–40 320.
+[11] N. Carlini et al., “Extracting training data from diffusion models,” in
+Proceedings of the USENIX Security Symposium, 2023, pp. 5253–5270.
+[12] N. Kandpal, E. Wallace, and C. Raffel, “Deduplicating training data
+mitigates privacy risks in language models,” in International Conference
+on Machine Learning, 2022, pp. 10 697–10 707.
+[13] M. Nasr et al., “Scalable extraction of training data from (production)
+language models,” arXiv:2311.17035, 2023.
+[14] Z. Qi, H. Zhang, E. Xing, S. Kakade, and H. Lakkaraju, “Follow my
+instruction and spill the beans: Scalable data extraction from retrieval-
+augmented generation systems,” arXiv:2402.17840, 2024.
+[15] S. Zeng et al., “Exploring memorization in fine-tuned language models,”
+in Proceedings of the 62nd Annual Meeting of the Association for
+Computational Linguistics, 2024, pp. 3917–3948.
+[16] H. Touvron et al., “Llama 2: Open foundation and finetuned chat models,”
+arXiv:2307.09288, 2023.
+[17] M. Eric et al., “MultiWOZ 2.1: A consolidated multi-domain di-
+alogue dataset with state corrections and state tracking baselines,”
+arXiv:1907.01669, 2019.
+[18] G. Hinton, O. Vinyals, and J. Dean, “Distilling the knowledge in a neural
+network,” arXiv:1503.02531, 2015.
+[19] I. Sutskever, O. Vinyals, and Q. V. Le, “Sequence to sequence learning
+with neural networks,” Advances in neural information processing systems,
+vol. 27, 2014.
+[20] A. K. Vijayakumar et al., “Diverse beam search: Decoding diverse
+solutions from neural sequence models,” arXiv:1610.02424, 2016.
+[21] D. Ippolito, R. Kriz, M. Kustikova, J. Sedoc, and C. Callison-Burch,
+“Comparison of diverse decoding methods from conditional language
+models,” arXiv:1906.06362, 2019.
+[22] F. Jelinek, R. L. Mercer, L. R. Bahl, and J. K. Baker, “Perplexity–a
+measure of the difficulty of speech recognition tasks,” The Journal of
+the Acoustical Society of America, vol. 62, no. 1, pp. S63–S63, 1977.
+[23] J.-l. Gailly and M. Adler. (retrived 2024) Zlib compression library.
+[Online]. Available: https://www.zlib.net/
+[24] X. Lu et al., “NeuroLogic a*esque decoding: Constrained text generation
+with lookahead heuristics,” in Proceedings of the Conference of the North
+American Chapter of the Association for Computational Linguistics:
+Human Language Technologies, 2022, pp. 780–799.
+[25] E. J. Hu et al., “Lora: Low-rank adaptation of large language models,”
+arXiv:2106.09685, 2021.
+[26] A. Fan, M. Lewis, and Y. Dauphin, “Hierarchical neural story generation,”
+arXiv:1805.04833, 2018.
+[27] C. Meister, T. Pimentel, G. Wiher, and R. Cotterell, “Locally typical
+sampling,” Transactions of the Association for Computational Linguistics,
+vol. 11, pp. 102–121, 2023.
+[28] A. Holtzman, J. Buys, L. Du, M. Forbes, and Y. Choi, “The curious case
+of neural text degeneration,” arXiv:1904.09751, 2019.
+[29] B. Hilprecht, M. H¨arterich, and D. Bernau, “Monte Carlo and re-
+construction membership inference attacks against generative models,”
+Proceedings on Privacy Enhancing Technologies, 2019.

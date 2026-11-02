@@ -1,0 +1,1269 @@
+LEXLATTICE: MULTILINGUAL EXTRACTIVE SUMMARIZATION
+VIA NEURAL CELLULAR AUTOMATA ON DOCUMENT
+HIERARCHIES
+A PREPRINT
+Sujay Uday Rittikar
+Applied Computer Science
+The University of Winnipeg
+Winnipeg, MB
+rittikar-s@webmail.uwinnipeg.ca
+Sheela Ramanna
+Applied Computer Science
+The University of Winnipeg
+Winnipeg, MB
+s.ramanna@uwinnipeg.ca
+September 24, 2026
+ABSTRACT
+Faithfulness is a central concern in legal text summarization, which motivates extractive approaches
+that select verbatim content traceable to its source. Such methods typically rank paragraphs or other
+structural units in isolation, yet give little attention to consolidating evidence that is distributed across,
+and shares salience between, distant parts of a document. We introduce LexLattice, an extractive
+summarizer that reifies a legal act’s hierarchy as a two-dimensional semantic lattice and consolidates
+over it with a masked 2D neural cellular automata before selection. LexLattice attains state-of-the art
+ROUGE across all 24 languages of EUR-Lex-Sum in both multilingual and cross-lingual settings,
+surpassing instruction-tuned baselines with billions of parameters, despite concentrating all trainable
+capacity in a 1.8M parameter consolidator over a frozen multilingual encoder. A consolidator trained
+only on high-resource languages further transfers to unseen languages with near-lossless retention
+(0.99), indicating that the model operates on language-agnostic semantic geometry rather than surface
+form. Our results position explicit consolidation over document structure as a compact and traceable
+alternative to scale for multilingual legal summarization.
+Keywords Neural Cellular Automata · Reinforcement Learning · Multilingual Summarization · Extractive
+Summarization
+1
+Introduction
+The European Union (EU) enacts its legislation in 24 official languages, and a single legal act often runs to tens of
+thousands of tokens of dense, formulaic prose that binds not only legal professionals but the citizens and businesses
+subject to it. Automatic summarization is therefore a natural instrument for access to law. It is an important tool to
+turn lengthy legislative instruments into concise, faithful accounts of what they require to present. However, this is a
+demanding setting: Documents run well beyond standard encoder limits, and a system must work uniformly across
+languages that differ sharply in available resources. Faithfulness is the sharper of these pressures [1], and it is what
+makes extractive approaches especially attractive here: a summary assembled from verbatim provisions can be traced
+back to the exact article it came from, and it must not invent legal content that the act does not contain. Yet the standard
+neural extractive recipe encodes the document and then scores each sentence in reading order, as one long flat sequence
+[2, 3], discarding structure that legal drafting marks out explicitly. An EU act is not a stream of sentences but a hierarchy
+of recitals, articles, paragraphs, and annexes, and a passage’s position within it says a great deal about whether the
+passage belongs in a summary: the first paragraph of an operative article typically states an obligation, a recital supplies
+background reasoning, an annex lists technical detail. A model must infer these roles from wording alone, even though
+the document already declares them [4, 5, 6].
+arXiv:2609.27032v1 [cs.CL] 22 Sep 2026
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+EU legal act
+(plain text)
+Hierarchy parser
+mT5-base encoder
+∗frozen
+Tile to lattice
+48×32, mask M
+2D-NCA
+T shared steps
+Readout
+MLP →score si
+Budgeted selection
+(s, p)
+N×768
+768×48×32
+[h0∥hT ]
+×T
+ht
+3×3 DW perception
+[ ht∥DWConv ht ]
+1×1 conv →ReLU
+1536 →256
+1×1 conv (0-init)
+256 →768
++
+⊙
+ht+1
+residual
+mask M
+one NCA step
+Figure 1: The LexLattice architecture. A rule-based parser (Section 3.1) recovers the act’s hierarchy; a frozen mT5-base
+encoder embeds each paragraph, and embeddings are tiled onto the semantic lattice (cf. Fig. 2). The masked 2D-NCA
+applies one shared local update T=8 times (right: one step), and a small readout scores each un-tiled paragraph for
+budgeted selection. Blue blocks are the only trainable components (≈1.8M parameters); the mask M keeps padding
+out of every update.
+In this work, we propose LexLattice, an extractive summarizer that accounts for document structure by reifying it
+as a two-dimensional semantic lattice: rows index the sections of an act, columns index paragraph position within
+a section, and each cell carries the frozen multilingual encoder state [7] of the corresponding text unit. Over this
+lattice we run a masked two-dimensional Neural Cellular Automata (NCA) [8], a parameter-light convolutional update
+rule applied iteratively, so that salience evidence propagates locally along sections (between adjacent paragraphs)
+and across them (between structurally parallel positions) before any selection decision is made. Our hypothesis is
+that document structure, once made geometric, allows a small recurrent local model perform the global evidence
+consolidation that sequence models otherwise, obtain through long-range self-attention and far heavier parameterization.
+We evaluate on EUR-Lex-Sum across all 24 languages in multilingual and all-pairs cross-lingual settings, comparing a
+capacity-matched 1D-NCA control, the 2D LexLattice, and its reinforcement-tuned LexLattice + RLOO. With only
+1.8M trainable parameters over a frozen mT5-base encoder, LexLattice + RLOO achieves the best ROUGE among all
+systems, including recent LLM and SLM baselines, while remaining competitive on BERTScore-F1.
+2
+Related Works
+The EUR-Lex-Sum benchmark [9] provides reference baselines in all languages from a zero-shot multilingual LexRank
+extractor [10], and includes a cross-lingual English-to-Spanish track evaluated with translate-then-summarize pipelines
+over OPUS-MT [11] and a Longformer Encoder-Decoder [12]. Sie et al. [13] propose a multi-step extractive-then-
+abstractive pipeline for long regulatory documents, coupling a LexLM extractor to LongT5 [14], Pegasus [15], or
+a QLoRA-tuned Llama-3 decoder [16]. Their two-stage design first extracts salient content and then rewrites it
+abstractively, improving fluency and coherence over the extracted intermediate summary. The extractive stage that
+precedes it remains essential for keeping the generator’s input faithful to the source, a concern that becomes central in
+the legal domain. While the above mentioned systems focus on the summarization pipeline, T.Y.S.S et al. [17] instead
+emphasize the model: they introduce LexT5, a sequence-to-sequence model pre-trained, fine-tuned, and probed on
+legal-domain knowledge, and benchmark it against Longformer and PRIMERA [18] variants. Complementing these,
+Bendahman et al. [19] presented an analysis of entity-level faithfulness on the same corpus, illustrating distinction
+between expert-introduced abstractive entities and spurious hallucinations. Recently, the trend of Small Language
+Models (SLMs) has encouraged various works on text summarization [20, 21]. A study by Medina-Ramírez et al. [22]
+benchmarked the small instruction-tuned language models against the large language models (LLMs) on six languages
+2
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Table 1: EUR-Lex-Sum statistics per language after structural pre-processing. Validation and test splits contain 187 and
+188 (act, summary) pairs for every language. Word, section, and paragraph counts are means over the training split.
+Tier marks the cross-lingual transfer split: we train on the 12 high-resource (H) languages and evaluate zero-shot on the
+12 low-resource (L) languages. The bottom row gives the total training documents and macro-averages over languages.
+†Irish: 16 training documents, and the longest source documents in the corpus.
+Language
+Tier
+Training
+Document
+Summary
+Sections
+Paragraphs
+documents
+words
+words
+per document
+per document
+Bulgarian
+L
+957
+13,219
+861
+38.8
+150.9
+Croatian
+L
+903
+11,043
+765
+41.8
+172.1
+Czech
+H
+984
+12,072
+757
+28.3
+113.8
+Danish
+H
+1,002
+11,677
+768
+28.7
+110.7
+Dutch
+H
+1,001
+12,979
+887
+28.4
+112.0
+English
+H
+1,129
+12,079
+820
+29.2
+115.7
+Estonian
+L
+957
+10,460
+625
+25.1
+110.4
+Finnish
+H
+991
+9,662
+629
+26.7
+104.1
+French
+H
+1,130
+13,665
+993
+28.7
+108.0
+German
+H
+1,115
+10,897
+799
+26.2
+72.2
+Greek
+H
+993
+13,301
+904
+27.3
+113.7
+Hungarian
+L
+961
+11,862
+757
+27.2
+89.9
+Irish†
+L
+16
+32,852
+1,020
+30.9
+168.0
+Italian
+H
+1,028
+13,174
+915
+27.8
+107.9
+Latvian
+L
+959
+11,443
+714
+25.0
+124.7
+Lithuanian
+L
+960
+11,499
+707
+24.6
+104.6
+Maltese
+L
+940
+14,745
+917
+28.6
+119.1
+Polish
+L
+978
+11,702
+786
+26.7
+105.8
+Portuguese
+H
+1,001
+13,070
+945
+28.3
+112.2
+Romanian
+L
+978
+13,485
+875
+39.7
+104.5
+Slovak
+L
+950
+11,699
+764
+30.1
+125.2
+Slovenian
+L
+957
+11,485
+755
+30.0
+121.6
+Spanish
+H
+1,112
+13,257
+975
+26.1
+98.7
+Swedish
+H
+987
+11,123
+763
+29.1
+119.6
+Total / mean
+22,989
+13,019
+821
+29.3
+116.1
+of EUR-Lex-Sum across an extensive list of models. Their results indicate that instruction tuning alone outperforms
+task fine-tuning under the LLM-as-judge evaluations.
+3
+Dataset
+We use EUR-Lex-Sum [9], a manually curated multilingual and cross-lingual dataset of legal acts and their sum-
+maries, drawn from the EUR-Lex law platform and covering all 24 official EU languages. We use the released
+train/validation/test partitions in full, without language or document sampling. Table 1 reports per-language statistics
+after pre-processing. Each record consists of a CELEX identifier [23], the full text of the act, and the reference summary,
+all as plain newline-delimited text. The release carries no structural markup, thus, the document structure must be
+recovered from the text itself.
+3.1
+Rule-based hierarchy parsing
+We recover each act’s hierarchy with a deterministic, rule-based parser built on EU legal drafting conventions, using
+a manually verified keyword table for all languages covering the head-words for article, chapter, section, title, and
+annex. The article patterns accommodate both word-first layouts ("Article 1", "Artigo 1.º") and number-first layouts
+("1 artikla", "1. cikk"); recitals are detected by the pan-European "(N)" line convention and numbered paragraphs by
+leading "N." markers. A line is considered as a potential header only if it is shorter than 60 characters, guarding against
+body text that merely contains a keyword. The parser emits a list of sections, each holding an ordered list of paragraphs.
+Only four section kinds become structural units downstream: preamble, the recitals block, articles, and annexes,
+while chapter/section/title headings act purely as paragraph-flow separators. Sections with no paragraphs are discarded.
+Text units.
+The atomic unit for selection is the paragraph, addressed by its coordinate (section index, paragraph
+index). For encoding only, paragraphs longer than 256 multilingual T5 (mT5) [7] tokens are split into consecutive
+256-token chunks whose embeddings are later mean-pooled back to a single paragraph vector. Chunking therefore
+3
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Preamble
+Recitals
+Article 1
+Article 2
+Article 3
+Article 4
+Article 5
+Article 6
+Article 7
+Article 8
+Article 9
+Annex I
+Annex II
+Annex III
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+paragraph position within section →
+section (lattice row)
+Preamble
+Recitals
+Article
+Annex
+Padding (masked)
+Figure 2: Semantic-lattice tiling of a EUR-Lex act (32007R0458). Rows index sections recovered by the hierarchy
+parser (Section 3.1), columns index paragraph position within a section, and each occupied cell holds the frozen mT5
+embedding of its paragraph. Grey cells are masked padding. Only the occupied 14×12 region of the full 48×32 lattice
+is shown.
+stays internal to encoding: the model still selects, and is supervised on, whole paragraphs rather than chunks, so the unit
+of prediction matches the unit of the oracle target.
+4
+Preliminaries
+4.1
+The Semantic Lattice
+We represent the parsed hierarchy as a fixed two-dimensional grid of size H ×W = 48×32, where rows index sections
+and columns index paragraph positions within a section (Figure 2). This grid is the substrate of an NCA, a dynamical
+computational model that learns a single shared update rule through which cells self-organize over a lattice: each cell
+holds a 768-dimensional state, initialized to its paragraph’s frozen embedding, and is updated only from its immediate
+neighbourhood. We set the grid dimensions from a scan of the training corpus, choosing a grid that accommodates
+the large majority of documents without inflating the number of empty cells. Because a fixed grid cannot cover every
+document, we adopt a clamp-and-merge policy rather than truncating: a paragraph whose section or position index
+falls outside the grid is clamped into the last row or column, and a cell receiving several paragraphs stores their mean
+vector. Tiling scatters each paragraph vector into its cell and records a binary occupancy mask, and masked cells never
+contribute to updates; un-tiling broadcasts the updated cell state back to every paragraph mapped to that cell. Both
+operations are differentiable, so the consolidator trains end to end and every paragraph receives a score. Because the
+axes are semantic, a cell’s neighbors are its adjacent paragraphs within a section and the paragraphs at the same relative
+position in neighboring sections.
+4.2
+Supervision: a Greedy Extractive Oracle
+Following standard practice in extractive summarization [2, 3], we construct a greedy oracle per document to serve as
+the training target. Let D = {p1, . . . , pN} be the N paragraphs of a document D, and R its reference summary. The
+quality of a selection S ⊆D against the reference R is
+g(S) = 1
+2
+
+R-1F1(S, R) + R-2F1(S, R)
+
+,
+(1)
+where R-1F1 and R-2F1 denote unigram and bigram ROUGE F1 respectively. Starting from an empty selection S0 = ∅,
+we write Rt = D \ St−1 for the paragraphs still available at step t, and add the one whose marginal gain in g is largest,
+πt = arg max
+p ∈Rt
+h
+g
+ St−1 ∪{p}
+
+−g(St−1)
+i
+,
+(2)
+setting St = St−1 ∪{πt} and terminating when no remaining paragraph yields a positive gain or when |St| = 40. This
+cap is a safeguard: the zero-gain criterion terminates first for the large majority of training documents, and where the
+4
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+cap does bind, it removes only the lowest-gain tail of the supervision sequence. The procedure yields both a selection set
+S and the order in which its members were accepted. It is the ordered sequence π = (π1, . . . , πK), with K = |S| ≤N,
+that provides the supervision signal for the warm-start stage (Section 5.1).
+4.3
+Model: LexLattice
+Figure 1 shows the full pipeline; we describe each component in turn, using the notation of the figure throughout.
+Frozen multilingual encoder.
+Every paragraph is embedded with a frozen mT5-base encoder as the attention-masked
+mean of its final-layer token states (768-d; ≤256 tokens per chunk, with longer paragraphs mean-pooling their chunk
+embeddings), yielding the N × 768 paragraph states that are tiled onto the lattice. Frozen encoder serves three purposes:
+(i) it holds the shared multilingual representation space fixed as an experimental constant, (ii) it concentrates all trainable
+capacity in the consolidator and readout, and (iii) it allows embeddings to be computed once and cached.
+Masked 2D NCA.
+The consolidator applies the same local update to the lattice state ht for T=8 steps (Figure 1,
+right). A perception stage concatenates each cell with a learned depthwise (DW) 3×3 convolution of its neighbourhood,
+[ ht∥DWConv ht ] (768 →1,536 channels), and an update MLP of two 1×1 convolutions (1,536 →256 →768,
+ReLU) produces a residual state change. The final projection is zero-initialized, so the untrained automata is the identity
+map. The update is deterministic and is multiplied by the occupancy mask M at every step, so padding cells never
+contribute to, or drift from, the zero state. Salience evidence thus propagates locally both along sections (adjacent
+paragraphs) and across structurally parallel positions in neighboring sections. Optionally, a learned language embedding
+(24 × 768) is added to every occupied cell before the first step. The consolidator and readout together hold ≈1.80M
+trainable parameters: the frozen encoder does all representation work, and the automata only consolidates.
+Capacity-matched 1D control.
+To isolate the contribution of the second, structural axis we train an otherwise
+identical 1D-NCA: the same perception and update architecture with width-3 1D convolutions over paragraphs in
+reading order, and the same step count, hidden width, initialization, readout, loss, and training loop. Any difference
+between the two systems is attributable to lattice geometry alone.
+Readout and selection.
+A residual readout scores each paragraph from the concatenation of its initial and consolidated
+states, [ h0∥hT ]: Linear(1,536 →768) →GELU →Linear(768 →1), yielding a scalar salience score si. At
+inference, paragraphs are ranked by si and greedily accepted until the cumulative word count reaches the reference
+summary’s length; accepted paragraphs are emitted in document order.
+5
+Methodology
+Stage 1 trains the model that we evaluate as LEXLATTICE; Stage 2 then asks whether reinforcement learning provides
+any additional value.
+5.1
+Stage 1: Listwise Warm-Start
+The readout assigns a score to every paragraph of the document, giving s1, . . . , sN. These scores define a Plackett–Luce
+distribution over paragraphs [24, 25]: a paragraph is drawn without replacement with probability proportional to
+exp(si), so an ordered selection of K paragraphs has likelihood
+P(π) =
+K
+Y
+t=1
+exp
+ sπt
+
+P
+j∈Rt exp
+ sj
+,
+(3)
+with Rt = D \ St−1 as above, so that R1 = D and each factor renormalizes over the paragraphs not yet taken. Taking
+the oracle sequence of Section 4.2 as the target, we minimize the Plackett-Luce negative log-likelihood of that ordering
+(a listwise ranking loss, equivalent to ListMLE [26],
+LPL = −
+K
+X
+t=1
+h
+sπt −log
+X
+j∈Rt
+exp(sj)
+i
+,
+(4)
+which we evaluate with a vectorized reverse log-cumulative-sum-exponential (log-cumsum-exp) rather than a per-step
+loop. The model therefore scores all N paragraphs while the target constrains the first K, leaving the ordering of the
+unselected remainder free.
+5
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Because the listwise objective is invariant to a constant shift of all scores, it fixes only their relative order. We therefore
+add a binary cross-entropy term LBCE over all N paragraphs, with oracle membership as the label, which gives the
+readout an absolute reference point:
+L = LPL + λ LBCE,
+λ = 0.3.
+(5)
+We set λ = 0.3 without tuning. The role of LBCE is only to resolve the shift-invariance of LPL by anchoring the
+absolute scale of the scores, which any moderate positive weight accomplishes; a value well below one keeps the
+listwise ranking term dominant, so membership classification refines rather than overrides the learned ordering. Because
+every model variant is trained with the same λ, our comparisons are unaffected by its precise value.
+5.2
+Stage 2: Reinforcement Fine-Tuning
+Stage 1 optimizes agreement with an oracle sequence, a proxy for the quantity we actually care about: the quality of the
+extract the selector finally emits. Stage 2 optimizes that quantity directly with REINFORCE Leave-One-Out [27, 28],
+testing whether the proxy leaves headroom rather than serving as a component the model depends on.
+Let π ∼Pθ denote an extract sampled from the Plackett–Luce policy of Eq. 3: paragraphs are drawn sequentially
+without replacement until the word budget is met, then assembled in document order and truncated to the budget,
+exactly matching the evaluation-time selector. We maximize the expected reward of the sampled extract,
+J (θ) = Eπ∼Pθ
+
+r(π)
+
+,
+(6)
+where r(π) ∈[0, 1] scores the extract against the reference R as the mean of three ROUGE F1 variants,
+r(π) = 1
+3
+X
+v ∈{1, 2, Lsum}
+R-vF1(π, R).
+(7)
+Language-normalized reward.
+Raw reward magnitudes differ systematically across languages, so before forming
+the gradient we standardize r per language ℓusing running estimates µℓ, σℓmaintained online,
+˜r(π) = r(π) −µℓ
+σℓ
+,
+(8)
+which prevents high-scoring languages from dominating the update.
+Leave-one-out advantage.
+For each document we draw G=4 rollouts π1, . . . , πG and use the mean normalized
+reward of the remaining G−1 as each rollout’s baseline, giving a critic-free, unbiased advantage Ag where,
+Ag = ˜r(πg) −
+1
+G −1
+X
+g′̸=g
+˜r(πg′).
+(9)
+The resulting policy-gradient estimate is
+∇θJ ≈
+G
+X
+g=1
+Ag ∇θ log Pθ(πg),
+(10)
+where log Pθ(πg) is the Plackett-Luce log-likelihood of Eq. (1), differentiated through the readout scores.
+6
+Experiments
+Experiments run on a single workstation with an AMD Ryzen Threadripper 5975WX CPU and three NVIDIA RTX
+A6000 GPUs (49 GB VRAM each), with all models implemented in PyTorch [29]. Frozen encoder outputs are cached
+once, after which the warm-start, RL, transfer, and ablation runs proceed without the encoder in the loop. RLOO is the
+most expensive stage at ≈8.4 GPU-hours; warm-start converges within roughly one epoch. All runs use seed 0.
+7
+Results and Discussion
+7.1
+Multilingual Analysis
+Table 2 reports per-language results across six languages, and three patterns hold consistently. First, the structural axis
+pays off: LexLattice improves over the 1D-NCA on every metric in every language, by 1.7-2.0 ROUGE-1 and up to 2.7
+6
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Table 2: Per-language results on EUR-Lex-Sum (R1: ROUGE-1, R2: ROUGE-2, RL: ROUGE-L, BS: BERTScore-F1).
+Best per metric per language in bold. LexLattice is our 2D-NCA over the semantic lattice; 1D-NCA is the capacity-
+matched control (Section 4.3). †Aumiller et al. [9]; ‡LexT5 [17]; §SLM benchmark [22].
+Model
+R1
+R2
+RL
+BS
+English
+LexRank†
+26.68 13.64 13.58
+–
+SLED-LexT5‡
+37.40 19.30 34.30 67.60
+Unlim. LexT5‡
+37.90 19.10 34.10 67.50
+LLaMA-3.1-8B-Inst§
+47.26 21.54 21.84 72.39
+Qwen3-4B§
+43.07 17.59 20.45 74.14
+1D-NCA (ours)
+52.98 22.83 32.63 72.05
+LexLattice (ours)
+54.81 24.64 36.04 73.15
+LexLattice + RLOO (ours) 54.96 24.57 36.57 74.28
+French
+LexRank†
+32.35 18.00 15.16
+–
+Qwen3-4B§
+51.61 27.02 25.02 79.22
+Qwen2.5-3B-Inst§
+51.70 26.45 25.11 78.86
+1D-NCA (ours)
+57.68 27.21 24.98 73.27
+LexLattice (ours)
+58.75 28.55 27.23 77.72
+LexLattice + RLOO (ours) 58.62 28.67 28.78 80.49
+German
+LexRank†
+26.72 13.75 12.56
+–
+Qwen2.5-3B-Inst§
+ext
+44.58 18.86 19.20 72.35
+Qwen3-0.6B§
+ext
+45.11 18.14 17.12 70.44
+Qwen3-4B§
+44.72 21.40 22.79 76.99
+1D-NCA (ours)
+48.32 20.32 19.28 71.92
+LexLattice (ours)
+50.31 23.03 23.24 73.88
+LexLattice + RLOO (ours) 50.64 23.06 25.14 76.76
+Italian
+LexRank†
+28.57 14.24 12.90
+–
+Qwen3-0.6B§
+ext
+46.33 18.63 17.18 72.23
+Qwen2.5-3B§
+45.74 20.90 21.94 77.33
+Qwen2.5-1.5B§
+42.69 19.15 21.80 77.42
+1D-NCA (ours)
+49.70 21.49 20.61 73.04
+LexLattice (ours)
+51.13 22.38 22.29 77.30
+LexLattice + RLOO (ours) 51.42 23.29 22.61 78.21
+Spanish
+LexRank†
+28.34 17.12 15.23
+–
+Qwen2.5-3B§
+53.37 28.92 28.27 78.92
+Qwen2.5-3B-Inst§
+53.08 28.50 28.83 78.83
+1D-NCA (ours)
+56.68 28.07 26.71 73.35
+LexLattice (ours)
+58.41 29.44 28.48 75.87
+LexLattice + RLOO (ours) 58.44 30.17 29.00 76.70
+Portuguese
+LexRank†
+30.67 17.20 15.20
+–
+Qwen3-4B-Base§
+51.97 26.92 26.88 78.71
+Qwen2.5-3B-Inst§
+51.66 27.05 27.38 78.22
+Qwen3-4B§
+51.16 27.08 27.21 77.92
+1D-NCA (ours)
+55.86 26.57 24.84 74.18
+LexLattice (ours)
+57.52 27.68 28.13 76.38
+LexLattice + RLOO (ours) 57.55 27.95 28.75 78.28
+7
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Table 3: Zero-shot transfer on the 12 held-out (LOW) languages, ROUGE-2. Transfer: 2D-NCA trained on HIGH only;
+Joint: trained on all languages. Retention = Transfer / Joint; ≥1 indicates no loss. Sorted by retention.
+Language
+Transfer
+Joint
+Retention
+Polish
+21.89
+21.64
+1.012
+Irish
+25.61
+25.48
+1.005
+Hungarian
+30.41
+30.34
+1.002
+Lithuanian
+20.10
+20.07
+1.002
+Latvian
+24.03
+24.00
+1.001
+Maltese
+24.81
+24.92
+0.996
+Bulgarian
+16.95
+17.06
+0.993
+Romanian
+21.97
+22.22
+0.989
+Estonian
+17.89
+18.11
+0.988
+Slovak
+23.32
+23.85
+0.978
+Croatian
+19.83
+20.32
+0.976
+Slovenian
+19.21
+19.73
+0.974
+Mean
+22.17
+22.31
+0.993
+ROUGE-2, confirming that the section×paragraph geometry drives the gain. Second, LexLattice+RLOO attains the
+best ROUGE-1, ROUGE-2, and ROUGE-L in all six languages, ahead of instruction-tuned baselines as large as 8B
+parameters despite carrying only 1.8M trainable parameters over a frozen encoder. The margin over the strongest prior
+system reaches 7.7 ROUGE-1 in English. Third, RLOO adds marginal gains to ROUGE-1 or ROUGE-2 metrics. The
+warm-start already captures most of that quality, but yields a consistent ROUGE-L gain that secures the ROUGE-L lead:
+in Spanish, for instance, only after RLOO does our model surpass the strongest baseline on this metric. The BERTScore
+picture is more balanced: LexLattice is strongest in English, French, and Italian, while a larger Qwen baseline edges it
+in German, Spanish, and Portuguese, in most cases by under a point.
+7.2
+Cross-Lingual Transfer
+If the consolidator operates on the encoder’s shared semantic geometry rather than on language-specific surface cues, a
+model trained on one set of languages should transfer to unseen ones with little loss. We test this in two settings. In
+both, the language embedding is omitted, since it is undefined for a language never seen in training, and we report
+retention: the ratio of a transferred model’s ROUGE-2 to that of a model jointly supervised on the target language,
+where a value of 1 denotes lossless transfer.
+Held-out languages.
+We split the languages at the median training-document count into HIGH (12 languages, 12,473
+documents) and LOW (12 languages, including Irish with only 16), train the 2D-NCA on HIGH alone, and evaluate
+zero-shot on LOW. Table 3 reports the result. Transfer is near-lossless throughout: retention averages 0.993 and never
+falls below 0.974, and for five of the twelve languages the zero-shot model matches or exceeds its jointly-supervised
+counterpart. A model which has never seen a language can perform nearly equal to the one trained on it indicates that
+the consolidation rule the automata learns is largely language-independent.
+English→Spanish.
+As a stricter case mirroring the cross-lingual baseline of the original EUR-Lex-Sum study, we
+train LexLattice on English alone, select on English validation, and evaluate zero-shot on Spanish, so the target language
+is never seen before test time (Table 4). Among methods with access only to the English source, zero-shot LexLattice
+improves over both the translate-then-summarize LED pipeline and English LexRank by a wide margin on every metric.
+It also comes within 1.8 ROUGE-1 of the Spanish-supervised model, reinforcing the finding above: transferring from
+English costs little even when no target-language signal is available at any stage.
+7.3
+LLM-as-a-Judge Evaluation
+ROUGE under-credits heavily inflected languages and behaves inconsistently across scripts. We therefore complement
+it with a reference-based adaptation of LeMAJ [30], which decomposes each reference into Legal Data Points (LDPs):
+atomic, self-contained statements of legal information. A single fixed judge (Claude Sonnet 4.5, 31) scores each
+candidate pointwise and blind, with coverage marking every reference LDP as covered, partial, or missing, and
+relevance marking every candidate unit as relevant, marginal, or irrelevant (partial credit 0.5); LDP-F1 is their harmonic
+mean. Because the systems are extractive and therefore near-perfectly grounded in the source, the protocol isolates
+selection quality rather than factual consistency. The judge-based results in Table 5 demonstrate the ROUGE findings
+under an evaluation largely insensitive to inflection and script. The structural axis accounts for most of the improvement:
+8
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+Table 4: Cross-lingual English→Spanish results. Upper block: English-source-only methods (bold = best). Lower
+block: Spanish-side references (italic). †Aumiller et al. [9].
+Model
+R1
+R2
+RL
+BS
+LED†
+31.14
+13.01
+16.20
+–
+LexRank-EN†
+39.44
+20.02
+18.73
+–
+LexLattice-EN (zero-shot)
+56.63
+28.33
+27.68
+73.63
+LexRank-ES†
+28.34
+17.12
+15.23
+–
+Oracle-Abs†
+54.55
+41.01
+45.06
+–
+LexLattice-ES (sup.)
+58.41
+29.44
+31.24
+74.87
+Table 5: LLM-as-a-judge evaluation on the full test set (all 24 languages, candidates blinded), macro-averaged over
+languages. Coverage: fraction of reference LDPs recovered; relevance: fraction of candidate content judged pertinent;
+LDP-F1: their harmonic mean.
+†/‡: improvement over 1D-NCA / LexLattice (paired Wilcoxon, per-document,
+p < 0.05).
+Model
+Coverage
+Relevance
+LDP-F1
+1D-NCA
+37.3
+68.0
+45.1
+LexLattice
+44.4†
+75.3†
+52.9†
+LexLattice + RLOO
+45.3†
+77.2†‡
+54.2†
+LexLattice improves LDP-F1 over the 1D control by 7.8 points (+17%), the majority of it attributable to coverage
+(+7.1), which suggests that structural adjacency helps the model recover salient content that a flat pass over paragraphs
+overlooks. RLOO contributes a further 1.3 points, concentrated in relevance, and all improvements are significant under
+a per-document paired Wilcoxon test.
+7.4
+Coverage Across the Remaining Languages
+The six languages of Section 7.1 are the only ones with instruction-tuned LLM or SLM variants; for the remaining 18,
+the zero-shot multilingual LexRank of Aumiller et al. [9] is the sole published baseline. Figure 3 shows ROUGE-1 for
+these languages, and the gains are uniform: LexLattice model with RLOO improves on LexRank in every one, by 19.0
+points on average and by at least 11.8, spanning scripts from Latin to Cyrillic (Bulgarian) and Greek. The 1D→2D and
+RLOO trends observed on the high-resource languages persist here as well, with the semantic lattice providing the bulk
+of the improvement over the 1D control; full per-system, per-metric numbers appear in Section 7.5.
+30
+40
+50
+60
+ROUGE-1
+Hungarian
+Irish
+Czech
+Maltese
+Swedish
+Dutch
+Latvian
+Slovak
+Romanian
+Danish
+Polish
+Slovene
+Croatian
+Lithuanian
+Estonian
+Finnish
+Greek
+Bulgarian
+LexRank
+LexLattice+RLOO (ours)
+Figure 3: ROUGE-1 on the remaining 18 EUR-Lex-Sum languages (jointly trained, sorted by our score). LexRank
+is the only external baseline available for these languages; our final model improves on it by 19.0 points on average
+(11.8–24.6), in every language. Full per-system, per-metric results are in Appendix 6.
+9
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+7.5
+Complete Results Across All Languages
+Table 6 reports the complete per-system, per-metric scores for the 18 EUR-Lex-Sum languages not shown in Table 2,
+jointly trained on all 24 languages. LexLattice or its RLOO variant attains the best ROUGE-1 and ROUGE-2 in every
+language, with the 1D control competitive only in Bulgarian.
+Table 6: Full per-language, per-system results on the 18 EUR-Lex-Sum languages not shown in Table 2 (jointly
+trained on all 24 languages). Best value per metric per language in bold. LexLattice is our 2D-NCA; +RLOO adds the
+reinforcement stage; 1D-NCA is the capacity-matched control.
+Model
+R1
+R2
+RL
+BS
+Bulgarian
+LexRank
+25.58
+8.40 16.13
+–
+1D-NCA
+36.92 18.06 21.51 73.45
+LexLattice 37.44 17.25 21.06 73.54
++RLOO 37.34 16.17 20.26 73.30
+Croatian
+LexRank
+32.64 12.76 13.29
+–
+1D-NCA
+44.58 18.58 18.09 73.40
+LexLattice 46.32 19.85 18.34 74.11
++RLOO 46.57 20.47 18.42 74.93
+Czech
+LexRank
+31.86 16.76 14.32
+–
+1D-NCA
+53.10 23.88 21.10 72.79
+LexLattice 55.49 25.87 21.91 73.98
++RLOO 55.80 25.34 21.96 74.12
+Danish
+LexRank
+29.22 13.86 13.19
+–
+1D-NCA
+48.84 20.15 18.90 72.64
+LexLattice 50.31 21.07 19.55 72.97
++RLOO 50.66 21.30 20.42 72.72
+Dutch
+LexRank
+29.62 14.76 14.73
+–
+1D-NCA
+51.31 22.96 22.81 73.88
+LexLattice 53.83 25.24 23.19 74.33
++RLOO 54.11 24.68 23.57 73.94
+Estonian
+LexRank
+26.39 11.41 11.66
+–
+1D-NCA
+40.24 16.61 16.57 72.93
+LexLattice 41.58 17.97 16.88 73.10
++RLOO 41.58 17.99 17.16 73.84
+Model
+R1
+R2
+RL
+BS
+Finnish
+LexRank
+26.49 11.68 11.80
+–
+1D-NCA
+39.86 17.61 17.61 72.82
+LexLattice 40.72 18.01 18.74 74.06
++RLOO 41.23 18.64 19.11 75.66
+Greek
+LexRank
+24.79
+9.45 15.46
+–
+1D-NCA
+37.00 17.60 21.35 75.35
+LexLattice 38.35 17.71 22.03 75.55
++RLOO 37.52 18.36 21.82 75.78
+Hungarian
+LexRank
+34.55 19.69 15.64
+–
+1D-NCA
+56.50 28.20 22.13 74.20
+LexLattice 58.82 30.73 22.80 75.72
++RLOO 58.81 30.40 23.14 76.35
+Irish
+LexRank
+41.93 17.16 15.25
+–
+1D-NCA
+54.94 23.31 18.99 75.64
+LexLattice 57.11 25.12 19.04 75.67
++RLOO 57.22 25.33 19.47 76.66
+Latvian
+LexRank
+31.73 15.77 13.15
+–
+1D-NCA
+51.75 22.84 19.01 74.26
+LexLattice 53.25 23.94 20.70 75.55
++RLOO 53.24 23.74 21.09 76.23
+Lithuanian
+LexRank
+26.76 12.45 11.59
+–
+1D-NCA
+42.65 18.72 17.09 73.28
+LexLattice 43.55 19.84 17.48 73.61
++RLOO 44.19 19.92 17.69 74.31
+Model
+R1
+R2
+RL
+BS
+Maltese
+LexRank
+30.51 14.62 12.86
+–
+1D-NCA
+53.63 23.97 19.74 75.49
+LexLattice 54.82 24.74 20.26 76.50
++RLOO 55.09 25.15 20.36 77.47
+Polish
+LexRank
+28.88 14.42 12.73
+–
+1D-NCA
+46.31 21.31 18.65 72.74
+LexLattice 47.04 21.53 19.88 73.05
++RLOO 47.31 21.58 21.32 74.66
+Romanian
+LexRank
+34.75 15.16 14.59
+–
+1D-NCA
+49.93 21.02 18.59 72.96
+LexLattice 50.97 22.72 19.53 73.02
++RLOO 51.09 22.66 20.17 73.16
+Slovak
+LexRank
+30.65 14.94 13.14
+–
+1D-NCA
+50.09 21.65 19.06 72.07
+LexLattice 52.99 23.52 19.64 73.02
++RLOO 53.06 24.15 20.81 74.95
+Slovene
+LexRank
+27.19 12.34 11.79
+–
+1D-NCA
+43.44 18.40 17.62 72.99
+LexLattice 45.92 20.65 18.11 73.62
++RLOO 46.69 19.35 20.52 75.40
+Swedish
+LexRank
+30.67 15.47 14.35
+–
+1D-NCA
+53.23 23.42 20.73 74.92
+LexLattice 54.45 25.18 22.11 75.05
++RLOO 54.47 24.82 21.52 75.85
+7.6
+Visualizing NCA Salience Evolution
+Figure 4 illustrates the consolidation dynamics of LexLattice on a representative English document. Each panel shows
+the semantic lattice (rows: preamble, recitals, articles, annexes; columns: paragraph position within the section; grey
+cells are padding), coloured by the readout salience of each paragraph, min–max normalized over the whole trajectory.
+The leftmost panel is the encoder input (t=0); subsequent panels show the state after each of the T=8 local NCA update
+steps. Salience is diffuse at t=0 and progressively sharpens as information propagates through the 3×3 neighbourhood,
+concentrating on a sparse set of cells. Stars in the final panel mark the paragraphs ranked into the summary under the
+reference-length word budget; these cluster in contiguous lattice regions rather than isolated cells, evidence that the
+learned dynamics exploit the document’s hierarchical structure rather than scoring paragraphs independently.
+10
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+preamble
+Recitals
+Article 1
+Article 2
+Article 3
+Article 4
+Article 5
+Article 6
+Article 7
+Article 8
+Article 9
+ANNEX I
+ANNEX II
+ANNEX III
+input
+(t=0)
+step 1
+step 2
+step 3
+step 4
+step 5
+step 6
+step 7
+step 8
+0
+(low)
+0.25
+0.50
+0.75
+1
+(high)
+relative salience
+2D-NCA consolidation: paragraph salience propagating across the semantic lattice
+readout score per cell at each update step; 
+ = paragraphs selected into the summary (32007R0458)
+Figure 4: Per-cell readout salience on the semantic lattice at t=0 and after each of the 8 NCA update steps (single
+sequential colour ramp; grey = padding). ⋆marks paragraphs selected into the final extract.
+8
+Conclusion and Future Work
+We introduced LexLattice, an extractive summarizer that casts a legal act’s hierarchy as a 2D semantic lattice and
+consolidates over it with a masked 2D NCA before selection. Concentrating all trainable capacity in a 1.8M-parameter
+consolidator over a frozen multilingual encoder, it attains state-of-the-art ROUGE scores across all 24 languages of
+EUR-Lex-Sum, surpassing far larger instruction-tuned baselines, with a uniform per-language evaluation and a broad
+cross-lingual transfer study. The learned dynamics sharpen diffuse salience onto contiguous, structurally coherent
+regions of the lattice (Section 7.6), indicating that explicit consolidation over document structure is a compact substitute
+for scale. Proposed extensions of our work include: applying the lattice to other long, hierarchically organized corpora,
+both legal [32] and beyond [33]; and coupling the traceable extract with an abstractive generator to add fluency while
+preserving auditability.
+9
+Limitations
+LexLattice relies on a rule-based parser to recover document hierarchy, so it presupposes structurally marked text and
+would degrade on documents without explicit sectioning. Being extractive, it is bounded by the source and a fixed
+length budget, which caps coverage and forgoes the fluency of abstraction. Finally, for most of the languages the only
+published baseline is extractive LexRank, so our comparisons rest on limited external baselines.
+Ethical Statement
+This work uses EUR-Lex-Sum, a publicly released corpus of EU legal acts and their official summaries; it contains
+no personal or private data, and we use it in accordance with its license. Our aim is to broaden access to law across
+the official EU languages, which is of particular benefit to speakers of lower-resourced languages underserved by
+English-centric systems. We caution, however, that automatic summaries of legal text are not legal advice and must not
+substitute for the authoritative instruments they condense. Although our extractive design keeps summaries traceable to
+the source and limits fabricated content, it guarantees neither completeness nor faithfulness, and quality is weaker for
+the most resource-scarce languages, where reliance should be correspondingly cautious. Because the method trains
+only a small consolidator over a frozen encoder, it also carries a modest computational and energy cost relative to large
+generative summarizers.
+Acknowledgments
+This research is supported by NSERC Discovery grant #194376.
+11
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+References
+[1] Diego de Vargas Feijo and Viviane P. Moreira. Improving abstractive summarization of legal rulings through
+textual entailment. Artificial Intelligence and Law, 31(1):91–113, March 2023. ISSN 1572-8382. doi: 10.1007/
+s10506-021-09305-4. URL https://doi.org/10.1007/s10506-021-09305-4.
+[2] Ramesh Nallapati, Feifei Zhai, and Bowen Zhou. Summarunner: A recurrent neural network based sequence
+model for extractive summarization of documents. In Proceedings of the AAAI conference on artificial intelligence,
+volume 31, 2017. URL https://ojs.aaai.org/index.php/AAAI/article/view/10958.
+[3] Yang Liu and Mirella Lapata. Text summarization with pretrained encoders. In Kentaro Inui, Jing Jiang,
+Vincent Ng, and Xiaojun Wan, editors, Proceedings of the 2019 Conference on Empirical Methods in Natural
+Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-
+IJCNLP), pages 3730–3740, Hong Kong, China, November 2019. Association for Computational Linguistics. doi:
+10.18653/v1/D19-1387. URL https://aclanthology.org/D19-1387/.
+[4] Arman Cohan, Franck Dernoncourt, Doo Soon Kim, Trung Bui, Seokhwan Kim, Walter Chang, and Nazli Goharian.
+A discourse-aware attention model for abstractive summarization of long documents. In Marilyn Walker, Heng Ji,
+and Amanda Stent, editors, Proceedings of the 2018 Conference of the North American Chapter of the Association
+for Computational Linguistics: Human Language Technologies, Volume 2 (Short Papers), pages 615–621, New
+Orleans, Louisiana, June 2018. Association for Computational Linguistics. doi: 10.18653/v1/N18-2097. URL
+https://aclanthology.org/N18-2097/.
+[5] Huan Yee Koh, Jiaxin Ju, Ming Liu, and Shirui Pan. An empirical survey on long document summarization:
+Datasets, models, and metrics. ACM Comput. Surv., 55(8), December 2022. ISSN 0360-0300. doi: 10.1145/
+3545176. URL https://doi.org/10.1145/3545176.
+[6] Qian Ruan, Malte Ostendorff, and Georg Rehm. HiStruct+: Improving extractive text summarization with
+hierarchical structure information. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors,
+Findings of the Association for Computational Linguistics: ACL 2022, pages 1292–1308, Dublin, Ireland,
+May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.findings-acl.102. URL https:
+//aclanthology.org/2022.findings-acl.102/.
+[7] Linting Xue, Noah Constant, Adam Roberts, Mihir Kale, Rami Al-Rfou, Aditya Siddhant, Aditya Barua, and
+Colin Raffel.
+mT5: A massively multilingual pre-trained text-to-text transformer.
+In Kristina Toutanova,
+Anna Rumshisky, Luke Zettlemoyer, Dilek Hakkani-Tur, Iz Beltagy, Steven Bethard, Ryan Cotterell, Tanmoy
+Chakraborty, and Yichao Zhou, editors, Proceedings of the 2021 Conference of the North American Chapter
+of the Association for Computational Linguistics: Human Language Technologies, pages 483–498, Online,
+June 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.naacl-main.41. URL https:
+//aclanthology.org/2021.naacl-main.41/.
+[8] Alexander Mordvintsev, Ettore Randazzo, Eyvind Niklasson, and Michael Levin. Growing neural cellular
+automata. Distill, 2020. doi: 10.23915/distill.00023. https://distill.pub/2020/growing-ca.
+[9] Dennis Aumiller, Ashish Chouhan, and Michael Gertz. EUR-lex-sum: A multi- and cross-lingual dataset
+for long-form summarization in the legal domain. In Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang,
+editors, Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages
+7626–7639, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. doi:
+10.18653/v1/2022.emnlp-main.519. URL https://aclanthology.org/2022.emnlp-main.519/.
+[10] G. Erkan and D. R. Radev. Lexrank: Graph-based lexical centrality as salience in text summarization. Journal of
+Artificial Intelligence Research, 22:457–479, December 2004. ISSN 1076-9757. doi: 10.1613/jair.1523. URL
+http://dx.doi.org/10.1613/jair.1523.
+[11] Jörg Tiedemann and Santhosh Thottingal. OPUS-MT – building open translation services for the world. In
+André Martins, Helena Moniz, Sara Fumega, Bruno Martins, Fernando Batista, Luisa Coheur, Carla Parra, Isabel
+Trancoso, Marco Turchi, Arianna Bisazza, Joss Moorkens, Ana Guerberof, Mary Nurminen, Lena Marg, and
+Mikel L. Forcada, editors, Proceedings of the 22nd Annual Conference of the European Association for Machine
+Translation, pages 479–480, Lisboa, Portugal, November 2020. European Association for Machine Translation.
+URL https://aclanthology.org/2020.eamt-1.61/.
+[12] Iz Beltagy, Matthew E. Peters, and Arman Cohan. Longformer: The long-document transformer, 2020. URL
+https://arxiv.org/abs/2004.05150.
+[13] Mika Sie, Ruby Beek, Michiel Bots, Sjaak Brinkkemper, and Albert Gatt. Summarizing long regulatory documents
+with a multi-step pipeline. In Nikolaos Aletras, Ilias Chalkidis, Leslie Barrett, C˘at˘alina Goant,˘a, Daniel Preot,iuc-
+Pietro, and Gerasimos Spanakis, editors, Proceedings of the Natural Legal Language Processing Workshop 2024,
+12
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+pages 18–32, Miami, FL, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/
+2024.nllp-1.2. URL https://aclanthology.org/2024.nllp-1.2/.
+[14] Mandy Guo, Joshua Ainslie, David Uthus, Santiago Ontañón, Jianmo Ni, Yun-Hsuan Sung, and Yinfei Yang.
+LongT5: Efficient text-to-text transformer for long sequences. In Marine Carpuat, Marie-Catherine de Marneffe,
+and Ivan Vladimir Meza Ruiz, editors, Findings of the Association for Computational Linguistics: NAACL 2022,
+pages 724–736, Seattle, United States, July 2022. Association for Computational Linguistics. doi: 10.18653/v1/
+2022.findings-naacl.55. URL https://aclanthology.org/2022.findings-naacl.55/.
+[15] Jingqing Zhang, Yao Zhao, Mohammad Saleh, and Peter Liu. PEGASUS: Pre-training with extracted gap-
+sentences for abstractive summarization. In Hal Daumé III and Aarti Singh, editors, Proceedings of the 37th
+International Conference on Machine Learning, volume 119 of Proceedings of Machine Learning Research, pages
+11328–11339. PMLR, 13–18 Jul 2020. URL https://proceedings.mlr.press/v119/zhang20ae.html.
+[16] AI at Meta Llama Team. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783.
+[17] Santosh T.Y.S.S, Cornelius Weiss, and Matthias Grabmair. LexSumm and LexT5: Benchmarking and modeling
+legal summarization tasks in English. In Nikolaos Aletras, Ilias Chalkidis, Leslie Barrett, C˘at˘alina Goant,˘a,
+Daniel Preot,iuc-Pietro, and Gerasimos Spanakis, editors, Proceedings of the Natural Legal Language Processing
+Workshop 2024, pages 381–403, Miami, FL, USA, November 2024. Association for Computational Linguistics.
+doi: 10.18653/v1/2024.nllp-1.35. URL https://aclanthology.org/2024.nllp-1.35/.
+[18] Wen Xiao, Iz Beltagy, Giuseppe Carenini, and Arman Cohan. PRIMERA: Pyramid-based masked sentence
+pre-training for multi-document summarization. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio,
+editors, Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1:
+Long Papers), pages 5245–5263, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi:
+10.18653/v1/2022.acl-long.360. URL https://aclanthology.org/2022.acl-long.360/.
+[19] Nihed Bendahman, Karen Pinel-Sauvagnat, Gilles Hubert, and Mokhtar Boumedyen Billami. Not all hallucinations
+are good to throw away when it comes to legal abstractive summarization. In Luis Chiruzzo, Alan Ritter, and
+Lu Wang, editors, Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association
+for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 5331–5344,
+Albuquerque, New Mexico, April 2025. Association for Computational Linguistics. ISBN 979-8-89176-189-6.
+doi: 10.18653/v1/2025.naacl-long.275. URL https://aclanthology.org/2025.naacl-long.275/.
+[20] Veer Chheda, Aaditya Ghaisas, Avantika Sankhe, and Narendra Shekokar. Extract-explain-abstract: A rhetorical
+role-driven domain-specific summarisation framework for Indian legal documents. In Nikolaos Aletras, Ilias
+Chalkidis, Leslie Barrett, C˘at˘alina Goant,˘a, Daniel Preot,iuc-Pietro, and Gerasimos Spanakis, editors, Proceedings
+of the Natural Legal Language Processing Workshop 2025, pages 439–455, Suzhou, China, November 2025.
+Association for Computational Linguistics. ISBN 979-8-89176-338-8. doi: 10.18653/v1/2025.nllp-1.32. URL
+https://aclanthology.org/2025.nllp-1.32/.
+[21] Alexandre Bailly, Antoine Saubin, Gabriel Kocevar, and Jonathan Bodin. Divide and summarize: improve slm
+text summarization. Frontiers in Artificial Intelligence, Volume 8 - 2025, 2025. ISSN 2624-8212. doi: 10.
+3389/frai.2025.1604034. URL https://www.frontiersin.org/journals/artificial-intelligence/
+articles/10.3389/frai.2025.1604034.
+[22] Miguel Medina-Ramírez, Cristian Estupiñán-Ojeda, Victoria Torres-Rodríguez, Elena Sánchez-Nielsen, Cayetano
+Guerra-Artal, and Mario Hernández-Tejera. Small language models for legislative summarization: An empirical
+evaluation of performance and suitability. IEEE Access, 14:55918–55942, 2026. doi: 10.1109/ACCESS.2026.
+3679718.
+[23] Thomas König, Brooke Luetgert, and Tanja Dannwolf. Quantifying european legislative research: Using celex and
+prelex in eu legislative studies. European Union Politics, 7(4):553–574, 2006. doi: 10.1177/1465116506069444.
+URL https://doi.org/10.1177/1465116506069444.
+[24] R.D. Luce. Individual Choice Behavior: A Theoretical Analysis. Wiley, 1959. URL https://books.google.
+ca/books?id=a80DAQAAIAAJ.
+[25] R. L. Plackett. The analysis of permutations. Journal of the Royal Statistical Society Series C: Applied Statistics, 24
+(2):193–202, 06 1975. ISSN 0035-9254. doi: 10.2307/2346567. URL https://doi.org/10.2307/2346567.
+[26] Fen Xia, Tie-Yan Liu, Jue Wang, Wensheng Zhang, and Hang Li. Listwise approach to learning to rank: theory
+and algorithm. In Proceedings of the 25th International Conference on Machine Learning, ICML ’08, page
+1192–1199, New York, NY, USA, 2008. Association for Computing Machinery. ISBN 9781605582054. doi:
+10.1145/1390156.1390306. URL https://doi.org/10.1145/1390156.1390306.
+[27] Wouter Kool, Herke van Hoof, and Max Welling. Buy 4 REINFORCE samples, get a baseline for free!, 2019.
+URL https://openreview.net/forum?id=r1lgTGL5DE.
+13
+
+LexLattice: Multilingual Extractive Summarization via Neural Cellular Automata on Document Hierarchies
+[28] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün,
+and Sara Hooker. Back to basics: Revisiting REINFORCE-style optimization for learning from human feedback
+in LLMs. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 62nd Annual Meeting
+of the Association for Computational Linguistics (Volume 1: Long Papers), pages 12248–12267, Bangkok,
+Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.662. URL
+https://aclanthology.org/2024.acl-long.662/.
+[29] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen,
+Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Kopf, Edward Yang, Zachary De-
+Vito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith
+Chintala. Pytorch: An imperative style, high-performance deep learning library. In H. Wallach, H. Larochelle,
+A. Beygelzimer, F. d'Alché-Buc, E. Fox, and R. Garnett, editors, Advances in Neural Information Processing
+Systems, volume 32. Curran Associates, Inc., 2019. URL https://proceedings.neurips.cc/paper_files/
+paper/2019/file/bdbca288fee7f92f2bfa9f7012727740-Paper.pdf.
+[30] Joseph Enguehard, Morgane Van Ermengem, Kate Atkinson, Sujeong Cha, Arijit Ghosh Chowdhury,
+Prashanth Kallur Ramaswamy, Jeremy Roghair, Hannah R Marlowe, Carina Suzana Negreanu, Kitty Box-
+all, and Diana Mincu. LeMAJ (legal LLM-as-a-judge): Bridging legal reasoning and LLM evaluation. In Nikolaos
+Aletras, Ilias Chalkidis, Leslie Barrett, C˘at˘alina Goant,˘a, Daniel Preot,iuc-Pietro, and Gerasimos Spanakis, editors,
+Proceedings of the Natural Legal Language Processing Workshop 2025, pages 318–337, Suzhou, China, November
+2025. Association for Computational Linguistics. ISBN 979-8-89176-338-8. doi: 10.18653/v1/2025.nllp-1.23.
+URL https://aclanthology.org/2025.nllp-1.23/.
+[31] Anthropic. Claude sonnet 4.5. https://www.anthropic.com/claude-sonnet-4-5-system-card, Septem-
+ber 2025. Model card and system card; accessed 23 July 2026.
+[32] Zejiang Shen, Kyle Lo, Lauren Yu, Nathan Dahlberg, Margo Schlanger, and Doug Downey. Multi-lexsum:
+Real-world summaries of civil rights lawsuits at multiple granularities. In S. Koyejo, S. Mohamed, A. Agarwal,
+D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems, volume 35,
+pages 13158–13173. Curran Associates, Inc., 2022. URL https://proceedings.neurips.cc/paper_files/
+paper/2022/file/552ef803bef9368c29e53c167de34b55-Paper-Datasets_and_Benchmarks.pdf.
+[33] Wojciech Kryscinski, Nazneen Rajani, Divyansh Agarwal, Caiming Xiong, and Dragomir Radev. BOOKSUM:
+A collection of datasets for long-form narrative summarization. In Yoav Goldberg, Zornitsa Kozareva, and
+Yue Zhang, editors, Findings of the Association for Computational Linguistics: EMNLP 2022, pages 6536–
+6558, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. doi:
+10.18653/v1/2022.findings-emnlp.488. URL https://aclanthology.org/2022.findings-emnlp.488/.
+14

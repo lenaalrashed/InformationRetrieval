@@ -1,0 +1,1159 @@
+RoleRM Series
+RoleRMBench & RoleRM: Towards Reward Modeling for
+Profile-Based Role Play in Dialogue Systems
+Hang Ding1*
+Qiming Feng2*
+Dongqi Liu3
+Qi Zhao4
+Tao Yao1
+Shuo Wang4
+Dongsheng Chen4
+Jian Li4
+Zhenye Gan4
+Jiangning Zhang4
+Chengjie Wang4
+Yabiao Wang4
+1Shanghai Jiao Tong University
+2Fudan University
+3Saarland University
+4Tencent Youtu Lab
+Reward modeling has become a cornerstone of aligning large language models (LLMs) with human
+preferences. Yet, when extended to subjective and open-ended domains such as role play, existing
+reward models exhibit severe degradation, struggling to capture nuanced and persona-grounded hu-
+man judgments. To address this gap, we introduce ROLERMBENCH, the first systematic benchmark
+for reward modeling in role-playing dialogue, covering seven fine-grained capabilities from narrative
+management to role consistency and engagement. Evaluation on ROLERMBENCH reveals large and
+consistent gaps between general-purpose reward models and human judgment, particularly in narra-
+tive and stylistic dimensions. We further propose ROLERM, a reward model trained with Continuous
+Implicit Preferences (CIP), which reformulates subjective evaluation as continuous consistent pairwise
+supervision under multiple structuring strategies. Comprehensive experiments show that ROLERM
+surpasses strong open- and closed-source reward models by over 24% on average, demonstrating
+substantial gains in narrative coherence and stylistic fidelity. Our findings highlight the importance
+of continuous preference representation and annotation consistency, establishing a foundation for
+subjective alignment in human-centered dialogue systems.
+Date: Dec 3, 2025
+Correspondence: taoyao@sjtu.edu.cn
+Project Leader: caseywang@tencent.com
+Project Page: https://dear-sloth.github.io/RoleRMBench/
+1
+introduction
+Recent advances in aligning large language models (LLMs) with human preferences through reinforcement
+learning have achieved remarkable progress in objective domains such as mathematical reasoning and
+program synthesis [Ouyang et al., 2022, Guo et al., 2025, Guan et al., 2025]. At the core of this progress
+lies the reward model (RM), which guides the model toward desirable behavior by learning from pairwise
+human preferences. However, when transferred to highly subjective and context-dependent domains such
+as role play, the same paradigm deteriorates sharply [Wen et al., 2024, Yang et al., 2024a].
+As illustrated in Figure 1, generic evaluators often yield uncertain or inconsistent judgments when comparing
+stylistically mixed responses—both partially reasonable yet divergent in tone or narrative flow. Such
+ambiguity reveals the inherent difficulty of mapping human impression into stable evaluative signals. In role-
+playing evaluation, several off-the-shelf reward models perform on par with—or even worse than—random
+∗Equal Contribution
+1
+arXiv:2512.10575v1 [cs.CL] 11 Dec 2025
+
+RoleRM Series
+choice, exposing a clear gap between factual and subjective alignment. This gap limits the reliability of
+current evaluation practices and underscores the need for domain-specific reward modeling tailored to
+subjective, human-centered dialogue.
+Figure 1. Motivation. In role-playing evaluation, generic models
+often struggle to rank stylistically mixed responses, revealing the
+need for more consistent reward modeling.
+While prior work has explored the gen-
+erative capabilities of role-playing agents
+(RPAs)—such as language stylization, persona
+grounding, and narrative consistency [Wang
+et al., 2025a, Guo et al., 2024, Zhou et al., 2025,
+Wang et al., 2023]—these efforts have largely
+focused on generation rather than the model-
+ing of evaluative human preferences. In this
+work, we seek to construct a precise and multi-
+dimensional reward signal that enables down-
+stream alignment and reinforcement learning.
+We posit that a specialized, high-quality re-
+ward model is essential for capturing subjec-
+tive human judgment in open-ended dialogue.
+Our central research questions are as follows:
+(1) How do existing generic reward models
+perform in multi-faceted role-play evaluation,
+and how can their effectiveness be properly
+assessed? (2) Given the subjective and multi-
+dimensional nature of role play, what training
+paradigm can better capture the complexity of
+human preferences?
+To address these questions, we introduce two
+complementary components. We first present
+RoleRMBench, a systematic benchmark for reward modeling in role play, encompassing seven sub-tasks
+derived from high-quality dialogues, model-generated samples, and rigorously annotated human judg-
+ments. Building upon this foundation, we develop RoleRM, a reward model trained with Continuous Implicit
+Preferences (CIP)—a formulation that captures fine-grained human judgments through continuous pairwise
+supervision rather than discrete scoring. Finally, we discuss fundamental challenges in reward design for
+subjective, human-centered dialogue and outline directions for multi-dimensional preference alignment.
+Our main contributions are summarized as follows:
+1. We propose RoleRMBench, the first public benchmark that systematically evaluates reward modeling
+challenges in role play across seven carefully annotated sub-tasks.
+2. We design and train RoleRM, a reward model based on Continuous Implicit Preferences (CIP), which
+reformulates subjective evaluation as continuous pairwise supervision and enables finer discrimination
+of human preference.
+3. We conduct extensive experiments and analyses, revealing the severe limitations of generic reward
+models in subjective tasks and providing insights for improving reward signal design, multi-dimensional
+alignment, and reinforcement learning strategies.
+2
+
+RoleRM Series
+2
+Related Works
+Reward Model Benchmarking Reward model evaluation has evolved in parallel with the evaluation of
+post-trained language models. Early efforts, such as RewardBench [Lambert et al., 2024a], provided a unified
+infrastructure for testing reward models across diverse domains, from open-ended chat to reasoning, and
+helped establish reward modeling as a research field. Since then, evaluation practices have expanded to
+mirror broader LLM assessment: some benchmarks measure prediction accuracy in domains with well-
+defined ground truth [Lambert et al., 2024a], while others assess preferences—often referred to informally as
+“vibes”—using LM-as-a-judge protocols or by correlating with existing benchmarks [Wen et al., 2024].
+Recent benchmarks can be grouped into three directions. (1) General downstream performance, extending
+the spirit of RewardBench, has been studied in benchmarks such as Preference Proxy Evaluations [Frick et al.,
+2024], RMB [Zhou et al., 2024a], and RM-Bench [Liu et al., 2024a]. (2) New evaluation attributes, targeting
+specific desiderata, include multilinguality [Gureja et al., 2024], robustness in agentic systems such as web
+agents [Lù et al., 2025] or retrieval-augmented generation [Jin et al., 2024], resilience to typos [Wu et al.,
+2025], and other fine-grained axes of alignment [Kim et al., 2024]. (3) Alternative modalities and structures,
+which broaden the scope of reward modeling, include multimodal reward evaluation [Chen et al., 2024,
+Yasunaga et al., 2025, Li et al., 2024, Ruan et al., 2025], process reward benchmarks [Song et al., 2025], and
+visual process reward models [Wang et al., 2025b, Tu et al., 2025].
+Reward Modeling and RLHF Reinforcement Learning from Human Feedback (RLHF) has become a
+cornerstone for aligning large language models (LLMs) with human values and preferences [Christiano et al.,
+2017, Stiennon et al., 2020, Ouyang et al., 2022]. The standard RLHF pipeline consists of two stages: reward
+modeling and reinforcement learning. In the former, a reward model (RM) is trained on human preference data,
+typically as pairwise comparisons [Ouyang et al., 2022]. Given a prompt and candidate completions, the RM
+learns to assign higher scores to preferred responses using a Bradley–Terry objective [Bradley and Terry,
+1952, Sun et al., 2024, Lambert, 2025]:
+P(y0 ≻y1 | x) = σ(rθ(x, y0) −rθ(x, y1))
+(1)
+where σ denotes the sigmoid function, and the loss is the negative log-likelihood over preference-labeled
+pairs:
+LBT = −E(x,y0,y1,Y)∼D
+h
+log P
+ Y | x, y0, y1
+i
+(2)
+Recent work has explored richer preference structures. PAIRWISE RM [Liu et al., 2025a] reformulates reward
+modeling as iterative pairwise comparison among multiple candidates to identify both best and worst
+responses, showing that relative judgments outperform absolute scoring or listwise objectives in stability
+and generalization. Complementary directions include preference pretraining [Askell et al., 2021] and
+large-scale human–AI co-curation pipelines such as WORLDPM [Wang et al., 2025c] and SKYWORK [Liu
+et al., 2025b], which scale preference data collection across web sources. Nevertheless, current reward
+modeling remains largely restricted to domains with objective correctness signals. In contrast, alignment in
+subjective tasks—where human preferences are nuanced, multi-faceted, and context-dependent—remains
+underexplored.
+3
+RoleRMBench: A Benchmark for Role Play Reward Modeling
+3
+
+RoleRM Series
+3.1
+Data Sources and Annotation Strategy
+To construct ROLERMBENCH, we aggregate and standardize multiple high-quality role-playing dialogue
+datasets as our data pool:
+• CoSER [Wang et al., 2025d]: A large-scale corpus collected from 771 well-known books, comprising 17,966
+characters and 29,798 dialogues. Beyond dialogue utterances, it also contains plot summaries, character
+experiences, internal thoughts, and action descriptions, offering rich and diverse role-playing materials.
+• RoleMRC [Lu et al., 2025]: A fine-grained benchmark covering role play and instruction-following, with
+10.2k standardized role profiles, 37.9k synthetic instructions, and 1.4k test samples spanning dialogue,
+passage-based QA, and multi-constraint tasks.
+• CharacterBench [Zhou et al., 2024b]: A bilingual benchmark containing 22,859 human-labeled samples
+across 3,956 characters and 25 subcategories.
+• CharacterEval [Tu et al., 2024]: A Chinese benchmark with 1,785 multi-turn dialogues and 11,376 samples
+from novels and scripts, combining GPT-4 extraction with human annotation to ensure quality and
+persona consistency.
+From these datasets, we take the available test and validation splits as our data pool. For datasets with
+preference pairs, we keep their original annotations. For those without, we generate candidate completions
+using DeepSeek-V3.1. To reduce stylistic bias across sources, we also apply constrained rephrasing to the
+ground-truth responses using the same model.
+Next, we filter the raw pool using a DeepSeek-V3.1-based factual-definition filter: pairs that do not satisfy
+the task-specific factual requirements are discarded. For example, in the scene transition category, cases that
+do not exhibit any temporal or spatial transition defined by the task are removed. The remaining samples
+are then forwarded for human annotation.
+For the benchmark test annotation, three annotators—each holding at least a Master’s degree in NLP—evaluate
+every comparison along seven role play–specific task dimensions (introduced later), grounded in the di-
+alogue between the given profile and context to ensure each task naturally emerges from the character’s
+development. We additionally apply the five HELPSTEER standards [Wang et al., 2024]—helpfulness, correct-
+ness, coherence, complexity, and verbosity. A pair is retained if the chosen response is strictly better in at least
+one dimension and no worse in others. Annotators specify the improved dimension, and disagreements are
+resolved by majority vote. This annotation process yields a rigorously filtered, multi-faceted benchmark that
+balances scalability with human-level quality assurance.
+3.2
+Task Definition and Benchmark Setup
+Drawing from both open-source role-play corpora and observations from real conversational products,
+we find that failures in role-based interaction generally fall into two broad categories: (i) narrative manage-
+ment—how effectively an agent initiates, advances, and stitches a coherent storyline; and (ii) profile-grounded
+dialogue quality—how consistently an agent maintains persona, follows user instructions, ensures safety,
+sustains coherence, and preserves engagement over long conversations. Accordingly, we organize ROL-
+ERMBENCH into one narrative cluster (with three fine-grained subtasks) and six complementary role-playing
+capabilities that frequently emerge in deployment. Table 1 summarizes the overall task taxonomy of
+ROLERMBENCH, and the complete definitions of each capability are provided in Appendix B.3.
+4
+
+RoleRM Series
+Table 1. Snapshot of task taxonomy in ROLERMBENCH. The benchmark covers one narrative cluster and six standalone
+role-playing capabilities; detailed operational definitions are provided in Appendix B.3.
+Cluster / Capability
+Abbr.
+Description
+Narrative Cluster
+NAR
+Introduction, progression, stitching
+Scene Transition
+SCN
+Smooth temporal or spatial shifts
+Role Consistency
+CON
+Maintain persona fidelity and tone
+Instruction Following
+IF
+Execute or refuse in-character commands
+Safety
+SAF
+Avoid unsafe or policy-violating content
+Multi-turn Coherence
+MT
+Keep logical flow across dialogue turns
+Attractiveness
+ATT
+Engage users through expressive language
+Benchmark Setup.
+Each benchmark instance consists of two dialogues that share an identical context and
+system prompt, differing only in the final assistant message. The system prompt is profile-based (e.g., “You
+are Harry Potter, ......”). The reward model rθ(x, y) assigns scalar scores to both responses. A prediction is
+counted as correct if rθ(x, ychosen) > rθ(x, yrejected); otherwise, it is incorrect.
+The final benchmark score is the average pairwise accuracy across the seven defined sub-datasets. All
+evaluations are conducted on standardized validation and test splits, and training data used for ROLERM are
+strictly disjoint.
+4
+RoleRM: Towards Reward Modeling for Subjective Domains with
+Continuous Implicit Preferences
+4.1
+Data Construction and Annotation
+Existing reward modeling pipelines, though occasionally involving subjective judgment, predominantly
+operate on objective or adversarial tasks such as reasoning, factual QA, and programming [Lambert et al.,
+2024a, Liu et al., 2024a, Zhou et al., 2024a]. Even in dialogue-based benchmarks, evaluations often rely on
+objective criteria such as correctness or relevance rather than nuanced human preference. Consequently,
+recent frameworks such as PairwiseRM [Liu et al., 2025a] adopt repeated sampling and pairwise comparison
+to identify best-of-N and worst-of-N (BoN/WoN) pairs for preference learning. While effective for tasks
+with clear correctness signals, such formulations reduce preference modeling to a binary decision space
+{0, 1} and struggle to capture the graded differences that characterize human preference. Likewise, listwise
+or scoring-style objectives, though capable of producing scalar supervision, often exhibit instability and poor
+convergence on subjective data, as the underlying signals are noisy and inconsistent across annotators. In
+more subjective domains, explicitly defining evaluation dimensions and assigning scores further amplifies
+this noise, limiting the reliability of such supervision.
+In contrast, subjective domains such as role play demand modeling preferences that lie on a continuous
+spectrum [0, 1]. Evaluating an in-character response involves balancing narrative coherence, emotional tone,
+and engagement—none of which have objective ground truth or consistent scoring criteria. To address
+this, we introduce the notion of Continuous Implicit Preferences (CIP), which replaces discrete or noisy
+supervision with high-quality, agreement-based pairwise annotations that implicitly capture fine-grained
+human judgments. Instead of assigning explicit scalar scores, annotators rank multiple candidate responses
+sampled under the same prompt and persona, ensuring that local pairwise comparisons reflect the nuanced
+human sense of “better” or “worse” without requiring explicit numerical calibration. Enrich with continuous
+preference signals, we allow the model to internalize smooth human comparison criteria across a continuous
+5
+
+RoleRM Series
+Figure 2. Overall pipeline of data preparation
+reward landscape. This design preserves the robustness of pairwise learning while bridging the gap between
+discrete supervision and the inherently continuous nature of human preference.
+Data Collection. Our preference data are constructed from two major sources. First, we integrate high-
+quality open-domain corpora from prior role play datasets such as CoSER, RoleMRC, CharacterEval, and
+CharacterBench (see Section 3). Second, we generate new data using proprietary user and role models
+covering diverse profiles, including both narrative-oriented and general assistant-style roles. For each
+prompt–persona pair, we generate five distinct candidate responses per conversational turn. These candidates
+are then independently ranked by trained annotators.
+Annotation Protocol. Human annotators, all professionally trained and familiar with role play evalua-
+tion, are instructed to fully comprehend both persona definitions and dialogue contexts before ranking
+the five candidate responses. The ranking criteria combine the seven task dimensions defined in Rol-
+eRMBench—narrative introduction, progression, stitching, scene transition, role consistency, instruction following,
+safety, multi-turn coherence, engagement, and tie handling—with holistic qualities such as semantic fluency,
+emotional expression, and interactive appeal. Annotators are encouraged to prioritize naturalness, vividness,
+and fidelity to character settings. Conversely, responses that exhibit logical errors, emotional flatness, con-
+textual rupture, or violations of character identity are ranked lower. The annotation emphasizes subjective
+stability and contextual sensitivity: annotators mentally assign implicit “plus” or “minus” weights to each
+response based on overall impression, yielding a ranking that reflects relative human preference rather than
+absolute scoring. This process ensures that the resulting pairwise preferences encode human perception
+of dialogue quality under realistic, role-based interaction scenarios. A complete annotation guideline is
+provided in the Appendix B.4.
+4.2
+Preference Structuring and Training Strategies
+After obtaining human-labeled rankings under the Continuous Implicit Preference (CIP) protocol, we
+transform them into pairwise training data using three complementary structuring paradigms. Each
+formulation reflects a different assumption about the granularity and reliability of human preferences,
+allowing us to explore how preference density shapes reward alignment in subjective domains. All reward
+models are trained based on the Llama-3.1-8B-Instruct [Grattafiori et al., 2024] backbone.
+Neighbor Pair (NEB). The first strategy constructs preference pairs only between adjacent responses in each
+ranked list (e.g., A > B, B > C, C > D), emphasizing incremental differences between neighboring samples.
+This design reduces annotated pairs while leveraging transitivity of human preference to approximate
+6
+
+RoleRM Series
+Table 2. Open-source, proprietary, and our ROLERM models on RoleRM-Bench. Cells are shaded by columnwise scores
+with lighter tones below 50 and darker above.
+AVG
+NAR
+MT
+CON
+IF
+SCN
+SAF
+ATT
+Open-source Models
+internlm/internlm2-20b-reward
+70.58 70.37 68.25 67.61 76.00 72.73 66.10 75.00
+allenai/Llama-3.1-Tulu-3-70B-SFT-RM-RB2
+70.36 66.67 71.43 70.42 70.00 65.15 76.27 70.59
+Skywork/Skywork-Reward-V2-Qwen3-8B
+70.07 64.81 69.84 67.61 66.00 75.76 74.58 77.94
+internlm/internlm2-7b-reward
+67.72 64.81 63.49 64.79 68.00 72.73 72.88 66.18
+allenai/Llama-3.1-Tulu-3-8B-DPO-RM-RB2
+67.53 70.37 65.08 60.56 76.00 71.21 67.80 61.76
+allenai/Llama-3.1-70B-Instruct-RM-RB2
+66.39 72.22 65.08 56.34 62.00 65.15 76.27 67.65
+allenai/Llama-3.1-Tulu-3-8B-RL-RM-RB2
+66.34 70.37 61.90 60.56 72.00 72.73 69.49 60.29
+allenai/Llama-3.1-8B-Instruct-RM-RB2
+65.06 59.26 61.94 59.15 70.00 72.73 71.19 61.16
+allenai/Llama-3.1-Tulu-3-8B-SFT-RM-RB2
+64.89 66.67 60.32 57.75 70.00 66.67 66.10 64.71
+Skywork-Reward-V2-Llama-3.1-8B
+64.17 53.70 63.49 60.56 66.00 71.21 69.49 64.71
+CharacterRM
+61.11 59.26 65.08 56.34 72.00 66.67 52.54 55.88
+infly/INF-ORM-Llama3.1-70B
+58.51 61.11 61.90 50.70 58.00 56.06 64.41 57.35
+Ray2333/GRM_Llama3.1_8B_rewardmodel-ft 56.50 53.70 58.73 57.75 56.00 56.06 59.32 52.94
+Skywork-Reward-Llama-3.1-8B
+53.50 48.15 50.79 50.70 58.00 59.09 55.93 50.00
+Skywork-Reward-Llama-3.1-8B-v0.2
+51.97 42.58 50.79 45.07 60.00 50.06 55.93 57.35
+nicolinho/QRM-Llama3.1-8B-v2
+47.42 44.44 58.73 40.85 46.00 50.00 43.37 48.53
+NCSOFT/Llama-3-OffsetBias-RM-8B
+47.17 44.44 49.21 39.44 32.00 50.00 69.49 45.59
+Proprietary Models
+GPT-5-mini-2025-08-07
+69.30 68.52 73.02 59.86 83.00 68.94 70.34 65.44
+GPT-4o-2024-08-06
+69.12 66.67 66.67 66.90 71.00 68.18 78.81 67.65
+GPT-5-2025-08-07
+67.55 69.44 66.67 66.20 82.00 65.91 60.17 62.50
+Claude-3-7-sonnet-20250219
+65.24 68.52 62.70 65.49 75.00 62.88 61.02 61.76
+Ours
+ROLERM
+88.32 90.74 82.54 80.28 94.00 90.91 91.53 88.24
+ranking consistency. Focusing on local comparisons, NEB efficiently learns fine-grained ordering without
+exhaustive enumeration. However, this efficiency may weaken supervision on distant pairs, limiting the
+model’s ability to capture large quality gaps in diverse dialogues.
+Best/Worst Pair (BW). The second strategy focuses on extreme comparisons, contrasting top- and bottom-
+ranked responses within each set. For example, if A is best and D worst, we construct (A > B, A > C, A >
+D) and (D < B, D < C). This approach captures high-confidence judgments with strongest annotator
+agreement, producing sharper learning signals and faster convergence. In subjective evaluation, such pairs
+reflect the clearest human consensus—what feels “in-character” versus what breaks immersion. The trade-off
+is that BW may neglect subtle but meaningful mid-ranked differences, reducing the model’s ability to capture
+nuanced tone or flow.
+Full Permutation Pair (FULL). To maximize supervision coverage, we also use all ordered pairs from each
+ranking, e.g., (A > B), (A > C), (A > D), (B > C), (B > D), (C > D). FULL approximates a listwise
+objective via exhaustive pairwise decomposition, providing densest supervision from one annotation. It
+encourages capturing continuous ranking structure across candidates. However, it increases computational
+cost, as pairs grow quadratically with list length, and redundant comparisons may not yield proportional
+accuracy gains.
+Training Objective. All variants are optimized with the standard pairwise Bradley–Terry objective, while
+differing only in how preference pairs are constructed.
+7
+
+RoleRM Series
+5
+Results and Analysis
+5.1
+Benchmark Evaluation and Analysis
+We conduct comprehensive experiments to evaluate the proposed ROLERM on the ROLERMBENCH bench-
+mark, comparing against a set of reward models and recent propriety models. All models are evaluated
+under the same protocol described in Section 3, using pairwise accuracy as the primary metric. To provide
+fine-grained insights, we further analyze performance across seven sub-tasks representing distinct aspects of
+role-playing ability.
+Our evaluation covers three representative model categories.All models evaluated on RoleRMbench are listed
+in Appendix B.2. (1) General-purpose reward models, including open-source variants such as SKYWORK-
+REWARD [Liu et al., 2025b] or TULU-3-RM [Lambert et al., 2024b], which are trained primarily on instruction-
+following data. These serve as baselines for assessing transferability from general domains to subjective
+dialogue. (2) Closed-source advanced models, represented by proprietary alignment systems integrated into
+leading conversational agents, including GPT-5, GPT-4O, and CLAUDE 3.7. These models implicitly encode
+internal reward priors optimized for broad helpfulness, factuality, and safety. Additionally, these models are
+often used as evaluators for role-playing tasks [Wang et al., 2025d, Shao et al., 2023]. (3) Domain-specific
+prototypes, including prior attempts at role-play alignment such as CHARACTERRM [Tu et al., 2024], which
+introduce preliminary persona-aware preference modeling but lack systematic benchmarking.
+Table 2 presents a heatmap overview of the results, where each cell corresponds to the relative performance
+of a given model on one task dimension. Overall, ROLERMBENCH proves substantially more challenging
+than existing objective RM evaluations: even the strongest open-source models (e.g., internlm2-20b-reward)
+achieve only around 70% average accuracy, roughly 10–15 points lower than their performance on factual
+or safety-oriented benchmarks. Proprietary systems such as GPT-5 and Claude-3 exhibit moderate gains
+but remain far from saturating the benchmark, reflecting persistent limitations in subjective and stylistic
+preference modeling.
+Across dimensions, instruction following and safety achieve the highest stability (70–78%), likely benefiting
+from transferable alignment signals in conventional RLHF data. In contrast, the narrative cluster—including
+introduction, progression, and stitching—shows the sharpest degradation, where most RMs fall below 65%,
+indicating difficulty in assessing coherence and story development. Attractiveness exhibits the largest
+variance across models, mirroring human annotation disagreement and highlighting the challenge of
+quantifying emotional tone or user immersion.
+Notably, no single model dominates all sub-tasks, suggesting that different architectures and training data
+favor distinct aspects of role-play evaluation. InternLM2 and Skywork-Qwen3 demonstrate stronger narrative
+sensitivity, while Llama-3.1-Tulu variants show balanced performance on safety and instruction adherence
+but weaker stylistic awareness. These findings confirm that reward models trained primarily on objective
+correctness signals fail to generalize to highly contextual, persona-grounded interactions.
+In summary, ROLERMBENCH reveals clear gaps between open-ended and factual preference modeling.
+Alignment in subjective domains requires multi-dimensional and context-sensitive supervision rather than
+direct transfer from existing RLHF pipelines.
+8
+
+RoleRM Series
+(a) Baseline: NEB, FULL, and BW
+(b) Refined variants: BW-pure and FULL-
+pure
+(c) FULL-pure with re-annotated data
+Figure 3. Progressive training comparison of RoleRM across preference structuring stages.
+5.2
+Training Results and Analysis
+In this section, we present and analyze the training results of ROLERM under the three preference structuring
+strategies introduced in Section 4.2. All experiments share identical hyperparameter settings, differing only
+in how preference pairs are constructed.
+Finding 1. NEB fail to achieve stable convergence due to weak and locally constrained gradient signals,
+whereas BW and FULL structures capture complementary aspects of human preference, balancing
+contrastive sharpness and ranking coverage.
+As shown in Figure 3a, the NEB formulation fails to converge reliably. Because it relies solely on adjacent
+comparisons, the corresponding Bradley–Terry loss receives gradients only from narrowly separated re-
+sponse pairs, leading to weak and inconsistent updates across the ranking chain. In practice, this locality
+prevents global preference transitivity from being effectively propagated, often resulting in contradictory
+ordering among distant samples. This suggests that while local comparisons provide efficient supervision,
+they are insufficient to reconstruct coherent global preference structures in subjective domains.
+Both the BW and FULL formulations outperform NEB, confirming that denser or more contrastive super-
+vision yields stronger alignment signals. FULL shows a steady rise during the first two epochs followed
+by a mild decline in the third, suggesting slower but more stable convergence possibly influenced by noisy
+annotations. In contrast, BW exhibits an early gain followed by oscillations, indicative of potential overfitting
+to high-confidence but limited contrastive pairs. These results suggest that both capture broader preference
+structures than NEB but remain limited by data noise and supervision consistency.
+Finding 2. High-quality and consistent supervision effectively reduces noise sensitivity and enhances
+the stability of preference learning.
+To improve data quality, we apply majority-vote judgement and secondary verification to filter uncertain
+samples, then retrain two clean variants—BW-pure and FULL-pure—corresponding to the BW and FULL
+strategies.
+As shown in Figure 3b, both BW-pure and FULL-pure achieve more stable convergence and higher vali-
+dation performance than the unfiltered baseline. FULL-pure converges faster and maintains performance
+throughout training, while BW-pure shows reduced oscillation, fluctuating around its optimal score rather
+than declining.
+As shown in Figure 3c, we further conduct a focused re-annotation on the uncertain subset identified earlier.
+9
+
+RoleRM Series
+Because full ranking of all candidates remains challenging even for experienced annotators, this stage
+involves multiple experts jointly revalidating only the best and worst responses within each group, discarding
+indecisive cases. Merging these verified samples back into the FULL-pure training set leads to further
+improvement, underscoring the importance of multi-expert consensus and high-consistency supervision in
+subjective preference modeling.
+Finding 3. General-purpose high-quality data can activate implicit subjective preference modeling ability
+when trained under consistent supervision.
+To further enhance robustness, we expand the training corpus by incorporating open-source role-play
+datasets containing only ground-truth dialogues, such as OpenCharacter,Ultrafeedback,RoleMRC, and CoSER.
+Each dataset is uniformly reformatted and augmented through preference generation, following the same
+majority-vote pipeline to ensure annotation consistency. We then mix these curated samples with gen-
+eral open-domain preference data from nvidia/HelpSteer2, Skywork/Skywork-Reward-Preference-80K-v0.2 and
+allenai/llama-3.1-tulu-3-8b-preference-mixture[Wang et al., 2024, Liu et al., 2024b, Lambert et al., 2024b], to
+further increase diversity and reduce distributional bias. As shown in Table 2, Retraining from scratch, the
+unified model exhibits consistent improvements across all seven dimensions, with particularly strong gains
+in narrative coherence, scene transition, and attractiveness. Compared with the best-performing open-source
+baseline, ROLERM achieves an average accuracy increase of over 24%, narrowing the gap with human
+judgment and demonstrating that continuous implicit preference supervision can substantially enhance
+subjective alignment quality.
+Even though most open-domain datasets are not explicitly labeled for subjective or stylistic preference, our
+experiments show that once they are reformatted and annotated under consistent pairwise protocols, they
+substantially enhance the model’s ability to generalize implicit human judgments. This finding suggests that
+high-quality instruction data, when aligned through consistent human agreement, implicitly encode the
+same continuity of preference that characterizes subjective evaluation. In other words, the consistency and
+quality of annotation appear more critical than the explicit subjectivity of data origin.
+6
+Conclusion
+We presented ROLERMBENCH, the first systematic benchmark for evaluating reward models in profile-based
+role play, and ROLERM, a specialized model designed to capture subjective and multi-dimensional human
+preferences through Continuous Implicit Preferences (CIP). Our experiments show that while general-purpose
+reward models excel in factual and reasoning domains, they struggle to assess persona-grounded dialogue
+quality and stylistic coherence. By introducing continuous consistent pairwise supervision and diverse
+preference structuring strategies, ROLERM bridges the gap between discrete supervision and continuous
+human evaluation. Together, these contributions establish a foundation for subjective alignment research,
+offering both a rigorous benchmark and a practical framework for developing safer, more coherent, and
+human-aligned role-playing agents.
+Limitations
+Despite the promising results, our work still has several limitations. First, the proposed RoleRM is currently
+trained on an 8B-parameter language model, which may restrict its ability to capture more intricate role-
+alignment patterns. We plan to extend our investigation to larger-scale LLMs in future work, to examine
+whether increased model capacity leads to more robust and fine-grained reward modeling. Second, the
+10
+
+RoleRM Series
+RoleRMBench dataset remains relatively small in scale, with only one positive and one negative sample
+per dialogue, which may limit the comprehensiveness of evaluation. In subsequent work, we will further
+expand and refine RoleRMBench by increasing both the quantity and the diversity of annotated data, to
+support more reliable and generalizable benchmarking.
+Ethical Considerations
+In this study, the RoleRMbench we constructed is entirely based on role-playing dialogue datasets derived
+from publicly available and extensively studied resources. Furthermore, as a reward model, the RoleRM
+does not produce any text outputs. Therefore, we do not anticipate any ethical concerns arising from this
+research. In addition, the proposed RoleRM has been carefully designed with dialogue safety in mind, laying
+the groundwork for future evaluations of safety aspects in role-playing dialogue agents. Finally, we confirm
+that all authors are aware of and comply with the Ethics Policy.
+References
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with
+human feedback. Advances in Neural Information Processing Systems, 35:27730–27744, 2022.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma,
+Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement
+learning. arXiv preprint arXiv:2501.12948, 2025.
+Xinyu Guan, Li Lyna Zhang, Yifei Liu, Ning Shang, Youran Sun, Yi Zhu, Fan Yang, and Mao Yang. rstar-math:
+Small llms can master math reasoning with self-evolved deep thinking. arXiv preprint arXiv:2501.04519,
+2025.
+Xueru Wen, Jie Lou, Yaojie Lu, Hongyu Lin, Xing Yu, Xinyu Lu, Ben He, Xianpei Han, Debing Zhang,
+and Le Sun. Rethinking reward model evaluation: Are we barking up the wrong tree? arXiv preprint
+arXiv:2410.05584, 2024.
+Rui Yang, Ruomeng Ding, Yong Lin, Huan Zhang, and Tong Zhang. Regularizing hidden states enables
+learning generalizable reward model for llms. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet,
+J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Systems, volume 37, pages
+62279–62309. Curran Associates, Inc., 2024a. URL https://proceedings.neurips.cc/paper_files/paper/
+2024/file/71f7154547c748c8041505521ca433ab-Paper-Conference.pdf.
+Zongsheng Wang, Kaili Sun, Bowen Wu, Qun Yu, Ying Li, and Baoxun Wang. Raiden-r1: Improving
+role-awareness of llms via grpo with verifiable reward. arXiv preprint arXiv:2505.10218, 2025a.
+Yiju Guo, Ganqu Cui, Lifan Yuan, Ning Ding, Zexu Sun, Bowen Sun, Huimin Chen, Ruobing Xie, Jie Zhou,
+Yankai Lin, et al. Controllable preference optimization: Toward controllable multi-objective alignment.
+arXiv preprint arXiv:2402.19085, 2024.
+Lingfeng Zhou, Jialing Zhang, Jin Gao, Mohan Jiang, and Dequan Wang. Personaeval: Are llm evaluators
+human enough to judge role-play? ArXiv, abs/2508.10014, 2025. URL https://api.semanticscholar.
+org/CorpusID:280649847.
+Zekun Moore Wang, Zhongyuan Peng, Haoran Que, Jiaheng Liu, Wangchunshu Zhou, Yuhan Wu,
+Hongcheng Guo, Ruitong Gan, Zehao Ni, Jian Yang, et al. Rolellm: Benchmarking, eliciting, and enhancing
+role-playing abilities of large language models. arXiv preprint arXiv:2310.00746, 2023.
+11
+
+RoleRM Series
+Nathan Lambert, Valentina Pyatkin, Jacob Morrison, LJ Miranda, Bill Yuchen Lin, Khyathi Chandu, Nouha
+Dziri, Sachin Kumar, Tom Zick, Yejin Choi, et al. Rewardbench: Evaluating reward models for language
+modeling. arXiv preprint arXiv:2403.13787, 2024a.
+Evan Frick, Tianle Li, Connor Chen, Wei-Lin Chiang, Anastasios N Angelopoulos, Jiantao Jiao, Banghua Zhu,
+Joseph E Gonzalez, and Ion Stoica. How to evaluate reward models for rlhf. arXiv preprint arXiv:2410.14872,
+2024.
+Enyu Zhou, Guodong Zheng, Binghai Wang, Zhiheng Xi, Shihan Dou, Rong Bao, Wei Shen, Limao Xiong,
+Jessica Fan, Yurong Mou, et al. Rmb: Comprehensively benchmarking reward models in llm alignment.
+arXiv preprint arXiv:2410.09893, 2024a.
+Yantao Liu, Zijun Yao, Rui Min, Yixin Cao, Lei Hou, and Juanzi Li. Rm-bench: Benchmarking reward models
+of language models with subtlety and style. arXiv preprint arXiv:2410.16184, 2024a.
+Srishti Gureja, Lester James V Miranda, Shayekh Bin Islam, Rishabh Maheshwary, Drishti Sharma, Gusti
+Winata, Nathan Lambert, Sebastian Ruder, Sara Hooker, and Marzieh Fadaee. M-rewardbench: Evaluating
+reward models in multilingual settings. arXiv preprint arXiv:2410.15522, 2024.
+Xing Han Lù, Amirhossein Kazemnejad, Nicholas Meade, Arkil Patel, Dongchan Shin, Alejandra Zambrano,
+Karolina Sta´nczak, Peter Shaw, Christopher J. Pal, and Siva Reddy. Agentrewardbench: Evaluating
+automatic evaluations of web agent trajectories, 2025. URL https://arxiv.org/abs/2504.08942.
+Zhuoran Jin, Hongbang Yuan, Tianyi Men, Pengfei Cao, Yubo Chen, Kang Liu, and Jun Zhao.
+Rag-
+rewardbench: Benchmarking reward models in retrieval augmented generation for preference alignment.
+arXiv preprint arXiv:2412.13746, 2024.
+Zhaofeng Wu, Michihiro Yasunaga, Andrew Cohen, Yoon Kim, Asli Celikyilmaz, and Marjan Ghazvininejad.
+rewordbench: Benchmarking and improving the robustness of reward models with transformed inputs.
+arXiv preprint arXiv:2503.11751, 2025.
+Sunghwan Kim, Dongjin Kang, Taeyoon Kwon, Hyungjoo Chae, Jungsoo Won, Dongha Lee, and Jinyoung
+Yeo. Evaluating robustness of reward models for mathematical reasoning. arXiv preprint arXiv:2410.01729,
+2024.
+Zhaorun Chen, Yichao Du, Zichen Wen, Yiyang Zhou, Chenhang Cui, Zhenzhen Weng, Haoqin Tu, Chaoqi
+Wang, Zhengwei Tong, Qinglan Huang, et al. Mj-bench: Is your multimodal reward model really a good
+judge for text-to-image generation? arXiv preprint arXiv:2407.04842, 2024.
+Michihiro Yasunaga, Luke Zettlemoyer, and Marjan Ghazvininejad. Multimodal rewardbench: Holistic
+evaluation of reward models for vision language models. arXiv preprint arXiv:2502.14191, 2025.
+Lei Li, Yuancheng Wei, Zhihui Xie, Xuqing Yang, Yifan Song, Peiyi Wang, Chenxin An, Tianyu Liu, Sujian Li,
+Bill Yuchen Lin, et al. Vlrewardbench: A challenging benchmark for vision-language generative reward
+models. arXiv preprint arXiv:2411.17451, 2024.
+Jiacheng Ruan, Wenzhen Yuan, Xian Gao, Ye Guo, Daoxin Zhang, Zhe Xu, Yao Hu, Ting Liu, and Yuzhuo
+Fu. Vlrmbench: A comprehensive and challenging benchmark for vision-language reward models. arXiv
+preprint arXiv:2503.07478, 2025.
+Mingyang Song, Zhaochen Su, Xiaoye Qu, Jiawei Zhou, and Yu Cheng. Prmbench: A fine-grained and
+challenging benchmark for process-level reward models. arXiv preprint arXiv:2501.03124, 2025.
+Weiyun Wang, Zhangwei Gao, Lianjie Chen, Zhe Chen, Jinguo Zhu, Xiangyu Zhao, Yangzhou Liu, Yue Cao,
+Shenglong Ye, Xizhou Zhu, et al. Visualprm: An effective process reward model for multimodal reasoning.
+arXiv preprint arXiv:2503.10291, 2025b.
+Haoqin Tu, Weitao Feng, Hardy Chen, Hui Liu, Xianfeng Tang, and Cihang Xie. Vilbench: A suite for
+vision-language process reward modeling, Mar 2025. URL https://arxiv.org/abs/2503.20271.
+12
+
+RoleRM Series
+Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep reinforcement
+learning from human preferences. Advances in neural information processing systems, 30, 2017.
+Nisan Stiennon, Long Ouyang, Jeffrey Wu, Daniel Ziegler, Ryan Lowe, Chelsea Voss, Alec Radford, Dario
+Amodei, and Paul F Christiano. Learning to summarize with human feedback. Advances in Neural
+Information Processing Systems, 33:3008–3021, 2020.
+Ralph Allan Bradley and Milton E. Terry. Rank analysis of incomplete block designs: I. the method of paired
+comparisons. Biometrika, 39:324, 1952. URL https://api.semanticscholar.org/CorpusID:125209808.
+Hao Sun, Yunyi Shen, and Jean-François Ton. Rethinking bradley-terry models in preference-based re-
+ward modeling: Foundations, theory, and alternatives.
+ArXiv, abs/2411.04991, 2024.
+URL https:
+//api.semanticscholar.org/CorpusID:273877679.
+Nathan Lambert. Reinforcement learning from human feedback. arXiv preprint arXiv:2504.12501, 2025.
+Yantao Liu, Zijun Yao, Rui Min, Yixin Cao, Lei Hou, and Juanzi Li. Pairjudge rm: Perform best-of-n sampling
+with knockout tournament, 2025a. URL https://arxiv.org/abs/2501.13007.
+Amanda Askell, Yuntao Bai, Anna Chen, Dawn Drain, Deep Ganguli, Tom Henighan, Andy Jones, Nicholas
+Joseph, Benjamin Mann, Nova Dassarma, Nelson Elhage, Zac Hatfield-Dodds, Danny Hernandez, John
+Kernion, Kamal Ndousse, Catherine Olsson, Dario Amodei, Tom B. Brown, Jack Clark, Sam McCandlish,
+Christopher Olah, and Jared Kaplan. A general language assistant as a laboratory for alignment. ArXiv,
+abs/2112.00861, 2021. URL https://api.semanticscholar.org/CorpusID:244799619.
+Binghai Wang, Runji Lin, Keming Lu, Le Yu, Zhenru Zhang, Fei Huang, Chujie Zheng, Kai Dang, Yang Fan,
+Xingzhang Ren, An Yang, Binyuan Hui, Dayiheng Liu, Tao Gui, Qi Zhang, Xuanjing Huang, Yu-Gang
+Jiang, Bowen Yu, Jingren Zhou, and Junyang Lin. Worldpm: Scaling human preference modeling, 2025c.
+URL https://arxiv.org/abs/2505.10527.
+Chris Yuhao Liu, Liang Zeng, Yuzhen Xiao, Jujie He, Jiacai Liu, Chaojie Wang, Rui Yan, Wei Shen, Fuxiang
+Zhang, Jiacheng Xu, Yang Liu, and Yahui Zhou. Skywork-reward-v2: Scaling preference data curation via
+human-ai synergy, 2025b. URL https://arxiv.org/abs/2507.01352.
+Xintao Wang, Heng Wang, Yifei Zhang, Xinfeng Yuan, Rui Xu, Jen tse Huang, Siyu Yuan, Haoran Guo,
+Jiangjie Chen, Shuchang Zhou, Wei Wang, and Yanghua Xiao. Coser: Coordinating llm-based persona
+simulation of established roles, 2025d. URL https://arxiv.org/abs/2502.09082.
+Junru Lu, Jiazheng Li, Guodong Shen, Lin Gui, Siyu An, Yulan He, Di Yin, and Xing Sun. Rolemrc:
+A fine-grained composite benchmark for role-playing and instruction-following, 2025.
+URL https:
+//arxiv.org/abs/2502.11387.
+Jinfeng Zhou, Yongkang Huang, Bosi Wen, Guanqun Bi, Yuxuan Chen, Pei Ke, Zhuang Chen, Xiyao Xiao,
+Libiao Peng, Kuntian Tang, Rongsheng Zhang, Le Zhang, Tangjie Lv, Zhipeng Hu, Hongning Wang, and
+Minlie Huang. Characterbench: Benchmarking character customization of large language models, 2024b.
+URL https://arxiv.org/abs/2412.11912.
+Quan Tu, Shilong Fan, Zihang Tian, and Rui Yan. Charactereval: A chinese benchmark for role-playing
+conversational agent evaluation, 2024. URL https://arxiv.org/abs/2401.01275.
+Zhilin Wang, Yi Dong, Olivier Delalleau, Jiaqi Zeng, Gerald Shen, Daniel Egert, Jimmy J. Zhang, Makesh Nar-
+simhan Sreedhar, and Oleksii Kuchaiev. Helpsteer2: Open-source dataset for training top-performing
+reward models, 2024. URL https://arxiv.org/abs/2406.08673.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle,
+Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, Amy Yang, Angela Fan, Anirudh Goyal,
+Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur Hinsvark,
+Arun Rao, Aston Zhang, Aurelien Rodriguez, Austen Gregerson, Ava Spataru, Baptiste Roziere, Bethany
+Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux, Chaya Nayak, Chloe Bi, Chris Marra, Chris
+13
+
+RoleRM Series
+McConnell, Christian Keller, Christophe Touret, Chunyang Wu, Corinne Wong, Cristian Canton Ferrer,
+Cyrus Nikolaidis, Damien Allonsius, Daniel Song, Danielle Pintz, Danny Livshits, Danny Wyatt, David
+Esiobu, Dhruv Choudhary, Dhruv Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor
+Lakomkin, Ehab AlBadawy, Elina Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Francisco
+Guzmán, Frank Zhang, Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Govind Thattai,
+Graeme Nail, Gregoire Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu,
+Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel Kloumann, Ishan Misra, Ivan Evtimov, Jack
+Zhang, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer
+van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu,
+Jie Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua Johnstun, Joshua Saxe,
+Junteng Jia, Kalyan Vasuden Alwala, Karthik Prasad, Kartikeya Upasani, Kate Plawiak, Ke Li, Kenneth
+Heafield, Kevin Stone, Khalid El-Arini, Krithika Iyer, Kshitiz Malik, Kuenley Chiu, Kunal Bhalla, Kushal
+Lakhotia, Lauren Rantala-Yeary, Laurens van der Maaten, Lawrence Chen, Liang Tan, Liz Jenkins, Louis
+Martin, Lovish Madaan, Lubo Malo, Lukas Blecher, Lukas Landzaat, Luke de Oliveira, Madeline Muzzi,
+Mahesh Pasupuleti, Mannat Singh, Manohar Paluri, Marcin Kardas, Maria Tsimpoukelli, Mathew Oldham,
+Mathieu Rita, Maya Pavlova, Melanie Kambadur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan,
+Naman Goyal, Narjes Torabi, Nikolay Bashlykov, Nikolay Bogoychev, Niladri Chatterji, Ning Zhang,
+Olivier Duchenne, Onur Çelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasic, Peter Weng,
+Prajjwal Bhargava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing He, Qingxiao
+Dong, Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Silveira Cabral, Robert Stojnic,
+Roberta Raileanu, Rohan Maheswari, Rohit Girdhar, Rohit Patel, Romain Sauvestre, Ronnie Polidoro,
+Roshan Sumbaly, Ross Taylor, Ruan Silva, Rui Hou, Rui Wang, Saghar Hosseini, Sahana Chennabasappa,
+Sanjay Singh, Sean Bell, Seohyun Sonia Kim, Sergey Edunov, Shaoliang Nie, Sharan Narang, Sharath
+Raparthy, Sheng Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon Vandenhende, Soumya Batra,
+Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan, Sydney Borodinsky, Tamar Herman,
+Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom, Tobias Speckbacher, Todor Mihaylov,
+Tong Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor Gupta, Vignesh Ramanathan, Viktor Kerkez, Vincent
+Gonguet, Virginie Do, Vish Vogeti, Vítor Albiero, Vladan Petrovic, Weiwei Chu, Wenhan Xiong, Wenyin
+Fu, Whitney Meers, Xavier Martinet, Xiaodong Wang, Xiaofang Wang, Xiaoqing Ellen Tan, Xide Xia,
+Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle Goldschlag, Yashesh Gaur, Yasmine Babaei, Yi Wen, Yiwen
+Song, Yuchen Zhang, Yue Li, Yuning Mao, Zacharie Delpierre Coudert, Zheng Yan, Zhengxing Chen,
+Zoe Papakipos, Aaditya Singh, Aayushi Srivastava, Abha Jain, Adam Kelsey, Adam Shajnfeld, Adithya
+Gangidi, Adolfo Victoria, Ahuva Goldstand, Ajay Menon, Ajay Sharma, Alex Boesenberg, Alexei Baevski,
+Allie Feinstein, Amanda Kallet, Amit Sangani, Amos Teo, Anam Yunus, Andrei Lupu, Andres Alvarado,
+Andrew Caples, Andrew Gu, Andrew Ho, Andrew Poulton, Andrew Ryan, Ankit Ramchandani, Annie
+Dong, Annie Franco, Anuj Goyal, Aparajita Saraf, Arkabandhu Chowdhury, Ashley Gabriel, Ashwin
+Bharambe, Assaf Eisenman, Azadeh Yazdan, Beau James, Ben Maurer, Benjamin Leonhardi, Bernie Huang,
+Beth Loyd, Beto De Paola, Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti,
+Brandon Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton, Catalina Mejia,
+Ce Liu, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang Chu, Chris Cai, Chris
+Tindal, Christoph Feichtenhofer, Cynthia Gao, Damon Civin, Dana Beaty, Daniel Kreymer, Daniel Li, David
+Adkins, David Xu, Davide Testuggine, Delia David, Devi Parikh, Diana Liskovich, Didem Foss, Dingkang
+Wang, Duc Le, Dustin Holland, Edward Dowling, Eissa Jamil, Elaine Montgomery, Eleonora Presani, Emily
+Hahn, Emily Wood, Eric-Tuan Le, Erik Brinkman, Esteban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun,
+Felix Kreuk, Feng Tian, Filippos Kokkinos, Firat Ozgenel, Francesco Caggioni, Frank Kanayet, Frank Seide,
+Gabriela Medina Florez, Gabriella Schwarz, Gada Badeer, Georgia Swee, Gil Halpern, Grant Herman,
+Grigory Sizov, Guangyi, Zhang, Guna Lakshminarayanan, Hakan Inan, Hamid Shojanazeri, Han Zou,
+Hannah Wang, Hanwen Zha, Haroun Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter
+Goldman, Hongyuan Zhan, Ibrahim Damlaj, Igor Molybog, Igor Tufanov, Ilias Leontiadis, Irina-Elena
+Veliche, Itai Gat, Jake Weissman, James Geboski, James Kohli, Janice Lam, Japhet Asher, Jean-Baptiste Gaya,
+Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny Zhen, Jeremy Reizenstein, Jeremy Teboul, Jessica Zhong, Jian
+Jin, Jingyi Yang, Joe Cummings, Jon Carvill, Jon Shepard, Jonathan McPhie, Jonathan Torres, Josh Ginsburg,
+Junjie Wang, Kai Wu, Kam Hou U, Karan Saxena, Kartikay Khandelwal, Katayoun Zand, Kathy Matosich,
+Kaushik Veeraraghavan, Kelly Michelena, Keqian Li, Kiran Jagadeesh, Kun Huang, Kunal Chawla,
+14
+
+RoleRM Series
+Kyle Huang, Lailin Chen, Lakshya Garg, Lavender A, Leandro Silva, Lee Bell, Lei Zhang, Liangpeng
+Guo, Licheng Yu, Liron Moshkovich, Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish Bhatt,
+Martynas Mankus, Matan Hasson, Matthew Lennie, Matthias Reso, Maxim Groshev, Maxim Naumov,
+Maya Lathi, Meghan Keneally, Miao Liu, Michael L. Seltzer, Michal Valko, Michelle Restrepo, Mihir
+Patel, Mik Vyatskov, Mikayel Samvelyan, Mike Clark, Mike Macey, Mike Wang, Miquel Jubert Hermoso,
+Mo Metanat, Mohammad Rastegari, Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha
+White, Navyata Bawa, Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikhil Mehta, Nikolay Pavlovich
+Laptev, Ning Dong, Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli, Parkin
+Kent, Parth Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager, Pierre Roux, Piotr Dollar,
+Polina Zvyagina, Prashant Ratanchandani, Pritish Yuvraj, Qian Liang, Rachad Alao, Rachel Rodriguez,
+Rafi Ayub, Raghotham Murthy, Raghu Nayani, Rahul Mitra, Rangaprabhu Parthasarathy, Raymond
+Li, Rebekkah Hogan, Robin Battey, Rocky Wang, Russ Howes, Ruty Rinott, Sachin Mehta, Sachin Siby,
+Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara Hunt, Sargun Dhillon, Sasha Sidorov, Satadru Pan,
+Saurabh Mahajan, Saurabh Verma, Seiji Yamamoto, Sharadh Ramaswamy, Shaun Lindsay, Shaun Lindsay,
+Sheng Feng, Shenghao Lin, Shengxin Cindy Zha, Shishir Patil, Shiva Shankar, Shuqiang Zhang, Shuqiang
+Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith Chintala, Stephanie Max, Stephen Chen,
+Steve Kehoe, Steve Satterfield, Sudarshan Govindaprasad, Sumit Gupta, Summer Deng, Sungmin Cho,
+Sunny Virk, Suraj Subramanian, Sy Choudhury, Sydney Goldman, Tal Remez, Tamar Glaser, Tamara Best,
+Thilo Koehler, Thomas Robinson, Tianhe Li, Tianjun Zhang, Tim Matthews, Timothy Chou, Tzook Shaked,
+Varun Vontimitta, Victoria Ajayi, Victoria Montanez, Vijai Mohan, Vinay Satish Kumar, Vishal Mangla,
+Vlad Ionescu, Vlad Poenaru, Vlad Tiberiu Mihailescu, Vladimir Ivanov, Wei Li, Wenchen Wang, Wenwen
+Jiang, Wes Bouaziz, Will Constable, Xiaocheng Tang, Xiaojian Wu, Xiaolan Wang, Xilun Wu, Xinbo Gao,
+Yaniv Kleinman, Yanjun Chen, Ye Hu, Ye Jia, Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin
+Nam, Yu, Wang, Yu Zhao, Yuchen Hao, Yundi Qian, Yunlu Li, Yuzi He, Zach Rait, Zachary DeVito, Zef
+Rosnbrick, Zhaoduo Wen, Zhenyu Yang, Zhiwei Zhao, and Zhiyu Ma. The llama 3 herd of models, 2024.
+URL https://arxiv.org/abs/2407.21783.
+Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester
+James V. Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, Yuling Gu, Saumya Malik, Victoria Graf, Jena D.
+Hwang, Jiangjiang Yang, Ronan Le Bras, Oyvind Tafjord, Chris Wilhelm, Luca Soldaini, Noah A. Smith,
+Yizhong Wang, Pradeep Dasigi, and Hannaneh Hajishirzi. Tülu 3: Pushing frontiers in open language
+model post-training. 2024b.
+Yunfan Shao, Linyang Li, Junqi Dai, and Xipeng Qiu. Character-LLM: A trainable agent for role-playing.
+In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical
+Methods in Natural Language Processing, pages 13153–13187, Singapore, December 2023. Association for
+Computational Linguistics. URL https://aclanthology.org/2023.emnlp-main.814/.
+Chris Yuhao Liu, Liang Zeng, Jiacai Liu, Rui Yan, Jujie He, Chaojie Wang, Shuicheng Yan, Yang Liu, and
+Yahui Zhou. Skywork-reward: Bag of tricks for reward modeling in llms. arXiv preprint arXiv:2410.18451,
+2024b.
+Saumya Malik, Valentina Pyatkin, Sander Land, Jacob Morrison, Noah A Smith, Hannaneh Hajishirzi, and
+Nathan Lambert. Rewardbench 2: Advancing reward model evaluation. arXiv preprint arXiv:2506.01937,
+2025.
+Zheng Cai, Maosong Cao, Haojiong Chen, Kai Chen, Keyu Chen, Xin Chen, Xun Chen, Zehui Chen, Zhi
+Chen, Pei Chu, Xiaoyi Dong, Haodong Duan, Qi Fan, Zhaoye Fei, Yang Gao, Jiaye Ge, Chenya Gu, Yuzhe
+Gu, Tao Gui, Aijia Guo, Qipeng Guo, Conghui He, Yingfan Hu, Ting Huang, Tao Jiang, Penglong Jiao,
+Zhenjiang Jin, Zhikai Lei, Jiaxing Li, Jingwen Li, Linyang Li, Shuaibin Li, Wei Li, Yining Li, Hongwei
+Liu, Jiangning Liu, Jiawei Hong, Kaiwen Liu, Kuikun Liu, Xiaoran Liu, Chengqi Lv, Haijun Lv, Kai Lv,
+Li Ma, Runyuan Ma, Zerun Ma, Wenchang Ning, Linke Ouyang, Jiantao Qiu, Yuan Qu, Fukai Shang,
+Yunfan Shao, Demin Song, Zifan Song, Zhihao Sui, Peng Sun, Yu Sun, Huanze Tang, Bin Wang, Guoteng
+Wang, Jiaqi Wang, Jiayu Wang, Rui Wang, Yudong Wang, Ziyi Wang, Xingjian Wei, Qizhen Weng, Fan
+Wu, Yingtong Xiong, Chao Xu, Ruiliang Xu, Hang Yan, Yirong Yan, Xiaogui Yang, Haochen Ye, Huaiyuan
+Ying, Jia Yu, Jing Yu, Yuhang Zang, Chuyu Zhang, Li Zhang, Pan Zhang, Peng Zhang, Ruijie Zhang,
+15
+
+RoleRM Series
+Shuo Zhang, Songyang Zhang, Wenjian Zhang, Wenwei Zhang, Xingcheng Zhang, Xinyue Zhang, Hui
+Zhao, Qian Zhao, Xiaomeng Zhao, Fengzhe Zhou, Zaida Zhou, Jingming Zhuo, Yicheng Zou, Xipeng Qiu,
+Yu Qiao, and Dahua Lin. Internlm2 technical report, 2024. URL https://arxiv.org/abs/2403.17297.
+Xiaoyu Tan Minghao Yang, Chao Qu. Inf-orm-llama3.1-70b, 2024. URL [https://huggingface.co/infly/
+INF-ORM-Llama3.1-70B](https://huggingface.co/infly/INF-ORM-Llama3.1-70B).
+Rui Yang, Ruomeng Ding, Yong Lin, Huan Zhang, and Tong Zhang. Regularizing hidden states enables
+learning generalizable reward model for llms. Advances in Neural Information Processing Systems, 37:
+62279–62309, 2024b.
+Nicolai Dorka. Quantile regression for distributional reward models in rlhf. arXiv preprint arXiv:2409.10164,
+2024.
+Junsoo Park, Seungyeon Jwa, Meiying Ren, Daeyoung Kim, and Sanghyuk Choi. Offsetbias: Leveraging
+debiased data for tuning evaluators. arXiv preprint arXiv:2407.06551, 2024.
+16
+
+RoleRM Series
+A
+More Details of RoleRMBench
+A.1
+More Details of Evaluation Metric
+We use accuracy as a metric for RoleRMBench. For Reward Models that can output scalar values, we can
+directly compare the scores of the chosen response and the rejected response to calculate accuracy. For
+LLM-as-a-Judge, we employ the following two modes to calculate accuracy and report the highest result: (1)
+Directly prompt the LLM to choose the better response between response A and response B. To eliminate
+order bias, we swap the order of response A and response B and evaluate again. If the two evaluations are
+inconsistent, the responses are considered a tie. (2) Prompt the LLM to score response A and response B
+based on certain criteria (0-9 scale). The related prompts can be found in Appendix A.2.
+A.2
+Prompts for LLM-as-a-Judge
+Since there is no established best practice for using LLM-as-a-Judge in role-playing tasks, we designed our
+evaluation procedure with reference to the evaluation methodology of RewardBench2 [Malik et al., 2025].
+Figure 4 and 5 illustrate the prompts used in our LLM-as-a-Judge evaluations.
+Prompt for LLM-as-a-Judge (Binary choice)
+Act as an impartial expert evaluator for role-playing conversations. Your task is to analyze two candidate
+responses (Response 1 and Response 2) based on the provided context and a set of criteria. You MUST select one
+response as the overall winner. Provide a detailed, scored breakdown to justify your decision.
+Your evaluation should consider factors such as character consistency, dialogue attractiveness, plot progression,
+multi-turn dialogue maintenance, instruction adherence, scene transition adaptation, and safety of their
+responses when acting in this role.
+The system prompt for the role played by the LLM is:
+{Character_sys_prompt},
+The conversation context between the LLM and the user is:
+{chat_history},
+And the two responses are:
+Response 1: {Response A}
+Response 2: {Response B}
+Please choose the response that is overall better. First, provide a brief reasoning, and then make a decision.
+## Output format:
+Reasoning: (brief explanation)
+Decision: [Response 1 / Response 2]
+(Note: You must select one as the better response and follow the format exactly. Be as objective as possible.)
+Figure 4. Prompt for the binary-choice LLM-as-a-Judge.
+17
+
+RoleRM Series
+Prompt for LLM-as-a-Judge (Rating)
+Please act as an impartial expert evaluator for role-playing conversations and evaluate the quality of the
+response provided by an Role-Playing Agents(powered by LLM) to the Conversation History displayed below.
+Notes:
+1- Your evaluation should consider factors such as the character consistency, dialogue attractiveness, plot
+progression, multi-turn dialogue maintenance, instruction adherence, scene transition adaptation, and safety of
+detail of the response.
+2- Begin your evaluation by providing a short explanation.
+3- Be as objective as possible. After providing your explanation, please rate the response on a scale of 1 to 10. For
+your rating, only give an integer between 0 and 9 (inclusive), do not use any markdown, and do not put any text
+after your final rating.
+[Character System Prompt]
+{Character_sys_prompt}
+[Conversation History]
+{chat_history}
+[Response]
+{res}
+[Your judgement]
+Figure 5. Prompt for the rating-based LLM-as-a-Judge.
+B
+More Details of Experiments
+B.1
+More details of RoleRM training
+We trained our own Bradley-Terry reward model (RoleRM) in a controlled environment. The specific
+parameter settings are as follows: epoch: 2; batch_size: 256; micro_train_batch_size: 8; learning_rate: 9e-6. And
+we used LLama3.1-8b-instruct as the base model.
+We construct our reward modeling corpus from a combination of newly annotated role-play sessions and
+curated open-source preference datasets. Specifically, we annotated approximately 35K multi-turn sessions
+through our human ranking protocol (Appendix 6). During preference construction, we experimented with
+three structuring strategies—NEB, BW, and FULL—resulting in roughly 140K, 220K, and 290K training pairs,
+respectively. After pairwise aggregation and quality filtering, the final human-labeled corpus comprises
+around 205K preference pairs.
+To enhance diversity and reduce distributional bias, we augment this dataset with open-source role-play cor-
+pora and general preference mixtures. We select 50K dialogue samples from CoSER, RoleMRC, CharacterEval,
+and CharacterBench after majority-vote filtering for role-play consistency. For open-domain preferences, we
+integrate subsets from nvidia/HelpSteer2 (6.5K pairs selected only when all five dimensions favored the same
+response), Skywork/Skywork-Reward-Preference-80K-v0.2 (80K), and allenai/llama-3.1-tulu-3-8b-preference-mixture
+(20K sampled by category).
+The combined corpus balances subjective role-play alignment and general preference supervision, enabling
+robust training under preference construction schemes described in Section 5.2.
+18
+
+RoleRM Series
+B.2
+Details of Baselines
+For the general-purpose reward models, we selected the following mainstream models:Skywork-Reward se-
+ries [Liu et al., 2025b, 2024b] (including Skywork-Reward-V2-Qwen3-8B, Skywork-Reward-V2-Llama-3.1-8B,
+Skywork-Reward-Llama-3.1-8B, Skywork-Reward-Llama-3.1-8B-v0.2), internlm-reward series [Cai et al.,
+2024](including internlm2-20b-reward, internlm2-7b-reward), RewardBench series [Malik et al., 2025, Lam-
+bert et al., 2024a] (including Llama-3.1-Tulu-3-70B-SFT-RM-RB2, Llama-3.1-Tulu-3-8B-DPO-RM-RB2, Llama-
+3.1-Tulu-3-8B-RL-RM-RB2, Llama-3.1-Tulu-3-8B-SFT-RM-RB2, Llama-3.1-70B-Instruct-RM-RB2, Llama-3.1-
+8B-Instruct-RM-RB2), INF-ORM-Llama3.1-70B [Minghao Yang, 2024], GRM_Llama3.1_8B_rewardmodel-ft
+[Yang et al., 2024b], QRM-Llama3.1-8B-v2 [Dorka, 2024] and Llama-3-OffsetBias-RM-8B [Park et al., 2024].
+For closed-source advanced models, we evaluated GPT-5-2025-08-07, GPT-5-mini-2025-08-07, GPT-4o-2024-
+08-06, and Claude-3-7-sonnet-20250219. For domain-specific prototypes, we evaluated the CharacterRM
+proposed in CharacterEval [Tu et al., 2024].
+B.3
+Task Definitions
+This section provides the full taxonomy and operational definitions of all task clusters and capabilities in
+ROLERMBENCH, as summarized in Table 3. Each definition specifies the expected model behavior and
+evaluation focus for its corresponding dimension.
+Cluster / Capability
+Operational Definition
+Narrative
+Introduction: At the start of a dialogue or scene, the assistant introduces
+new context, settings, or characters according to the profile or background
+description, smoothly drawing the user into the story.
+Progression: Given an existing storyline, the assistant develops the narrative
+by introducing elements such as conflict, plot twists, or suspense, while main-
+taining freshness and avoiding repetitive or stagnant dialogue.
+Stitching: Upon the user’s introduction of new actions or ideas, the assistant
+incorporates them coherently into the evolving storyline, preserving both
+logical continuity and narrative integrity.
+Scene Transition
+Performs smooth temporal or spatial transitions between scenes, avoiding
+abrupt or incoherent jumps.
+Role Consistency
+Persona fidelity (identity, tone, behavior, and worldview) is maintained
+through contextual shifts and prolonged dialogues, demonstrating robust-
+ness against user-induced derailment.
+Instruction
+Following
+Accurately executes explicit user instructions when compatible with the char-
+acter and storyline, or refuses gracefully in-character when inappropriate.
+Safety
+Prevents unsafe, sensitive, or policy-violating content while remaining immer-
+sive and responding in a character-consistent manner.
+Multi-turn
+Coherence
+Preserves contextual memory and logical consistency over extended dialogues
+without contradictions or information loss.
+Attractiveness
+Sustains user interest through expressive language, tension, and emotional
+richness, avoiding dull or mechanical responses.
+Table 3. Task taxonomy of ROLERMBENCH. The benchmark includes one narrative cluster with three subtasks and six
+standalone role-playing capabilities commonly observed in both open-source data and deployed systems.
+19
+
+RoleRM Series
+B.4
+Annotation Protocol
+For human preference collection, we adopted a unified annotation protocol to rank five candidate responses
+per query. The detailed instruction followed by all annotators is shown in Figure 6.
+Human Annotation Protocol (Ranking of 5 Responses)
+I. Annotation Task
+Annotators must first read the character profile and the dialogue context, then rank the five candidate responses for the
+current user query from best to worst. The process starts by identifying the best and worst responses, followed by determining
+the full ranking order through pairwise comparison and overall quality balance.
+II. General Principles
+1. Rankings are based on subjective impression—prioritizing natural, coherent, and character-consistent interaction.
+2. Evaluation dimensions include the seven task categories (Narrative, Scene Transition, Instruction Following, Safety, Role
+Consistency, Multi-turn Coherence and Attractiveness), as well as emotional expression, interactivity, linguistic quality, and
+semantic fluency.
+3. Response length is not correlated with quality; overly verbose or redundant replies (typically exceeding ∼80 words) incur
+penalties.
+4. Contextual coherence is essential: decisions must consider previous dialogue turns and ongoing conversational flow.
+III. Criteria for the Worst Response
+A response should be labeled as worst if any of the following conditions hold:
+1. Contradicts or disrupts the prior context or emotional tone.
+2. Shows role confusion or forgets its assigned persona.
+3. Repeatedly ignores user intent or fails to engage in meaningful interaction.
+4. Violates the established character setting without contextual motivation.
+5. Breaks the dialogue continuity or halts further conversation.
+6. Repeats previous content or adds no novelty.
+7. Contains logical or narrative inconsistencies (e.g., temporal, spatial, or causal errors).
+8. Is verbose yet semantically empty or uninformative.
+IV. Criteria for the Best Response
+A response should be labeled as best if it satisfies most of the following while avoiding worst conditions:
+1. Demonstrates emotional intelligence and empathy while maintaining context.
+2. Advances the plot or scenario in an engaging and coherent way.
+3. Reveals personality depth or expressiveness consistent with the character profile.
+4. Encourages natural and continuous interaction with the user.
+5. Appropriately interprets and responds to the user’s intent.
+V. Additional Judging Notes
+* If all responses are mediocre, choose the one most conducive to continuing the dialogue as the best.
+* Logical or semantic errors and narrative contradictions are major penalties (strong indicators of worst).
+* If both responses are weak, prioritize linguistic quality when determining the worst.
+* Always follow the reading order: Character Setting →Context →Current Query →Response Options.
+Figure 6. Annotation guidelines for ranking five candidate responses from best to worst.
+20
+
+RoleRM Series
+C
+Additional Analysis on Filtering, Annotation, Data Standardization
+and Generation Evaluation
+C.1
+Filtering and Data Annotation
+To further clarify the role of DeepSeek in benchmark construction, we conducted two additional analyses
+evaluating its effectiveness during the preliminary filtering stage.
+First, we randomly sampled 150 pairs that DeepSeek filtered out and asked three human annotators to
+manually review them. More than 90% of these pairs contained clear issues such as broken context, logical
+contradictions, or severe incoherence. Only 3 pairs (2%) were considered potentially suitable for inclusion in
+the benchmark. This confirms that the vast majority of DeepSeek-filtered pairs do not require additional
+human inspection.
+Table 4. Human Review of DeepSeek-Filtered Data
+Category
+Factual issues
+Unsuitable (non-factual)
+Suitable
+Total
+Count
+136
+11
+3
+150
+Ratio
+90.67%
+7.33%
+2%
+100%
+Second, we emphasize that all data in ROLERMBENCH is ultimately labeled by three human annotators.
+DeepSeek is used solely to reduce annotator workload by removing clearly invalid pairs in advance. The
+following table shows the number of remaining samples at each annotation stage for an initial pool of 1000
+samples.
+Table 5. Data Retention Across Annotation Stages
+Stage
+Initial Data
+After DeepSeek Filter
+After Human Filtering
+Remaining samples
+1000
+713
+172
+Because human filtering further inspects pairwise quality differences and validates synthesized negative
+responses, most data is discarded at this stage. This confirms that the final benchmark consists exclusively of
+high-quality, human-vetted samples.
+C.2
+Data Standardization via Surface Paraphrasing
+We also highlight that DeepSeek is used only for surface-level paraphrasing to normalize textual style, not to
+introduce new semantic content. All positive responses originate from human-written dialogues in novels,
+movies, and TV scripts. DeepSeek’s role is merely to restyle these sentences so that their surface form is
+comparable to model-generated text. This prevents reward models from exploiting stylistic or source-related
+cues—such as writing style, tokenization patterns, or narrative density—rather than focusing on the true
+preference difference between positive and negative responses.
+The underlying semantics, narrative intent, and role-play quality remain unchanged. The effect of this
+normalization is reflected in human disagreement rates before and after paraphrasing:
+Before paraphrasing, annotators sometimes misjudged positive versus negative responses because human-
+written positives often differed stylistically from model-generated negatives, occasionally appearing less
+21
+
+RoleRM Series
+Table 6. Human Disagreement Rate Before vs. After Paraphrasing
+Setting
+Disagreement Rate (%)
+Before paraphrasing (raw data)
+14.2%
+After paraphrasing
+2.8%
+polished or more narrative-dense. This introduced a clear source bias that could mislead both annotators
+and reward models.
+After applying surface-level paraphrasing, both responses share a comparable writing style, and the mis-
+judgment rate drops substantially. This demonstrates that paraphrasing effectively removes source-related
+artifacts while preserving the original semantic quality difference.
+C.3
+Model Generation Ability Evaluation
+For completeness, we also evaluated the base generation ability of several open- and closed-source models.
+These results were considered orthogonal to the main contribution of ROLERMBENCH and were therefore
+not included in the main body. Here we summarize the evaluation protocol and findings.
+We constructed a separate multi-turn role-play test set from high-quality character profiles and plot-driven
+scenarios sampled from the same sources as our role-play corpora. A strong LLM judge (GPT-4o) was used to
+score model-generated dialogues. GPT-4o was selected because it is a high-capability, general-purpose model
+that is not involved in training any of the evaluated open-source systems, reducing the risk of family-specific
+bias.
+For each dialogue, the judge received the persona description, scenario prompt, and model-generated
+conversation, and rated it on a 1–5 scale across five standard generation-oriented dimensions: dialogue
+fluency (DF), character fidelity (CF), emotional expression (EE), story quality (SQ), and plot progression
+(PP). These dimensions reflect the generative performance of a role-playing agent—how well it embodies a
+character and advances a narrative—whereas the seven capabilities in ROLERMBENCH evaluate a reward
+model’s ability to assess role-play along all positive and negative axes (e.g., safety, instruction compliance,
+contextual coherence). Thus, the two evaluations target complementary aspects: one measures the agent’s
+role-play generation ability, while the other measures the reward model’s capacity to judge such behavior
+across a broader alignment spectrum.
+Table 7. Evaluation Setting and Metric
+Aspect
+Setting
+Test data
+Multi-turn role-play dialogues from held-out character and plot setups
+Judge
+GPT-4o with a fixed evaluation prompt
+Dimensions
+DF, CF, EE, SQ, PP (1–5 rating)
+Metric
+Mean score per dimension over all test instances
+Table 8 reports the mean scores for all evaluated models. These results show that DeepSeek-V3.1 exhibits
+strong base-level generation ability and performs on par with, or better than, other widely used open-source
+systems.
+To further reduce evaluation bias, all models were evaluated on the same held-out character and plot
+configurations. For each setup, we generated multiple dialogues per model and averaged the scores to reduce
+22
+
+RoleRM Series
+Table 8. Role-Play Generation Ability Evaluation
+Model
+DF
+CF
+EE
+SQ
+PP
+Avg.
+GPT-4o-Mini
+3.926
+4.185
+4.278
+3.889
+3.630
+3.982
+Claude-3.5-haiku
+4.155
+3.778
+4.027
+4.167
+3.556
+3.937
+Claude-3.5-sonnet
+4.260
+4.433
+3.974
+4.380
+4.015
+4.174
+Doubao-1.5-lite
+3.892
+4.420
+4.295
+3.994
+4.127
+4.146
+Qwen2.5-7B-Instruct
+2.238
+2.191
+2.512
+3.071
+2.333
+2.469
+Qwen2.5-14B-Instruct
+3.333
+4.132
+4.028
+4.333
+3.557
+3.877
+Qwen2.5-72B-Instruct
+3.910
+4.232
+4.253
+4.560
+4.106
+4.212
+Hunyuan-7B-Instruct
+2.200
+2.333
+2.253
+2.700
+3.313
+2.560
+Llama-3.1-70B-Instruct
+3.142
+2.542
+3.176
+3.312
+3.680
+3.162
+Llama-3.1-8B
+2.222
+2.667
+2.500
+2.080
+2.567
+2.407
+Baichuan2-13B-Chat
+3.250
+4.017
+3.250
+3.584
+3.047
+3.425
+chatglm3-6b
+2.350
+2.507
+2.412
+3.000
+2.527
+2.559
+DeepSeek-V3.1
+4.406
+4.564
+4.550
+4.912
+4.550
+4.596
+run-level variance. We also fixed the evaluation horizon K when scoring long multi-turn conversations,
+ensuring that models are compared under matched dialogue lengths.
+Finally, prior work has shown that GPT-4o exhibits high similarity to human ratings in multi-turn role-play
+evaluation. Across evaluation horizons (K = 5, 10, 20), the similarity between human judgments and GPT-
+4o scores consistently lies in the 85–90% range, indicating that GPT-4o provides a stable and reasonably
+unbiased judging signal.
+23

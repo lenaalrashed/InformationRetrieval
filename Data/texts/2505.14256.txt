@@ -1,0 +1,3163 @@
+FuxiMT: Sparsifying Large Language Models for Chinese-Centric
+Multilingual Machine Translation
+Shaolin Zhu1, Tianyu Dong1, Bo Li2, Deyi Xiong1*
+1College of Intelligence and Computing, Tianjin University, Tianjin, China
+2School of Software, Tsinghua University, Beijing, China
+{zhushaolin, tydong, dyxiong}@tju.edu.cn
+{li-b19}@mails.tsinghua.edu.cn
+Abstract
+In this paper, we present FuxiMT, a novel
+Chinese-centric multilingual machine transla-
+tion model powered by a sparsified large lan-
+guage model (LLM). We adopt a two-stage
+strategy to train FuxiMT. We first pre-train the
+model on a massive Chinese corpus and then
+conduct multilingual fine-tuning on a large par-
+allel dataset encompassing 65 languages. Fux-
+iMT incorporates Mixture-of-Experts (MoEs)
+and employs a curriculum learning strategy
+for robust performance across various resource
+levels. Experimental results demonstrate that
+FuxiMT significantly outperforms strong base-
+lines, including state-of-the-art LLMs and ma-
+chine translation models, particularly under
+low-resource scenarios. Furthermore, FuxiMT
+exhibits remarkable zero-shot translation capa-
+bilities for unseen language pairs, indicating its
+potential to bridge communication gaps where
+parallel data are scarce or unavailable.
+1
+Introduction
+The rapid advancement of large language models
+(LLMs) has ushered in a new era for machine trans-
+lation (MT) (Zhu et al., 2024c). Despite this, the
+huge multilingual translation demands for Chinese
+have not been technologically satisfied, especially
+in comparison to those for English. While LLMs
+like BLOOM and LLaMA demonstrate multilin-
+gual capabilities, their coverage is severely limited.
+LLaMA supports 20 languages, and even the more
+extensive BLOOM covers only 46. Considering
+there are over 7,000 languages worldwide, existing
+LLMs only serve a tiny fraction of the global popu-
+lation, leaving a vast number of people unable to
+benefit from their multilingual features.
+In order to bridge this gap, we propose FuxiMT,
+a novel Chinese-centric multilingual translation
+model powered by a sparsified LLM. Particularly,
+FuxiMT, with approximately 13 billion parameters,
+*Corresponding author.
+builds upon the BLOOMz model (Workshop et al.,
+2022) and incorporates Sparse Mixture-of-Experts
+(MoEs) (Zhu et al., 2025). This modular structure
+enables efficient computation and scalability, cru-
+cial for handling large models and diverse language
+data (Shazeer et al., 2017).
+Our training strategy for FuxiMT leverages the
+strengths of both monolingual and parallel data
+through two distinct phases: (1) Chinese Pre-
+training: We first pre-train the sparse BLOOM
+model on a massive dataset of 5 billion Chinese
+tokens.
+This pre-training stage aims to imbue
+the model with a deep understanding of the Chi-
+nese language, ensuring that FuxiMT is inherently
+Chinese-centric and capable of high-quality Chi-
+nese language processing. (2) Multilingual Trans-
+lation Training: We then utilize a comprehensive
+parallel corpus of over 10 billion sentences, cov-
+ering 65 languages. Specifically, we freeze the
+parameters of the pre-trained BLOOM model and
+introduce MoE modules at regular intervals within
+the decoder stack. These MoE modules are ini-
+tialized using a mixed strategy, leveraging both
+random initialization and weights from correspond-
+ing layers of the pre-trained BLOOM model to
+facilitate knowledge transfer. We then fine-tune
+the MoE parameters on the multilingual parallel
+data, employing a curriculum learning strategy to
+gradually increase the language coverage and data
+complexity.
+To summarize, the key contributions of this pa-
+per are threefold:
+• We introduce FuxiMT, a LLM combining
+BLOOMz with MoE. By dynamically rout-
+ing inputs to specialized experts, FuxiMT effi-
+ciently handles multilingual translation while
+reducing computational costs, addressing the
+limitations of English-dominated models.
+• We develop a Chinese-first pre-training strat-
+egy, initializing FuxiMT on 5B Chinese sen-
+arXiv:2505.14256v1 [cs.CL] 20 May 2025
+
+tences to embed deep Chinese understanding,
+followed by multilingual fine-tuning on 100B+
+parallel sentences across 65 languages.
+• Experimental results demonstrate FuxiMT
+outperforms strong baselines (e.g., NLLB,
+GPT-3.5). These results highlight its robust-
+ness in real-world multilingual translation
+challenges.
+2
+Datasets Construction
+The training process for FuxiMT utilizes monolin-
+gual and parallel data. In this section, we present
+the construction pipeline from Chinese datasets and
+the multilingual datasets used by FuxiMT.
+2.1
+Chinese Datasets
+Collection.
+We use 3 sources for a high quality
+post-cleaning pre-training corpus, totaling more
+than 5 billion sentences with a data size of more
+than 1 TB.
+Intern WanJuan (260G)1 (He et al., 2023) is a
+Chinese corpus constructed by the Shanghai AI
+Lab. It consists of a cleaned pre-training corpus
+from various sources such as websites, encyclope-
+dias, books, patents, textbooks, exam questions,
+etc. and is subjected to fine-grained cleaning, dedu-
+plication and value alignment.
+WuDaoCorpora (200G)2 is a large, high-quality
+Chinese dataset constructed by the BAAI. It uses
+more than 20 rules to clean the final dataset from
+100 TB of original website data and remove the
+private data information, and it contains data from
+more than 50 domains such as education, science
+and technology.
+ChineseWebText (530G)3 (Chen et al., 2023) is
+a monolingual Chinese quality dataset extracted
+from CommonCrawl data and filtered based on
+manually formulated rules (including data length,
+sensitive words, proportion of Chinese characters,
+etc.). The quality of the filtered data is evaluated
+using a BERT-based evaluation model.
+Filtering.
+We prepare the above raw datasets to
+ensure their quality for the training of machine
+translation models. First, sentences are extracted
+from paragraphs using predefined rules. Sentences
+1https://opendatalab.org.cn/OpenDataLab/WanJuan1_dot_0
+2https://data.baai.ac.cn/details/WuDaoCorporaText
+3https://huggingface.co/datasets/CASIA-
+LM/ChineseWebText
+Language
+Datasets
+Figure 1: Language and data distribution in the pre-
+training data of FuxiMT.
+shorter than 50 characters or longer than 250 char-
+acters are filtered out, leaving sentences of appro-
+priate length for effective training and semantic
+completeness. Next, language identification is per-
+formed to exclude sentences without Chinese char-
+acters, resulting in a dataset consisting solely of
+Chinese text. This step mitigates the effects of
+noise on the model training. Finally, characters
+are normalized, leaving only Chinese characters,
+English letters, common punctuation marks and
+spaces. This process removes superfluous special
+characters and formatting symbols, ensuring the
+purity of the data and improving the effectiveness
+of model training.
+2.2
+Multilingual Datasets
+Collection.
+We use OpusTools4 (Aulamo et al.,
+2020) to extract resources from the OPUS project
+(Nygaard and Tiedemann, 2003), a renowned plat-
+form for parallel corpora, and create a multilingual
+dataset. Specifically, we collect the parallel corpora
+from prominent projects within OPUS, including
+NLLB (Fan et al., 2021), CCMatrix (Schwenk et al.,
+2019) and OpenSubtitles (Lison and Tiedemann,
+2016). This comprehensive data collection process
+results in a corpus of more than 2T, covering 65
+languages and over 1900 language pairs (As in Ap-
+pendix Table 6). The dataset comprises over 80
+datasets spread across 24,000 subset. Within this
+extensive collection, there is 650 subset dedicated
+to Chinese, totaling 60G.
+4https://github.com/Helsinki-NLP/OpusTools
+
+Preprocessing.
+High-quality parallel corpora are
+essential for training powerful NMT models. How-
+ever, raw data, such as data crawled from the web,
+often contains a significant amount of noise, includ-
+ing length inconsistencies, irrelevant information,
+and sensitive content, which can negatively impact
+model performance. To address this issue, we re-
+fer to the preprocessing pipeline proposed by Fan
+et al. (2021), and use a six-stage cleaning pipeline
+to create high-quality multilingual parallel corpora.
+Text extraction and preprocessing. We obtain
+compressed files with the target language pair from
+the OPUS corpus. After decompression, we re-
+move all files that are not in Moses format and keep
+only the customized plain text files for the target
+language pair. For example, for English-Chinese
+translation, we only keep files with the suffixes ‘.en’
+and ‘.zh’.
+Proportion of characters.
+In this step, sen-
+tences containing excessive noise or non-target lan-
+guage content are identified and removed. Three
+strategies are used: (1) Punctuation ratio filter-
+ing: sentences with a punctuation ratio of more
+than 50% are removed as they often contain no
+meaningful information. (2) Rule-based filtering:
+We use the simple_cleaning script from the pre-
+process5 toolkit to remove sentences that contain
+only spaces, excessive non-printable characters, in-
+valid UTF8-encoded characters or excessively long
+tokens (e.g. DNA sequences, nonsensical repeti-
+tions). (3) Filtering the character ratio of the tar-
+get language: The clean_histogram script from the
+fairseq6 toolkit identifies and removes sentences
+with a high proportion of characters outside the
+target language. This ensures that the sentences
+consist mainly of the target language and that irrel-
+evant information is minimized.
+Data length. Excessively long or short sentence
+pairs can interfere with the training of the NMT
+model. Therefore, we employ several measures to
+control sentence length: (1) We use the Sentence-
+Piece Model (SPM) (Kudo and Richardson, 2018)
+from the fairseq toolkit to tokenize both the source
+and the target language. (2) Sentence length ratio
+filtering: The clean-corpus-n.perl script from the
+moses-smt7 is used to eliminate sentence pairs with
+significant length differences, e.g. those where the
+target sentence is more than three times as long as
+the source sentence. (3) Filtering short text: Docu-
+5https://github.com/kpu/preprocess
+6https://github.com/facebookresearch/fairseq/
+7https://github.com/moses-smt/
+ments with an average line length of less than 10
+words or a total length of more than 250 charac-
+ters are discarded as they do not provide enough
+context for effective model learning.
+Sensitive words. To prevent the model from gen-
+erating harmful or offensive language, we define a
+list of sensitive words and analyze their frequency
+in the text. If a sentence contains sensitive words
+whose frequency exceeds a predefined threshold
+(e.g. 0.5), it is removed from the training dataset.
+Duplication. Duplicate data can lead to over-
+fitting of the model and reduce the generalization
+ability. We use the dedup script from the prepro-
+cessing toolkit to identify and remove duplicate
+record pairs in the parallel data, retaining only the
+first instance.
+Normalization. Finally, we normalize the text
+formatting to make sure that the same symbols,
+such as punctuation marks, numbers, and spaces,
+with the same UTF8 codes, are used in all the
+datasets. We use the normalize-punctuation.perl
+script of the sacremoses toolkit8. In addition, to
+reduce the vocabulary and increase the efficiency
+of the model, we normalize these different quote
+marks to the same one.
+Significantly, all filtering steps should be applied
+to both source and target languages, e.g., if the
+source segment is empty and should be deleted,
+the target segment should also be deleted to keep
+the data parallel. The distribution of language and
+dataset after preprocessing is shown in Figure 1.
+3
+FuxiMT
+3.1
+Model Details
+FuxiMT builds upon the BLOOMz model (specif-
+ically BLOOMz-7B according to the diagram),
+a decoder-only LLM. As illustrated in Figure 2,
+the left part is the “Original Model” which is the
+pre-trained BLOOMz model. Crucially, this base
+model’s components (self-attention, Add & Nor-
+malize, and FFN layer) are all marked as “Frozen”.
+This design choice is fundamental to FuxiMT, pre-
+venting catastrophic forgetting of the pre-trained
+linguistic knowledge during subsequent fine-tuning.
+The frozen BLOOM model serves as a robust back-
+bone, providing general language understanding
+capabilities. The right part of Figure 2 depicts the
+integrated “Sparsified Mode” with the MoE layer.
+The diagram shows the MoE layer being inserted
+between the “Add & Normalize” and the FFN layer
+8https://github.com/alvations/sacremoses
+
+Figure 2: Diagram of FuxiMT. FuxiMT is built upon BLOOMz-7B and fine-tuned on translation and general tasks.
+of the original BLOOM model. Within the MoE
+layer, we see multiple FFN blocks labeled “FFN1”,
+“FFN2” etc. These represent the expert networks
+within the MoE, each specializing in a different
+aspect of the translation task. The “Router” com-
+ponent is also depicted within the MoE layer. This
+router is the gating network, responsible for dy-
+namically selecting the most relevant expert for
+each input token based on its context. The diagram
+shows the router receiving input and then directing
+the flow of information to the selected expert(s).
+3.2
+Post-training
+To effectively integrate the MoE architecture into
+the BLOOM for FuxiMT, we adjust the MoE-
+related parameters in the initial configuration as Fe-
+dus et al. (2022). Specifically, we set sparse_step
+to 8, which denotes that only one expert is ac-
+tive for every 8 layers in the model. This spar-
+sity strategy significantly improves computational
+efficiency while preserving the expressiveness of
+the model. moe_expert_count is set to 8, which
+means that eight experts are used in each MoE
+layer, allowing the model to specialize and dis-
+tribute the processing of different linguistic data.
+For details on other training hyperparameters, see
+Section 4.1.
+The MoE model is formally defined as:
+P(yt|X, θ) =
+k
+X
+i=1
+gi(X; θg) · P(yt|X, θei), (1)
+where gi(X; θg) represents the gating network
+responsible for selecting the i-th expert ei, and
+P(yt|X, θei) denotes the probability distribution
+over the next token yt given the initial set X and
+the parameters of the selected expert’s parameters
+θei.
+Chinese pre-training stage:
+First, we train the model using a Causal Lan-
+guage Modeling (CLM) on a 5B monolingual Chi-
+nese sentences to improve its understanding of the
+syntactic and semantic structures of the Chinese
+language. This task is about predicting the next
+token in a sequence based on the previous tokens.
+Formally, the model learns to maximize the proba-
+bility of a sequence of tokens x = x1, x2, . . . , xT :
+P(x) =
+T
+Y
+t=1
+P(xt|x<t),
+(2)
+where P(xt|x<t) represents the conditional prob-
+ability of token xt given all preceding tokens
+x<t = x1, x2, . . . , xt−1. Compared to Masked
+Language Modeling (MLM), CLM is more suit-
+able for generation-based tasks, which aligns with
+the primary focus of this stage. This advantage is
+particularly relevant for Chinese, where tokeniza-
+tion plays a significant role in capturing sequential
+dependencies. During training, we use the cross-
+entropy loss as the optimization objective:
+LCLM(θ) = −
+T
+X
+t=1
+log Pθ(xt|x<t),
+(3)
+where Pθ(xt|x<t) is the model’s predicted proba-
+bility of token xt given the preceding tokens, pa-
+rameterized by θ. The training process aims to
+minimize this loss across the entire training corpus.
+Multilingual translation training stage:
+In this stage, we fine-tune the BLOOM MoE
+model using an extensive multilingual parallel cor-
+pus for translation. The training data includes over
+
+100 billion sentence pairs in 65 languages, mostly
+from the OPUS project, covering both high and low
+resource languages. We use instruction-tuning strat-
+egy to reformulate each translation example into
+an instruction-driven query. We create 40 struc-
+tured instruction templates that guide the model
+to produce more accurate translations by clearly
+indicating the context of the source language, the
+target language, and the nature of the task. Detailed
+instruction templates refer to Appendix Table 9.
+We use curriculum learning to avoid catas-
+trophic forgetting and ensure robust translation in
+all languages. Training starts with high-resource
+language pairs and gradually incorporates low-
+resource languages to prevent over-matching and
+promote balanced performance. We achieve this by
+weighting the contribution of each language pair to
+the overall training loss:
+Ltotal =
+T
+X
+t=1
+wt · L(Xsrc
+t , Y tgt
+t ),
+(4)
+where wt represents the weighting assigned to the
+language pair t, whereby the importance of the
+low-resource languages is gradually increased as
+training progresses.
+To further increase the robustness and cover-
+age of our model, especially for low-resource lan-
+guages, we employ a data augmentation technique
+known as back-translation. In this method, the tar-
+get sentence Y tgt is translated back into the source
+language, resulting in a synthetic source sentence.
+This technique is particularly effective for augment-
+ing data in low-resource language pairs. The aug-
+mented dataset D′ is generated as follows:
+D′ =D ∪{(Y tgt, back-translated(Y tgt))|
+(Xsrc, Y tgt) ∈D},
+(5)
+where D represents the original dataset of sen-
+tence pairs and back-translated(Y tgt) is the syn-
+thetic source sentence generated by translating the
+target sentence Y tgt into the source language.
+4
+Experiments
+4.1
+Settings
+We conducted our experiments on 8 NVIDIA
+TESLA A100-80G GPUs with Pytorch. To mit-
+igate memory consumption and further improve
+training efficiency, we leverage ZeRO-2 (Rajbhan-
+dari et al., 2020) and Flash-Attention V2 (Dao,
+2024) technologies. For optimization, the standard
+AdamW optimizer (Loshchilov and Hutter, 2017)
+was utilized with hyper-parameters set to β1 = 0.9,
+β2 = 0.99, and ϵ = 10−8. Additionally, we em-
+ploy the cosine learning rate scheduler, adopt a
+warm-up strategy for the learning rate, gradually
+increasing it to the peak value over the first 1000
+steps and then linearly decaying it to zero through-
+out the remaining training steps. Detailed training
+parameters and configurations are provided in Ap-
+pendix Table 3.
+We compare FuxiMT against several strong
+baselines: BLOOMz-7B (Workshop et al., 2022),
+GPT3.5 (Brown et al., 2020), NLLB (Costa-
+Jussà et al., 2022), LLaMAX3-8B (Lu et al.,
+2024), LLaMA-3.1-8B(Grattafiori et al., 2024),
+Mistral-7B-v0.3(Jiang et al., 2023), Qwen 2.5-7B
+(Team, 2024b), Aya-23-8B (Aryabumi et al., 2024),
+Gemma-2-9B (Team, 2024a) and InternLM 2.5-7B-
+chat (Cai et al., 2024).
+4.2
+Main Results
+Table 1 presents the performance of FuxiMT and
+the baselines across different resource levels of lan-
+guages, categorized as High, Medium, Low, and
+Very Low resource in terms of the amount of paral-
+lel data available (as described in Appendix Table
+5).
+A key observation is the consistent improvement
+of FuxiMT over the original BLOOMz-7B model.
+This improvement underscores the effectiveness of
+our proposed methodology, combining MoEs with
+the two-stage training strategy focusing first on Chi-
+nese pre-training and then multilingual fine-tuning.
+The significant gains under the low-resource set-
+ting highlight FuxiMT’s ability to leverage cross-
+lingual knowledge transfer, effectively addressing
+the data scarcity challenges prominent in many
+languages. Compared to other LLMs, FuxiMT
+exhibits competitive performance. While some
+models, like InternLM2.5 and Qwen2.5-7B, show
+higher scores in high-resource scenarios, FuxiMT
+maintains a strong advantage under the low and
+very low resource settings. The specialized Chinese
+pre-training of FuxiMT likely contributes to its su-
+perior performance with Chinese-involved trans-
+lation pairs, even surpassing strong baselines like
+GPT-3.5 in certain cases.
+While NLLB, specifically trained for low-
+resource translation, performs well in those cate-
+gories, FuxiMT often achieves comparable or even
+better results, demonstrating its effectiveness in
+leveraging monolingual data and the benefits of
+
+Model
+High Resource
+Medium Resource
+Low Resource
+Very Low Resource
+FuxiMT
+37.0257
+25.2682
+20.6446
+20.6649
+GPT-3.5
+27.2460
+20.0110
+10.4000
+9.1491
+BLOOMz
+13.6740
+12.4014
+14.0044
+12.5400
+NLLB
+18.3420
+19.4779
+19.3294
+20.1124
+LLaMAX3-8B
+28.0430
+26.4063
+21.9199
+15.1937
+LLaMA-3.1-8B
+2.5763
+1.9268
+3.0245
+2.9714
+Mistral-7B-v0.3
+3.5789
+6.0708
+2.4043
+1.2762
+Qwen2.5-7B
+31.6810
+26.7201
+13.4558
+9.8152
+Aya-23-8B
+28.9705
+20.7915
+6.8899
+6.3070
+Gemma-2-9B
+20.4730
+16.0337
+8.8800
+6.5642
+InternLM2.5-7B-chat
+29.6108
+21.1705
+7.2183
+7.7571
+Table 1: BLEU scores for different resource languages xx-zh.
+Method
+Average BLEU
+BLOOMz
+13.08
+FuxiMT-Random-Init
+24.46
+FuxiMT-Reuse-Init
+25.37
+FuxiMT-Random-Train
+19.27
+FuxiMT-Order-Train
+21.93
+FuxiMT
+26.15
+Table 2: Ablation Results (Average BLEU across vari-
+ous language pairs)
+the MoE architecture. The strong performance of
+LLaMa models, particularly LLaMA 3-8B, high-
+lights the potential of decoder-only models for mul-
+tilingual translation. However, FuxiMT’s tailored
+training strategy and incorporation of MoEs appear
+to provide a further edge, especially in data-sparse
+scenarios.
+4.3
+Ablation Study
+To validate the necessity of the sparse MoE ar-
+chitecture, different FFN initialization methods,
+and the impact of curriculum learning in FuxiMT,
+we conducted comprehensive ablation experiments
+by comparing four variants: FuxiMT-Random-
+Init, FuxiMT-Reuse-Init, FuxiMT-Random-Train,
+FuxiMT-Order-Train. These settings are detailed
+in Appendix A.5.
+Results are presented in Table 2. We can find
+that the FuxiMT configuration, incorporating all
+designed elements, achieves superior performance.
+The performance difference between FuxiMT and
+FuxiMT-Random-Init suggests that the pre-training
+on the Chinese dataset provide much knowledge
+for the later training. Specifically, the sparse MoE
+architecture proves crucial for dynamically routing
+inputs to specialized experts, enabling effective
+partitioning of the complex multilingual knowledge
+space. We also show that initialization methods has
+a large influence on the performance of the model.
+We then examine the training strategy variants
+further illuminating the benefits of our curriculum
+learning approach. FuxiMT-Random-Train, which
+dispenses with curriculum learning in favor of uni-
+form language pair mixing, suffers significant per-
+formance degradation. This directly underscores
+the importance of the gradual introduction of lan-
+guages, particularly the low-resource ones, in mit-
+igating catastrophic forgetting. We also find that
+training the models with FuxiMT-Order-Train can
+also bring some improvement, which is better than
+the models with FuxiMT-Random-Train, but still
+worst than the complete model. These findings val-
+idate the designed process of MoE initialization,
+the Chinese-centric pre-training, and curriculum
+learning.
+5
+Conclusion
+In this paper, we present FuxiMT, a multilingual
+Chinese-centric translation LLM. We design a two-
+stage training approach that explicitly combines
+Chinese pre-training followed by multilingual fine-
+tuning with curriculum learning and strategically
+incorporates MoEs, enabling FuxiMT to excel par-
+ticularly in low-resource scenarios. Our results
+demonstrate substantially superior performance
+compared to strong baselines. Moreover, FuxiMT’s
+remarkable zero-shot translation capabilities fur-
+ther cement its potential as a valuable MT tool for
+bridging communication gaps across diverse lin-
+guistic landscapes where parallel data are scarce.
+
+References
+Viraat Aryabumi, John Dang, Dwarak Talupuru,
+Saurabh Dash, David Cairuz, Hangyu Lin, Bharat
+Venkitesh, Madeline Smith, Kelly Marchisio, Se-
+bastian Ruder, Acyr Locatelli, Julia Kreutzer, Nick
+Frosst, Phil Blunsom, Marzieh Fadaee, Ahmet Üstün,
+and Sara Hooker. 2024. Aya 23: Open weight re-
+leases to further multilingual progress.
+Preprint,
+arXiv:2405.15032.
+Mikko Aulamo, Umut Sulubacak, Sami Virpioja, and
+Jörg Tiedemann. 2020. OpusTools and parallel cor-
+pus diagnostics. In Proceedings of The 12th Lan-
+guage Resources and Evaluation Conference, pages
+3782–3789. European Language Resources Associa-
+tion.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot
+learners. Advances in neural information processing
+systems, 33:1877–1901.
+Zheng Cai, Maosong Cao, Haojiong Chen, Kai Chen,
+Keyu Chen, Xin Chen, Xun Chen, Zehui Chen,
+Zhi Chen, Pei Chu, Xiaoyi Dong, Haodong Duan,
+Qi Fan, Zhaoye Fei, Yang Gao, Jiaye Ge, Chenya
+Gu, Yuzhe Gu, Tao Gui, Aijia Guo, Qipeng Guo,
+Conghui He, Yingfan Hu, Ting Huang, Tao Jiang,
+Penglong Jiao, Zhenjiang Jin, Zhikai Lei, Jiaxing Li,
+Jingwen Li, Linyang Li, Shuaibin Li, Wei Li, Yin-
+ing Li, Hongwei Liu, Jiangning Liu, Jiawei Hong,
+Kaiwen Liu, Kuikun Liu, Xiaoran Liu, Chengqi Lv,
+Haijun Lv, Kai Lv, Li Ma, Runyuan Ma, Zerun Ma,
+Wenchang Ning, Linke Ouyang, Jiantao Qiu, Yuan
+Qu, Fukai Shang, Yunfan Shao, Demin Song, Zi-
+fan Song, Zhihao Sui, Peng Sun, Yu Sun, Huanze
+Tang, Bin Wang, Guoteng Wang, Jiaqi Wang, Ji-
+ayu Wang, Rui Wang, Yudong Wang, Ziyi Wang,
+Xingjian Wei, Qizhen Weng, Fan Wu, Yingtong
+Xiong, Chao Xu, Ruiliang Xu, Hang Yan, Yirong
+Yan, Xiaogui Yang, Haochen Ye, Huaiyuan Ying, Jia
+Yu, Jing Yu, Yuhang Zang, Chuyu Zhang, Li Zhang,
+Pan Zhang, Peng Zhang, Ruijie Zhang, Shuo Zhang,
+Songyang Zhang, Wenjian Zhang, Wenwei Zhang,
+Xingcheng Zhang, Xinyue Zhang, Hui Zhao, Qian
+Zhao, Xiaomeng Zhao, Fengzhe Zhou, Zaida Zhou,
+Jingming Zhuo, Yicheng Zou, Xipeng Qiu, Yu Qiao,
+and Dahua Lin. 2024. Internlm2 technical report.
+Preprint, arXiv:2403.17297.
+Jianghao Chen, Pu Jian, Tengxiao Xi, Dongyi Yi, Qian-
+long Du, Chenglin Ding, Guibo Zhu, Chengqing
+Zong, Jinqiao Wang, and Jiajun Zhang. 2023. Chine-
+sewebtext: Large-scale high-quality chinese web text
+extracted with effective evaluation model. Preprint,
+arXiv:2311.01149.
+Yong Cheng, Ankur Bapna, Orhan Firat, Yuan Cao,
+Pidong Wang, and Wolfgang Macherey. 2022. Multi-
+lingual mix: Example interpolation improves multi-
+lingual neural machine translation. In Proceedings
+of the 60th Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+ACL 2022, Dublin, Ireland, May 22-27, 2022, pages
+4092–4102. Association for Computational Linguis-
+tics.
+Marta R Costa-Jussà, James Cross, Onur Çelebi, Maha
+Elbayad, Kenneth Heafield, Kevin Heffernan, Elahe
+Kalbassi, Janice Lam, Daniel Licht, Jean Maillard,
+et al. 2022.
+No language left behind: Scaling
+human-centered machine translation. arXiv preprint
+arXiv:2207.04672.
+Tri Dao. 2024. FlashAttention-2: Faster attention with
+better parallelism and work partitioning. In Inter-
+national Conference on Learning Representations
+(ICLR).
+Nan Du, Yanping Huang, Andrew M. Dai, Simon Tong,
+Dmitry Lepikhin, Yuanzhong Xu, Maxim Krikun,
+Yanqi Zhou, Adams Wei Yu, Orhan Firat, Barret
+Zoph, Liam Fedus, Maarten P. Bosma, Zongwei
+Zhou, Tao Wang, Yu Emma Wang, Kellie Webster,
+Marie Pellat, Kevin Robinson, Kathleen S. Meier-
+Hellstern, Toju Duke, Lucas Dixon, Kun Zhang,
+Quoc V. Le, Yonghui Wu, Zhifeng Chen, and Claire
+Cui. 2022. Glam: Efficient scaling of language mod-
+els with mixture-of-experts. In International Con-
+ference on Machine Learning, ICML 2022, 17-23
+July 2022, Baltimore, Maryland, USA, volume 162 of
+Proceedings of Machine Learning Research, pages
+5547–5569. PMLR.
+Nadir Durrani, Helmut Schmid, Alexander M. Fraser,
+Philipp Koehn, and Hinrich Schütze. 2015. The oper-
+ation sequence model - combining n-gram-based and
+phrase-based statistical machine translation. Comput.
+Linguistics, 41(2):185–214.
+Angela Fan, Shruti Bhosale, Holger Schwenk, Zhiyi
+Ma, Ahmed El-Kishky, Siddharth Goyal, Mandeep
+Baines, Onur Celebi, Guillaume Wenzek, Vishrav
+Chaudhary, et al. 2021. Beyond english-centric mul-
+tilingual machine translation. Journal of Machine
+Learning Research, 22(107):1–48.
+William Fedus, Barret Zoph, and Noam Shazeer. 2022.
+Switch transformers: Scaling to trillion parameter
+models with simple and efficient sparsity. Journal of
+Machine Learning Research, 23(120):1–39.
+Orhan Firat, Kyunghyun Cho, and Yoshua Bengio. 2016.
+Multi-way, multilingual neural machine translation
+with a shared attention mechanism. In NAACL HLT
+2016, The 2016 Conference of the North American
+Chapter of the Association for Computational Lin-
+guistics: Human Language Technologies, San Diego
+California, USA, June 12-17, 2016, pages 866–875.
+The Association for Computational Linguistics.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri,
+Abhinav Pandey, Abhishek Kadian, Ahmad Al-
+Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten,
+Alex Vaughan, et al. 2024. The llama 3 herd of mod-
+els. arXiv preprint arXiv:2407.21783.
+
+Conghui He, Zhenjiang Jin, Chao Xu, Jiantao Qiu, Bin
+Wang, Wei Li, Hang Yan, Jiaqi Wang, and Dahua
+Lin. 2023. Wanjuan: A comprehensive multimodal
+dataset for advancing english and chinese large mod-
+els. Preprint, arXiv:2308.10755.
+Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski,
+Bruna Morrone, Quentin de Laroussilhe, Andrea Ges-
+mundo, Mona Attariyan, and Sylvain Gelly. 2019.
+Parameter-efficient transfer learning for NLP. In Pro-
+ceedings of the 36th International Conference on Ma-
+chine Learning, ICML 2019, 9-15 June 2019, Long
+Beach, California, USA, volume 97 of Proceedings
+of Machine Learning Research, pages 2790–2799.
+PMLR.
+Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan
+Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and
+Weizhu Chen. 2022. Lora: Low-rank adaptation of
+large language models. In The Tenth International
+Conference on Learning Representations, ICLR 2022,
+Virtual Event, April 25-29, 2022. OpenReview.net.
+Albert Q. Jiang, Alexandre Sablayrolles, Arthur Men-
+sch, Chris Bamford, Devendra Singh Chaplot, Diego
+de las Casas, Florian Bressand, Gianna Lengyel, Guil-
+laume Lample, Lucile Saulnier, Lélio Renard Lavaud,
+Marie-Anne Lachaux, Pierre Stock, Teven Le Scao,
+Thibaut Lavril, Thomas Wang, Timothée Lacroix,
+and William El Sayed. 2023. Mistral 7b. Preprint,
+arXiv:2310.06825.
+Melvin Johnson, Mike Schuster, Quoc V. Le, Maxim
+Krikun, Yonghui Wu, Zhifeng Chen, Nikhil Tho-
+rat, Fernanda B. Viégas, Martin Wattenberg, Greg
+Corrado, Macduff Hughes, and Jeffrey Dean. 2017.
+Google’s multilingual neural machine translation sys-
+tem: Enabling zero-shot translation. Trans. Assoc.
+Comput. Linguistics, 5:339–351.
+Alexander Jones, Isaac Caswell, Ishank Saxena, and
+Orhan Firat. 2023. Bilex rx: Lexical data augmenta-
+tion for massively multilingual machine translation.
+CoRR, abs/2303.15265.
+Taku Kudo and John Richardson. 2018. SentencePiece:
+A simple and language independent subword tok-
+enizer and detokenizer for neural text processing. In
+Proceedings of the 2018 Conference on Empirical
+Methods in Natural Language Processing: System
+Demonstrations, pages 66–71, Brussels, Belgium.
+Association for Computational Linguistics.
+Zehui Lin, Liwei Wu, Mingxuan Wang, and Lei Li.
+2021. Learning language specific sub-network for
+multilingual machine translation. In Proceedings
+of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International
+Joint Conference on Natural Language Processing,
+ACL/IJCNLP 2021, (Volume 1: Long Papers), Virtual
+Event, August 1-6, 2021, pages 293–305. Association
+for Computational Linguistics.
+Pierre Lison and Jörg Tiedemann. 2016.
+Opensub-
+titles2016: Extracting large parallel corpora from
+movie and tv subtitles.
+Ilya Loshchilov and Frank Hutter. 2017.
+Decou-
+pled weight decay regularization.
+arXiv preprint
+arXiv:1711.05101.
+Yinquan Lu, Wenhao Zhu, Lei Li, Yu Qiao, and Fei
+Yuan. 2024. Llamax: Scaling linguistic horizons of
+llm by enhancing translation capabilities beyond 100
+languages. arXiv preprint arXiv:2407.05975.
+Lars Nygaard and Jörg Tiedemann. 2003. Opus—an
+open source parallel corpus. In Proceedings of the
+13th Nordic Conference on Computational Linguis-
+tics.
+Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase,
+and Yuxiong He. 2020. Zero: Memory optimizations
+toward training trillion parameter models. In SC20:
+International Conference for High Performance Com-
+puting, Networking, Storage and Analysis, pages 1–
+16. IEEE.
+Xiaozhe Ren, Pingyi Zhou, Xinfan Meng, Xinjing
+Huang, Yadao Wang, Weichao Wang, Pengfei Li,
+Xiaoda Zhang, Alexander Podolskiy, Grigory Arshi-
+nov, Andrey Bout, Irina Piontkovskaya, Jiansheng
+Wei, Xin Jiang, Teng Su, Qun Liu, and Jun Yao.
+2023. Pangu-Σ: Towards trillion parameter language
+model with sparse heterogeneous computing. CoRR,
+abs/2303.10845.
+Holger Schwenk, Guillaume Wenzek, Sergey Edunov,
+Edouard Grave, and Armand Joulin. 2019. Ccmatrix:
+Mining billions of high-quality parallel sentences on
+the web. arXiv preprint arXiv:1911.04944.
+Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz,
+Andy Davis, Quoc V. Le, Geoffrey E. Hinton, and
+Jeff Dean. 2017. Outrageously large neural networks:
+The sparsely-gated mixture-of-experts layer. In 5th
+International Conference on Learning Representa-
+tions, ICLR 2017, Toulon, France, April 24-26, 2017,
+Conference Track Proceedings. OpenReview.net.
+Haoran Sun, Renren Jin, Shaoyang Xu, Leiyu Pan,
+Supryadi, Menglong Cui, Jiangcun Du, Yikun Lei,
+Lei Yang, Ling Shi, Juesi Xiao, Shaolin Zhu, and
+Deyi Xiong. 2024. Fuxitranyu: A multilingual large
+language model trained with balanced data. CoRR,
+abs/2408.06273.
+Gemma Team. 2024a. Gemma.
+Qwen Team. 2024b. Qwen2.5: A party of foundation
+models.
+BigScience Workshop, Teven Le Scao, Angela Fan,
+Christopher Akiki, Ellie Pavlick, Suzana Ili´c, Daniel
+Hesslow, Roman Castagné, Alexandra Sasha Luc-
+cioni, François Yvon, et al. 2022. Bloom: A 176b-
+parameter open-access multilingual language model.
+arXiv preprint arXiv:2211.05100.
+Haoran Xu, Young Jin Kim, Amr Sharaf, and Hany Has-
+san Awadalla. 2024. A paradigm shift in machine
+translation: Boosting translation performance of
+large language models. In The Twelfth International
+
+Conference on Learning Representations, ICLR 2024,
+Vienna, Austria, May 7-11, 2024. OpenReview.net.
+Wen Yang, Chong Li, Jiajun Zhang, and Chengqing
+Zong. 2023.
+Bigtranslate:
+Augmenting large
+language models with multilingual translation ca-
+pability over 100 languages.
+arXiv preprint
+arXiv:2305.18098.
+Shaolei Zhang, Qingkai Fang, Zhuocheng Zhang, Zhen-
+grui Ma, Yan Zhou, Langlin Huang, Mengyu Bu,
+Shangtong Gui, Yunji Chen, Xilin Chen, and Yang
+Feng. 2023. Bayling: Bridging cross-lingual align-
+ment and instruction following through interac-
+tive translation for large language models. CoRR,
+abs/2306.10968.
+Jiawei Zheng, Hanghai Hong, Xiaoli Wang, Jingsong
+Su, Yonggui Liang, and Shikai Wu. 2024.
+Fine-
+tuning large language models for domain-specific
+machine translation. CoRR, abs/2402.15061.
+Fan Zhou and Chengtai Cao. 2021. Overcoming catas-
+trophic forgetting in graph neural networks with ex-
+perience replay. In Thirty-Fifth AAAI Conference
+on Artificial Intelligence, AAAI 2021, Thirty-Third
+Conference on Innovative Applications of Artificial
+Intelligence, IAAI 2021, The Eleventh Symposium
+on Educational Advances in Artificial Intelligence,
+EAAI 2021, Virtual Event, February 2-9, 2021, pages
+4714–4722. AAAI Press.
+Shaolin Zhu, Menglong Cui, and Deyi Xiong. 2024a.
+Towards robust in-context learning for machine trans-
+lation with large language models. In Proceedings of
+the 2024 Joint International Conference on Computa-
+tional Linguistics, Language Resources and Evalua-
+tion, LREC/COLING 2024, 20-25 May, 2024, Torino,
+Italy, pages 16619–16629. ELRA and ICCL.
+Shaolin Zhu, Leiyu Pan, Dong Jian, and Deyi Xiong.
+2025. Overcoming language barriers via machine
+translation with sparse mixture-of-experts fusion of
+large language models. Information Processing &
+Management, 62(3):104078.
+ShaoLin Zhu, Leiyu Pan, and Deyi Xiong. 2024b.
+FEDS-ICL: enhancing translation ability and ef-
+ficiency of large language model by optimizing
+demonstration selection.
+Inf. Process. Manag.,
+61(5):103825.
+Shaolin Zhu, Shaoyang Xu, Haoran Sun, Leiyu Pan,
+Menglong Cui, Jiangcun Du, Renren Jin, António
+Branco, Deyi Xiong, et al. 2024c.
+Multilingual
+large language models: A systematic survey. arXiv
+preprint arXiv:2411.11072.
+Yaoming Zhu, Jiangtao Feng, Chengqi Zhao, Mingx-
+uan Wang, and Lei Li. 2021. Counter-interference
+adapter for multilingual machine translation. In Find-
+ings of the Association for Computational Linguistics:
+EMNLP 2021, Virtual Event / Punta Cana, Domini-
+can Republic, 16-20 November, 2021, pages 2812–
+2823. Association for Computational Linguistics.
+A
+Appendix
+Hidden Size
+4,096
+Intermediate Size
+16,384
+Heads
+32
+Layers
+30
+Position Embed
+4,096
+Vocab Size
+250,752
+MoE Expert Count
+8
+Sparse Step
+8
+Learning Rate
+5e-5
+Batch Size
+8
+Context Length
+4,096
+Weight Decay
+3e-7
+FlashAttn V2
+✓
+ZeRO-2
+✓
+Table 3: Hyper-parameters of training.
+A.1
+Language Pairs Classifications
+Languages can be categorized into high-resource,
+medium-resource, low-resource, and very low-
+resource levels, focusing on xx →zh translation
+pairs. FuxiMT supports a total of 65 languages,
+including Chinese, which results in 64 language
+pairs.
+High-resource languages (e.g., English,
+Spanish, French) have abundant data, medium-
+resource languages (e.g., Turkish, Lithuanian, Esto-
+nian) have moderate data, low-resource languages
+(e.g., Amharic, Zulu, Nepali) have limited data, and
+very low-resource languages (e.g., many indige-
+nous languages) have scarce data. The FuxiMT
+model has achieved competitive translation quality
+across all these language pairs, demonstrating its
+effectiveness at different resource levels.
+A.2
+Post-training data
+In the multilingual translation training phase, Fux-
+iMT prioritizes Chinese-centric data by allocating
+over 50% of its parallel corpus to xx→zh language
+pairs. This deliberate imbalance ensures the model
+retains strong Chinese capabilities while acquiring
+multilingual expertise through curriculum learn-
+ing (progressively integrating low-resource lan-
+guages), parameter-efficient MoE architecture (iso-
+lating Chinese knowledge in the frozen BLOOM
+backbone), and back-translation augmentation (in-
+creasing Chinese data via synthetic source texts).
+
+A.3
+Baselines
+We compare FuxiMT against several strong base-
+lines reflecting the state-of-the-art in multilingual
+machine translation.
+• BLOOMz-7B: The original BLOOMz-7B
+model serves as a crucial baseline, allowing
+us to assess the impact of incorporating MoEs
+and our specialized training regime. This com-
+parison helps isolate the contributions of our
+proposed modifications.
+• GPT-3.5:
+A widely-used large language
+model known for its strong translation capa-
+bilities.
+• NLLB: A prominent multilingual machine
+translation model developed by Meta AI,
+specifically designed for low-resource lan-
+guages. This comparison highlights FuxiMT’s
+performance relative to a model explicitly
+trained for translation between diverse lan-
+guages.We use the 54.5B parameter version
+of NLLB-200.
+• LLaMA-3.1-8B: Representative large lan-
+guage models developed by Meta AI, offering
+a point of comparison against other decoder-
+only models with different scales and archi-
+tectures.
+• LLaMAX3-8B/Mistral-7B-v0.3/Qwen2.5-
+7B/Aya-23-8B/Gemma-2-9B/InternLM2.5-
+7B-chat: Other state-of-the-art large language
+models, providing a diverse range of architec-
+tural choices and training methodologies to
+benchmark against.
+A.4
+Results
+In Tables 7 and 8, we provide a detailed compari-
+son of FuxiMT’s performance with other large lan-
+guage models (LLMs) on 64 language pairs, show-
+casing both BLEU and CHRF scores. As observed,
+FuxiMT consistently outperforms other models
+in translating a majority of these language pairs,
+with a particularly remarkable advantage in trans-
+lating from low-resource and very low-resource
+languages into Chinese. This demonstrates Fux-
+iMT’s strong capacity for cross-lingual knowledge
+transfer, especially in scenarios where parallel data
+is scarce.
+A.5
+Detail Setting of Ablation Study
+• FuxiMT-Random-Init: All FFN experts are
+randomly initialized, with curriculum learning
+applied.
+• FuxiMT-Reuse-Init: All FFN experts reuse
+the parameters of the corresponding FFN lay-
+ers in the pre-trained BLOOMz model, along
+with curriculum learning.
+• FuxiMT-Random-Train: Uses the mixed FFN
+initialization method but with random train-
+ing, where all languages are mixed uniformly
+without weighting.
+• FuxiMT-Order-Train: Applies the mixed FFN
+initialization method and fixed-order training.
+Languages are ordered by resource level (high
+→low) but with equal weights.
+A.6
+Zero-Shot Translation
+FuxiMT’s generalization ability was further evalu-
+ated through zero-shot translation on four unseen
+language pairs: Tigrinyan (ti), Tibetan (bo), Turk-
+men (tk), and Pijin (pis). As shown in Figure 3,
+FuxiMT consistently outperforms all baseline mod-
+els across these pairs, demonstrating its remarkable
+capacity to transfer knowledge to unseen languages
+without explicit training data. This success is at-
+tributed to several key factors: (1) the multilingual
+training with curriculum learning, which exposes
+the model to diverse language pairs and translation
+patterns, promoting robust cross-lingual represen-
+tations (2) and the Mixture-of-Experts architecture,
+which facilitates efficient knowledge sharing and
+transfer between different language pairs, even in
+zero-shot scenarios.
+The incorporation of MoEs, coupled with the
+data augmentation via back-translation (applied
+to seen pairs), further enhances FuxiMT’s gen-
+eralization capabilities, enabling it to handle un-
+seen language pairs more effectively. These com-
+bined strategies demonstrate FuxiMT’s potential as
+a powerful tool for cross-lingual communication,
+especially for low-resource scenarios. The strong
+zero-shot performance highlights FuxiMT’s ability
+to bridge communication gaps where parallel data
+is scarce or non-existent, a crucial advantage for
+fostering seamless communication and collabora-
+tion across the diverse linguistic landscape.
+
+0.45
+0.58
+1.48
+2.86
+3.01
+3.22
+5.86
+9.6
+18.35
+18.87
+21.67
+Aya
+Mistral
+InternLM
+Qwen
+Gemma
+LLaMA
+LLaMAX
+GPT-3.5
+NLLB
+BLOOMZ
+FuxiMT
+0
+5
+10
+15
+20
+25
+BLEU
+(a) Tigranian
+0.24
+0.59
+1.08
+1.71
+2.25
+2.96
+5.22
+8.84
+11.29
+16.18
+25.24
+Aya
+Mistral
+LLaMA
+Qwen
+LLaMAX
+InternLM
+Gemma
+GPT-3.5
+NLLB
+BLOOMZ
+FuxiMT
+0
+5
+10
+15
+20
+25
+30
+BLEU
+(b) Tibetan
+1.27
+2.68
+6.52
+8.67
+9.07
+9.51
+10.15
+12.14
+15.16
+22.4
+24.55
+Mistral
+LLaMA
+Gemma
+GPT-3.5
+InternLM
+BLOOMZ
+Aya
+Qwen
+LLaMAX
+NLLB
+FuxiMT
+0
+5
+10
+15
+20
+25
+BLEU
+(c) Turkmen
+1.13
+2.02
+6.35
+9.08
+11.35
+12.08
+12.32
+15.61
+15.71
+18.75
+29.1
+Mistral
+LLaMA
+Gemma
+Aya
+InternLM
+LLaMAX
+Qwen
+NLLB
+BLOOMZ
+GPT-3.5
+FuxiMT
+0
+5
+10
+15
+20
+25
+30
+BLEU
+(d) Pijin
+Figure 3: Results on zero-shot language pairs
+A.7
+Comparison to Other MT model based on
+LLM
+BigTranslate is another MT model based on LLM
+which demonstrates strong performance on the
+FLORES-200 dataset. In this section, we compare
+FuxiMT with BigTranslate on FLORES-200. As
+shown in Table 4, FuxiMT consistently achieves
+higher BLEU scores across a range of language
+pairs, especially those involving Chinese. This
+advantage stems from FuxiMT’s Chinese-centric
+pre-training, which provides a strong foundation
+for Chinese translation, and its multilingual train-
+ing with curriculum learning, enabling effective
+cross-lingual knowledge transfer. The MoE archi-
+tecture further enhances FuxiMT’s ability to handle
+diverse linguistic nuances and low-resource scenar-
+ios, leading to overall improved translation quality
+compared to BigTranslate’s more general LLM ap-
+proach.
+A.8
+Instructions for Implement Machine
+Translation
+Multilingual Neural Machine Translation (MNMT)
+continues to evolve but faces significant chal-
+lenges in balancing performance across multiple
+Lang
+FuxiMT
+BigTranslate
+en
+53.12
+31.1
+es
+46.78
+23.5
+fr
+47.73
+24.2
+pt
+39.47
+23.6
+id
+41.58
+18.4
+hi
+28.93
+15.1
+ko
+30.27
+19.6
+ne
+29.92
+10.8
+ka
+12.22
+0.9
+my
+11.32
+5.9
+bo
+25.24
+36.3
+Table 4: Comparison with BigTranslate
+languages. Translation approaches based on Large
+Language Models (LLMs) each have their advan-
+tages and limitations. FuxiMT introduces an inno-
+vative solution by combining a two-stage training
+process with a mixture of experts (MoEs) model,
+effectively addressing existing issues.
+In practical applications, a comprehensive set of
+detailed translation instructions has been developed
+to ensure translation quality and consistency (see
+Table 9). These instructions cover a variety of ex-
+pressions designed to guide the model in accurately
+understanding the translation task, specifying the
+
+source and target languages, and addressing differ-
+ent text units such as sentences and phrases. For in-
+stance, instructions like “Translate from {src_lang}
+to {tgt_lang}: {src_text}” help the model better
+grasp the translation intent. By leveraging these
+directives, FuxiMT produces more accurate and
+fluent translations across different language pairs.
+It excels particularly in handling low-resource lan-
+guage pairs and complex linguistic structures, sig-
+nificantly improving both accuracy and robustness.
+This provides an effective solution for multilingual
+translation challenges.
+A.9
+Related Work
+This section delves into the existing landscape of
+multilingual machine translation and the recent ad-
+vancements in leveraging large language models
+for this task, highlighting the limitations of cur-
+rent approaches and positioning FuxiMT as a novel
+solution.
+A.9.1
+Multilingual Neural Machine
+Translation
+Multilingual Neural Machine Translation (MNMT)
+has made significant strides in recent years, aim-
+ing to build a single system capable of translat-
+ing between multiple language pairs (Cheng et al.,
+2022). This approach offers significant advantages
+over training individual bilingual systems, particu-
+larly in low-resource scenarios where parallel data
+is limited. MNMT leverages the power of cross-
+lingual transfer learning, allowing knowledge ac-
+quired from high-resource language pairs to en-
+hance the translation quality for low-resource pairs
+(Johnson et al., 2017). Early MNMT research fo-
+cused on extending traditional statistical machine
+translation methods to handle multiple languages
+(Durrani et al., 2015). However, the emergence of
+neural machine translation (NMT) revolutionized
+the field, leading to significant improvements in
+translation quality. Neural MNMT models typi-
+cally employ encoder-decoder architectures, where
+the encoder maps the source sentence into a context
+vector and the decoder generates the target sentence
+based on this context. Numerous techniques have
+been proposed to further enhance the performance
+of neural MNMT, including parameter sharing (Fi-
+rat et al., 2016), language-specific components(Lin
+et al., 2021), and data augmentation (Jones et al.,
+2023). These techniques aim to encourage cross-
+lingual transfer learning, capture language-specific
+nuances, and address the data scarcity issue, re-
+spectively. Despite these advancements, achieving
+balanced performance across multiple language
+pairs, especially for those with limited resources,
+remains a significant challenge in MNMT.
+A.9.2
+Large Language Models for Machine
+Translation
+The emergence of LLMs has opened up new pos-
+sibilities for multilingual translation. These mod-
+els, trained on vast amounts of text data, exhibit
+remarkable capabilities in understanding and gen-
+erating natural language, even in zero-shot or few-
+shot settings.
+Several research directions have
+explored adapting LLMs for MT (Zhang et al.,
+2023; Yang et al., 2023). Direct fine-tuning, a
+straightforward approach, involves training pre-
+trained LLMs on parallel data for the specific
+task of translation. However, this method can suf-
+fer from catastrophic forgetting, where the model
+loses previously acquired linguistic knowledge dur-
+ing fine-tuning (Zhu et al., 2021; Zhou and Cao,
+2021). Parameter-efficient fine-tuning methods like
+Adapters (Houlsby et al., 2019) and (Hu et al.,
+2022) aim to reduce computational cost and miti-
+gate catastrophic forgetting by fine-tuning only a
+small subset of the LLM’s parameters. While offer-
+ing efficiency and stability, these techniques may
+not fully exploit the vast linguistic knowledge al-
+ready encoded within the LLM, potentially limiting
+its cross-lingual transfer learning capabilities (Xu
+et al., 2024). Prompt engineering and in-context
+learning leverage the model’s ability to learn from
+a few examples provided during inference, elimi-
+nating the need for explicit fine-tuning (Zhu et al.,
+2024a,b). However, achieving consistent and high-
+quality translation across diverse language pairs
+using these methods remains challenging, as the
+quality heavily relies on the design of prompts and
+the selection of in-context examples, making it dif-
+ficult to generalize across different language pairs
+and domains (Zheng et al., 2024). Finally, Mixture-
+of-Experts (MoEs) enhance the capacity and effi-
+ciency of LLMs by allowing specialized experts to
+handle different aspects of the input space. Models
+like GLaM (Du et al., 2022) and PanGu-Σ (Ren
+et al., 2023) demonstrate the effectiveness of MoEs
+in scaling LLMs and achieving state-of-the-art re-
+sults on various NLP tasks, including MT. However,
+these models are typically trained from scratch with
+MoEs and do not explicitly address the challenge
+of adapting existing pre-trained multilingual LLMs
+for MT. This approach may miss out on leveraging
+
+Resource Level
+Languages
+High Resource
+en, es, fr, de, pt, it, ru, pl, cs, hu, el, ro, sk, bg, ar
+Medium Resource
+tr, sl, lt, zh, et, id, lv, vi, hr, ja, uk, fa, hi, ko, bn, sq, mk, ms, th, bs, sw, kk
+Low Resource
+sr, ta, be, ur, ne, si, az, ka, hy, am, km, my, ky, mg, mn, so
+Very Low Resource
+ps, ha, lo, rw, mi, ug, prs, ti, bo, tk, pis
+Table 5: Resource level of different languages.
+ISO-639
+Language
+Language Family
+ISO-639
+Language
+Language Family
+ISO-639
+Language
+Language Family
+am
+Amharic
+Afro-Asiatic
+fr
+French
+Indo-European
+ro
+Romanian
+Indo-European
+ar
+Arabic
+Afro-Asiatic
+ka
+Georgian
+Kartvelian
+ru
+Russian
+Indo-European
+hy
+Armenian
+Indo-European
+de
+German
+Indo-European
+rw
+Rwandan
+Niger-Congo
+az
+Azerbaijani
+Turkic
+el
+Greek
+Indo-European
+si
+Sinhalese
+Indo-European
+be
+Belarusian
+Indo-European
+ha
+Hausa
+Afro-Asiatic
+sk
+Slovak
+Indo-European
+bn
+Bengali
+Indo-European
+hi
+Hindi
+Indo-European
+sl
+Slovenian
+Indo-European
+bo
+Tibetan
+Sino-Tibetan
+hr
+Croatian
+Indo-European
+so
+Somali
+Afro-Asiatic
+bs
+Bosnian
+Indo-European
+hu
+Hungarian
+Uralic
+es
+Spanish
+Indo-European
+bg
+Bulgarian
+Indo-European
+id
+Indonesian
+Austronesian
+sw
+Swahili
+Niger-Congo
+my
+Burmese
+Sino-Tibetan
+it
+Italian
+Indo-European
+ta
+Tamil
+Dravidian
+km
+Cambodian
+Austroasiatic
+ja
+Japanese
+Japonic
+th
+Thai
+Tai-Kadai
+cs
+Czech
+Indo-European
+kk
+Kazakh
+Turkic
+ti
+Tigranian
+Afro-Asiatic
+prs
+Dari
+Indo-European
+ko
+Korean
+Koreanic
+tr
+Turkish
+Turkic
+en
+English
+Indo-European
+ky
+Kyrgyz
+Turkic
+tk
+Turkmen
+Turkic
+et
+Estonian
+Uralic
+lo
+Laotian
+Tai-Kadai
+uk
+Ukrainian
+Indo-European
+fa
+Persian
+Indo-European
+lt
+Lithuanian
+Indo-European
+ur
+Urdu
+Indo-European
+pis
+Pijin
+English Creole
+mg
+Madagascar
+Austronesian
+ug
+Uyghur
+Turkic
+pl
+Polish
+Indo-European
+mi
+Maori
+Austronesian
+vi
+Vietnamese
+Austroasiatic
+pt
+Portuguese
+Indo-European
+mk
+Macedonian
+Indo-European
+zh
+Chinese
+Sino-Tibetan
+mn
+Mongolian
+Mongolic
+ms
+Malay
+Austronesian
+sq
+Albanian
+Indo-European
+ne
+Nepali
+Indo-European
+ps
+Pashto
+Indo-European
+lv
+Latvian
+Indo-European
+sr
+Serbian
+Indo-European
+ro
+Moldovan
+Indo-European
+Table 6: The list of 65 natural languages supported by FuxiMT.
+existing linguistic knowledge and requires signif-
+icant computational resources for training from
+scratch.
+A.9.3
+Bridging the Gap: FuxiMT
+Our work, FuxiMT, builds upon the advancements
+in both MNMT and LLM-based translation, draw-
+ing inspiration from the FuxiTranyu paper (Sun
+et al., 2024) and addressing the limitations of exist-
+ing approaches. Unlike previous work that focuses
+on either direct fine-tuning, parameter-efficient
+methods, or prompting, FuxiMT leverages MoEs
+for efficient knowledge transfer while preserving
+the pre-trained BLOOM model’s core linguistic ca-
+pabilities. This approach mitigates the risk of catas-
+trophic forgetting, allowing FuxiMT to retain the
+benefits of pre-training while acquiring translation-
+specific expertise. Similar to FuxiTranyu, FuxiMT
+adopts a two-stage training strategy, first establish-
+ing a Chinese-centric model through pre-training
+on a massive Chinese corpus and then enhancing
+its multilingual capabilities using a large-scale par-
+allel corpus. However, FuxiMT distinguishes itself
+by uniquely incorporating MoEs to enhance the
+model’s ability to handle diverse language pairs.
+This novel combination of techniques positions
+FuxiMT as a promising solution for achieving high-
+quality, Chinese-centric multilingual translation,
+particularly for under-resourced languages.
+
+Lang
+FuxiMT
+GPT-3.5
+BLOOMz
+NLLB
+LLaMAX3
+LLaMA3
+Mistral
+Qwen
+Aya
+Gemma
+InternLM
+en
+53.12
+47.76
+21.29
+25.93
+30.33
+7.69
+8.80
+40.21
+34.78
+39.99
+42.51
+es
+46.78
+35.84
+18.81
+17.74
+26.17
+2.85
+1.95
+30.48
+28.37
+29.25
+29.68
+fr
+47.73
+28.44
+20.64
+2.97
+29.49
+1.47
+2.06
+34.75
+31.37
+12.67
+34.28
+de
+43.05
+28.48
+12.31
+19.83
+29.36
+1.40
+1.80
+34.10
+31.01
+18.86
+33.58
+pt
+39.47
+34.11
+19.29
+19.01
+28.77
+2.30
+1.43
+34.44
+31.78
+5.37
+34.49
+it
+38.59
+32.64
+11.09
+18.08
+26.93
+2.30
+1.95
+31.83
+29.59
+4.10
+30.39
+ru
+36.63
+25.89
+15.75
+20.55
+28.03
+1.48
+3.76
+32.45
+29.29
+30.49
+30.96
+pl
+36.30
+27.20
+5.82
+15.68
+25.91
+4.68
+1.31
+29.23
+27.84
+16.81
+26.53
+cs
+35.69
+22.26
+6.13
+18.26
+28.14
+2.91
+1.91
+31.91
+30.87
+18.44
+30.13
+hu
+29.95
+19.29
+9.07
+18.50
+27.15
+2.31
+1.83
+26.18
+19.15
+12.32
+23.58
+el
+28.92
+17.47
+11.91
+19.58
+26.64
+1.52
+14.54
+25.80
+28.23
+4.09
+20.22
+ro
+30.05
+27.06
+9.63
+22.09
+29.76
+2.79
+4.48
+32.23
+31.18
+32.41
+32.17
+sk
+24.68
+19.18
+8.62
+17.12
+27.99
+2.16
+2.07
+29.30
+27.15
+29.81
+25.99
+bg
+26.41
+20.82
+21.29
+18.88
+28.63
+1.37
+3.59
+31.10
+24.29
+31.81
+28.89
+ar
+38.01
+22.25
+13.46
+20.92
+27.34
+1.41
+2.21
+31.20
+29.65
+20.68
+20.78
+tr
+34.72
+25.18
+7.46
+18.97
+26.12
+1.73
+4.63
+28.90
+26.88
+4.99
+27.41
+sl
+24.93
+23.19
+10.23
+17.60
+26.73
+2.30
+1.37
+26.89
+19.80
+3.43
+23.67
+lt
+15.45
+14.18
+9.42
+17.12
+26.33
+3.82
+1.29
+24.08
+20.58
+15.11
+16.54
+et
+23.14
+17.35
+9.50
+17.71
+27.28
+1.27
+1.13
+24.12
+13.53
+13.11
+17.10
+id
+41.58
+37.45
+18.66
+19.65
+28.46
+1.40
+1.43
+33.83
+30.24
+31.46
+29.57
+lv
+12.74
+10.85
+10.95
+16.81
+28.09
+2.18
+9.68
+25.79
+15.18
+30.06
+17.93
+vi
+23.85
+21.84
+17.05
+21.13
+27.05
+6.22
+4.47
+32.19
+29.35
+27.91
+24.37
+hr
+28.47
+27.87
+7.98
+17.04
+27.59
+2.25
+1.47
+29.44
+24.61
+28.27
+27.21
+ja
+33.05
+23.79
+13.59
+17.15
+22.69
+1.32
+17.99
+28.97
+26.89
+16.86
+27.75
+uk
+23.14
+21.13
+18.22
+21.06
+25.93
+1.31
+4.69
+30.33
+29.53
+14.41
+28.46
+fa
+23.19
+16.60
+12.14
+21.90
+24.66
+1.43
+7.96
+28.12
+28.24
+6.59
+19.97
+hi
+28.93
+19.49
+14.72
+20.81
+25.86
+1.28
+12.65
+26.97
+25.64
+4.05
+19.13
+ko
+30.27
+25.47
+5.39
+22.16
+24.27
+1.46
+13.91
+29.59
+27.05
+7.73
+24.99
+bn
+26.68
+14.07
+14.47
+19.89
+24.56
+1.35
+10.35
+24.35
+8.43
+26.56
+12.40
+sq
+21.17
+17.21
+9.93
+19.44
+27.03
+2.52
+4.43
+18.44
+13.10
+28.12
+14.20
+mk
+12.84
+10.48
+16.39
+19.59
+28.98
+1.33
+4.95
+29.34
+18.97
+6.09
+24.73
+ms
+36.03
+33.60
+16.58
+22.39
+27.61
+1.29
+4.39
+31.05
+26.14
+11.05
+26.32
+th
+22.74
+17.75
+11.65
+20.13
+25.34
+1.45
+12.49
+29.09
+13.86
+23.76
+16.48
+bs
+27.82
+18.71
+12.95
+18.76
+29.14
+1.69
+1.84
+30.35
+24.19
+30.73
+28.36
+sw
+25.01
+16.48
+10.11
+18.25
+24.60
+1.37
+1.27
+12.07
+6.91
+3.07
+8.88
+kk
+14.88
+7.54
+13.04
+21.48
+26.18
+1.49
+5.10
+17.21
+7.50
+3.34
+9.13
+sr
+28.04
+16.94
+10.97
+23.34
+29.45
+1.34
+2.07
+29.98
+19.39
+2.66
+24.21
+ta
+19.53
+13.07
+10.81
+20.92
+22.70
+1.31
+3.94
+13.37
+10.74
+4.50
+4.47
+be
+27.73
+7.95
+19.05
+18.64
+22.92
+1.49
+1.99
+20.97
+13.84
+15.43
+16.91
+ur
+25.27
+16.49
+9.24
+22.20
+23.61
+1.41
+9.25
+21.40
+10.28
+2.99
+13.23
+ne
+29.92
+14.84
+15.72
+21.80
+25.39
+1.29
+1.42
+20.22
+12.22
+8.83
+11.22
+si
+21.31
+11.16
+11.10
+19.99
+20.97
+1.40
+0.71
+8.30
+1.42
+8.26
+2.05
+az
+27.88
+13.00
+8.51
+13.95
+11.68
+1.33
+3.08
+9.13
+8.63
+2.15
+5.30
+ka
+12.22
+9.66
+19.27
+20.74
+24.45
+5.17
+1.79
+15.94
+5.84
+17.84
+3.81
+hy
+25.16
+6.15
+20.86
+22.11
+28.25
+5.30
+4.88
+16.41
+4.51
+3.51
+3.06
+am
+18.02
+5.70
+12.63
+22.93
+19.08
+5.03
+1.03
+4.26
+0.78
+16.97
+1.49
+km
+11.91
+8.52
+18.74
+22.29
+22.66
+12.63
+1.51
+13.30
+0.94
+17.64
+4.48
+my
+11.32
+5.84
+14.09
+16.09
+20.36
+5.35
+1.81
+7.46
+0.74
+17.93
+2.01
+ky
+15.55
+8.20
+17.18
+15.98
+21.38
+1.48
+1.69
+11.57
+8.62
+4.18
+7.28
+mg
+17.36
+8.54
+14.91
+14.09
+17.37
+1.25
+0.70
+6.12
+3.99
+7.94
+5.80
+mn
+24.66
+12.37
+15.54
+17.23
+23.01
+1.31
+1.84
+10.93
+3.49
+1.79
+4.98
+so
+14.42
+7.97
+5.45
+16.98
+17.42
+1.28
+0.74
+5.92
+4.81
+9.46
+5.20
+ps
+18.24
+5.16
+10.23
+22.90
+21.94
+1.44
+2.71
+11.27
+4.96
+11.38
+5.54
+ha
+17.79
+3.59
+6.45
+19.59
+19.92
+1.32
+0.75
+6.00
+3.67
+18.19
+5.68
+lo
+12.33
+6.72
+11.30
+23.78
+19.84
+4.19
+0.72
+9.35
+2.55
+1.78
+5.08
+rw
+12.39
+6.42
+7.36
+19.51
+14.88
+1.70
+0.92
+5.52
+3.90
+14.60
+4.91
+mi
+24.90
+11.15
+12.59
+19.88
+16.54
+1.30
+1.07
+9.62
+4.89
+2.52
+7.48
+ug
+21.20
+9.78
+10.47
+21.71
+16.26
+12.30
+2.88
+10.87
+3.14
+1.20
+12.77
+prs
+19.89
+11.96
+19.27
+26.22
+22.41
+1.43
+1.42
+26.31
+26.35
+1.45
+19.01
+ti
+21.67
+9.60
+18.87
+18.35
+5.86
+3.22
+0.58
+2.86
+0.45
+3.01
+1.48
+bo
+25.24
+8.84
+16.18
+11.29
+2.25
+1.08
+0.59
+1.71
+0.24
+5.22
+2.96
+tk
+24.55
+8.67
+9.51
+22.40
+15.16
+2.68
+1.27
+12.14
+10.15
+6.52
+9.07
+pis
+29.10
+18.75
+15.71
+15.61
+12.08
+2.02
+1.13
+12.32
+9.08
+6.35
+11.35
+ro
+30.05
+27.06
+9.63
+22.09
+29.76
+2.79
+4.48
+32.23
+31.18
+32.41
+32.17
+Table 7: The detail BLEU scores in different language pairs xx-zh
+
+Lang
+FuxiMT
+GPT-3.5
+BLOOMz
+LLaMAX3
+LLaMA3
+Mistral
+Qwen
+Aya
+Gemma
+InternLM
+en
+49.6
+39.88
+17.38
+28.96
+8.05
+9.55
+37.59
+32.49
+37.03
+39.14
+es
+45.68
+29.57
+15.82
+25.71
+3.62
+2.83
+29.44
+27.24
+28.53
+28.58
+fr
+46.49
+24.21
+16.87
+28.26
+2.38
+3.05
+32.74
+29.42
+13.35
+32
+de
+41.99
+25.68
+11.37
+28.44
+2.21
+2.63
+32.14
+29.16
+18.91
+31.54
+pt
+37.52
+27.95
+15.8
+27.87
+3.12
+2.44
+32.56
+29.97
+6.59
+32.17
+it
+36.08
+27.53
+10.6
+26.36
+3.14
+2.98
+30.48
+28.2
+5.09
+29.04
+ru
+34.34
+19.78
+13.42
+26.73
+2.21
+4.85
+30.76
+27.71
+28.95
+29.3
+pl
+34.34
+22.48
+6.48
+25.7
+5.49
+2.26
+28.42
+27.01
+17.46
+25.7
+cs
+34.67
+17.86
+6.58
+27.41
+3.83
+2.85
+30.43
+29.38
+18.8
+28.64
+hu
+31.42
+16.58
+8.68
+26.56
+3.07
+2.86
+26.01
+19.71
+13.09
+23.36
+el
+29.12
+13.51
+10.92
+25.83
+2.41
+15.87
+25.22
+26.93
+4.9
+20.43
+ro
+29.46
+23.14
+9.06
+28.7
+3.67
+5.59
+30.73
+29.33
+31.26
+30.44
+sk
+23.54
+15.39
+8.44
+27.47
+2.97
+3.06
+28.37
+26.36
+29.25
+25.38
+bg
+24.69
+16.34
+17.31
+27.16
+2.15
+4.65
+29.52
+23.76
+30.21
+27.47
+ar
+35.38
+15.53
+12.13
+26.07
+2.28
+3.3
+29.55
+28.12
+20.11
+20.71
+tr
+32.78
+20.53
+7.5
+26.06
+2.49
+6.14
+28.26
+26.37
+6.27
+26.56
+sl
+23.67
+19.32
+9.66
+26.27
+3.09
+2.35
+26.28
+20.3
+4.75
+23.19
+lt
+14.02
+13.47
+8.87
+25.58
+4.71
+2.25
+23.81
+20.73
+15.57
+17.24
+et
+22.35
+15.04
+9.32
+26.75
+2.05
+1.98
+24
+14.95
+13.93
+17.87
+id
+39.89
+30.59
+15.75
+27.62
+2.25
+2.28
+32
+28.77
+30.41
+28.15
+lv
+13.73
+9.91
+10.34
+27.1
+3.1
+11.54
+25.24
+16.29
+28.97
+18.55
+vi
+19.85
+19.08
+14.2
+26.68
+6.96
+5.79
+30.87
+28.14
+27.55
+24.2
+hr
+27.05
+22.9
+7.82
+26.97
+3.12
+2.33
+28.38
+24.16
+27.67
+26.11
+ja
+38.28
+22.92
+11.99
+22.41
+2.08
+18.88
+27.91
+26.01
+16.95
+26.65
+uk
+22.29
+16.35
+15.2
+25.13
+2.04
+5.61
+28.92
+27.94
+14.79
+27.2
+fa
+22.44
+11.74
+11.19
+24.48
+2.29
+9.61
+27.41
+27.16
+7.51
+20.31
+hi
+26.2
+16.05
+12.86
+25.14
+2.04
+14.3
+26.09
+24.73
+4.7
+19.46
+ko
+32.39
+20.05
+6.3
+24.06
+2.16
+15.07
+28.54
+26.44
+8.71
+24.61
+bn
+25.09
+10.93
+12.62
+23.99
+2.19
+12.17
+23.98
+10.41
+25.66
+13.76
+sq
+20.92
+16.91
+9.16
+26.55
+3.42
+6.04
+19.12
+14.43
+27.78
+15.36
+mk
+12.29
+9.38
+14.18
+27.59
+2.07
+6.21
+28.02
+19.3
+7.13
+23.83
+ms
+35.71
+28.85
+14.51
+27.09
+2
+5.46
+29.81
+25.41
+12.1
+25.5
+th
+24.57
+13.75
+11.26
+25.12
+2.07
+14.46
+28.19
+15.52
+23.5
+17.34
+bs
+25.46
+17.07
+11.59
+28.13
+2.56
+2.8
+29.06
+23.65
+29.78
+27.12
+sw
+23.75
+13.67
+9.89
+24.43
+2.23
+2.16
+13.69
+8.53
+4.14
+10.3
+kk
+15.82
+6.42
+11.78
+25.32
+2.24
+6.97
+18.04
+9.03
+4.31
+10.64
+sr
+25.49
+14
+10.13
+28.02
+2.12
+2.92
+28.4
+19.6
+3.64
+23.54
+ta
+20.21
+9.3
+10.29
+22.36
+2.11
+5.94
+14.65
+12.3
+5.77
+6.45
+be
+28.54
+7.86
+15.95
+22.95
+2.42
+3.21
+21.65
+15.33
+15.99
+18.06
+ur
+23.58
+12.63
+9.3
+23.27
+2.21
+11.17
+21.46
+11.83
+4.02
+14.41
+ne
+30.08
+12.85
+13.54
+24.75
+2.05
+2.48
+20.51
+13.44
+9.71
+12.85
+si
+23.06
+8.1
+10.12
+21.01
+2.24
+1.31
+10.05
+2.83
+9.24
+3.78
+az
+28.66
+10
+8.1
+12.92
+2.1
+4.5
+10.82
+10.08
+2.88
+7.05
+ka
+13.68
+7.06
+15.99
+23.95
+5.98
+2.92
+16.88
+7.96
+17.81
+5.92
+hy
+26.22
+5.12
+16.93
+26.78
+5.97
+6.57
+17.07
+6.52
+4.34
+4.91
+am
+19.08
+5.45
+11.63
+19.33
+6.3
+2.08
+6.09
+1.48
+17.59
+3.19
+km
+13.3
+6.8
+15.87
+23.52
+14.3
+2.91
+15.92
+1.88
+19.49
+6.94
+my
+12.89
+5.47
+13.04
+20.63
+6.47
+2.99
+9.64
+1.33
+18.76
+3.46
+ky
+16.29
+5.76
+14.45
+21.47
+2.26
+2.71
+13.35
+10.38
+5.15
+8.99
+mg
+18.39
+9.29
+13.12
+18.39
+2.09
+1.21
+8.1
+5.44
+9.62
+7.59
+mn
+25.35
+10.63
+13.28
+22.75
+2.09
+2.81
+12.45
+4.71
+2.67
+6.68
+so
+15.47
+7.55
+6.49
+18.35
+2.01
+1.29
+7.79
+6.47
+10.95
+6.72
+ps
+18.52
+3.73
+10
+22.41
+2.3
+4.21
+13.03
+6.48
+12.71
+7.38
+ha
+18.33
+3.12
+7.4
+20.58
+2.16
+1.24
+7.82
+5.04
+19.46
+7.18
+lo
+14.19
+5.77
+10.62
+20.8
+5.89
+1.34
+11.97
+4.21
+2.92
+7.19
+rw
+14.12
+5.8
+7.46
+16.25
+2.49
+1.59
+7.44
+5.26
+16.47
+6.5
+mi
+26.47
+10.1
+11.41
+18.01
+2.11
+1.92
+11.7
+6.46
+3.54
+9.31
+ug
+22.27
+8.47
+9.9
+17.04
+13.01
+4.49
+12.51
+4.55
+2.01
+14.18
+prs
+20.09
+8.86
+16.02
+22.36
+2.28
+2.41
+25.65
+25.4
+2.25
+19.36
+ti
+23.11
+7.02
+15.93
+7.32
+4.79
+1.24
+4.53
+1.04
+4.03
+2.92
+bo
+26.56
+5.8
+13.86
+3.79
+1.98
+1.17
+3.33
+0.74
+6.87
+5.19
+tk
+26.05
+5.66
+9
+16.1
+3.63
+2.19
+13.65
+11.71
+7.5
+10.69
+pis
+25.48
+17.22
+13.38
+13.57
+3.08
+2.06
+14.28
+10.72
+7.83
+13.17
+ro
+29.46
+23.14
+9.06
+28.7
+3.67
+5.59
+30.73
+29.33
+31.26
+30.44
+Table 8: The detail chrf scores in different language pairs xx-zh
+
+Instructions
+How do you say {src_text} in {tgt_lang}?
+{src_text} How do you say this sentence in {tgt_lang}?
+{src_text} Say this using {tgt_lang}
+Translate from {src_lang} to {tgt_lang}: {src_text}
+Translate {src_text} from {src_lang} to {tgt_lang}.
+Translate {src_text} to {tgt_lang}.
+Translate the following. {src_lang}: {src_text} {tgt_lang}:
+Translate the sentence from {src_lang} to {tgt_lang}. {src_lang}: {src_text} Corresponding {tgt_lang} translation:
+Translate the sentence from {src_lang} to {tgt_lang}. {src_lang}: {src_text} {tgt_lang}:
+Translate from {src_lang} to {tgt_lang}. {src_lang}: {src_text} {tgt_lang}:
+Render the {src_lang} sentence {src_text} into {tgt_lang}.
+Produce the {tgt_lang} equivalent for the {src_lang} phrase {src_text}.
+Present {src_text} in {tgt_lang}, originally written in {src_lang}.
+Translate the {src_lang} text {src_text} to {tgt_lang}.
+Provide a {tgt_lang} version of this {src_lang} statement: {src_text}
+Reword {src_text} from {src_lang} into {tgt_lang}.
+Convert this {src_lang} expression {src_text} to {tgt_lang}.
+Express the {src_lang} phrase {src_text} in {tgt_lang}.
+How would you phrase {src_text} in {tgt_lang}?
+Transcribe {src_text} from {src_lang} to {tgt_lang}.
+Can you adapt {src_text}, which is in {src_lang}, to {tgt_lang}?
+Rephrase {src_text} in {tgt_lang}, its original language is {src_lang}.
+Show me {src_text} written in {tgt_lang} instead of {src_lang}.
+Please rewrite {src_text} in {tgt_lang}, it was originally in {src_lang}.
+Represent {src_text} in {tgt_lang}, its source language is {src_lang}.
+Translate {src_text} which is in {src_lang}, to {tgt_lang}.
+How can {src_text} be expressed in {tgt_lang}?
+Give me the {tgt_lang} translation for {src_text}.
+I need {src_text} written in {tgt_lang}, please help.
+Please provide the {tgt_lang} translation for the following {src_lang} sentence: {src_text}
+Convert the {src_lang} sentence {src_text} into {tgt_lang}.
+What is the {tgt_lang} version of the {src_lang} sentence {src_text}?
+I need the {tgt_lang} rendition of this {src_lang} phrase: {src_text}
+Transform {src_text} from {src_lang} to {tgt_lang}.
+Translate {src_text} from {src_lang} to {tgt_lang} for me.
+Can you change {src_text} which is in {src_lang} to {tgt_lang}?
+Give me the {tgt_lang} equivalent of this {src_lang} sentence: {src_text}
+Rewrite the {src_lang} phrase {src_text} in {tgt_lang}.
+I would like the {tgt_lang} translation of the following {src_lang} sentence, please: {src_text}
+Table 9: Examples of translation instruction

@@ -1,0 +1,3484 @@
+SpokenUS: A Spoken User Simulator for Task-Oriented Dialogue
+Jonggeun Lee∗, Junseong Pyo∗, Jeongmin Park§, Yohan Jo†
+Graduate School of Data Science, Seoul National University
+{jonggeun.lee, junseongpyo, yohan.jo}@snu.ac.kr
+Abstract
+Robust voice agents require exposure to the
+full diversity of how people interact through
+speech. However, obtaining enough spoken
+interactions is prohibitively expensive. Build-
+ing spoken user simulators that address this
+requires large-scale spoken task-oriented dia-
+logue (TOD) data encompassing spoken user
+behaviors, yet existing datasets are limited in
+scale and domain coverage, with no system-
+atic pipeline for augmenting them. To address
+this, we introduce SpokenTOD, a spoken TOD
+dataset of 52,390 dialogues and 1,034 hours
+of speech augmented with four spoken user
+behaviors—cross-turn slots, barge-in, disflu-
+ency, and emotional prosody—across diverse
+speakers and domains. Building on Spoken-
+TOD, we present SpokenUS, a spoken user
+simulator grounded in TOD that decides when
+to speak through a dedicated turn-taking head.
+SpokenUS achieves comparable goal coverage
+to much larger models while substantially out-
+performing all baselines in human MOS, dis-
+closing slot values gradually across the dia-
+logue as humans do rather than front-loading
+them.
+Further analysis confirms that Spo-
+kenUS’s spoken behaviors pose meaningful
+challenges to voice agents, making it a prac-
+tical tool for evaluating more robust spoken
+dialogue systems.
+Our code is available at
+https://github.com/holi-lab/SpokenUS.
+1
+Introduction
+Human speech is rarely clean or scripted. Peo-
+ple naturally produce disfluencies (Shriberg, 1994),
+interrupt each other (Sacks et al., 1974), and ex-
+press emotion (Schröder, 2001). These behaviors
+carry over to interactions with voice agents, where
+they are known to degrade agent performance (Liu
+et al., 2025). Building voice agents robust enough
+*Equal contribution.
+†Corresponding author.
+§Visiting intern from Seoul National University.
+to handle this diversity is critical for real-world de-
+ployments like smart homes (Seo et al., 2026) and
+on-device AI assistants (Gunter et al., 2024). These
+settings have long been studied as task-oriented di-
+alogue (TOD), where systems must reliably help
+users accomplish concrete goals. Yet obtaining
+enough spoken interactions to train and evaluate
+such systems is prohibitively expensive.
+User simulation offers a scalable alternative
+(Eckert et al., 1997), where a user simulator is pro-
+vided with a user goal (i.e., requests and all slot
+values) and interacts with an agent turn by turn to
+fulfill it. Yet recent LLM-based user simulators
+operate entirely in text (Sekulic et al., 2024; Shim
+et al., 2026). Attaching a Text-to-Speech module
+makes such a simulator audible and introduces spo-
+ken behaviors like emotional prosody, but it still
+receives the agent’s utterance only once it is com-
+plete. It can therefore never cut in mid-utterance,
+leaving a core behavior of real users unmodeled
+and the agent’s ability to recover from it untested.
+Models that operate natively in speech offer an
+alternative, but they fall short in other ways. End-
+to-end omni models (Zeng et al., 2024; Tong et al.,
+2025; Xu et al., 2025a,b) process and generate
+speech directly, and full-duplex spoken dialogue
+models (Défossez et al., 2024; Roy et al., 2026) go
+further by speaking and listening at once. Omni
+models, however, still provide no architectural sup-
+port for the proactive turn-taking a user simulator
+must exhibit to test how assistants handle interrup-
+tions. Moreover, neither is grounded in TOD: they
+do not reliably convey the goal’s slot values and
+requests across turns, and, having been optimized
+as helpful assistants, they default to help-providing
+rather than help-seeking behavior, at times drifting
+into the assistant role entirely (see Table 20).
+Addressing these limitations is further com-
+plicated by data scarcity: existing spoken TOD
+datasets (Henderson et al., 2014; Kim et al., 2021;
+Si et al., 2023) are limited in scale and domain
+1
+arXiv:2603.16783v2 [cs.CL] 1 Sep 2026
+
+Category
+Type
+Definition
+Example or Details
+Cross-Turn Slots
+Slot values that span multiple turns.
+Phone numbers, Email addresses.
+Barge-in
+Error Recovery
+Correct an incorrect system response.
+S: “For two peo...” U: “No, it’s three.”
+Clarification
+Request details on an unclear response.
+S: “It’s nearby...” U: “Which address?”
+Efficiency
+Move on when sufficiently informed.
+S: “Successfully...” U: “Thank you!”
+Disfluency
+Filled Pause
+Non-lexical vocalized hesitation.
+“[FP] uh, we should go there.”
+Disc. Marker
+Lexical filler with no semantic content.
+“[DM] you know, the cheap one.”
+Edit
+Editing cue signaling a self-repair.
+“[EDIT] I mean, somewhere cheaper.”
+Restart
+Abandoned utterance with a fresh start.
+“book a ta- [RST] I’d like a table.”
+Repetition
+Immediate repetition without change.
+“I want [REP] I want a single room.”
+Correction
+Substitution of a slot value.
+“book it for Monday, [COR] Tuesday.”
+Emotion
+Emotional reactions of users.
+Neutral, Satisfied, Dissatisfied, etc.
+Table 1: A taxonomy of spoken user behaviors in the SpokenTOD dataset. S denotes System and U denotes User.
+coverage, and no systematic pipeline exists for aug-
+menting text-based TOD corpora with diverse spo-
+ken user behaviors, making it infeasible to train spo-
+ken user simulators grounded in both task-oriented
+domain knowledge and realistic spoken behaviors.
+To address this gap, we introduce SpokenTOD,
+a large-scale spoken TOD dataset that augments
+existing text-based corpora with four spoken user
+behaviors: cross-turn slots, barge-in, disfluency,
+and emotional prosody (Table 1), spanning 52,390
+dialogues and 1,034 hours of speech across diverse
+speakers and domains. Building on SpokenTOD,
+we present SpokenUS, a spoken user simulator
+grounded in TOD, supporting diverse spoken user
+behaviors, and deciding when to speak through a
+dedicated turn-taking head.
+We evaluate SpokenUS against five end-to-end
+omni models across goal coverage, human MOS,
+text-speech alignment, and speaker similarity. Spo-
+kenUS achieves comparable goal coverage to sub-
+stantially larger models, while disclosing slot val-
+ues gradually across the dialogue as humans do,
+rather than front-loading them as omni models tend
+to do. It further outperforms all baselines in human
+MOS (4.06 vs. 3.18) despite being trained on or-
+ders of magnitude less audio data (∼1K vs. ∼20M
+hours).
+We also demonstrate that SpokenUS’s
+spoken behaviors pose a meaningful challenge to
+voice agents, yielding larger performance drops
+than other user simulators. To our knowledge, Spo-
+kenUS is the first LLM-based spoken user simula-
+tor for evaluating (and potentially training) spoken
+dialogue systems, and we release it alongside Spo-
+kenTOD to support future work in this direction.
+Our contributions are as follows:
+• We introduce SpokenTOD, a large-scale spo-
+ken TOD dataset of 52,390 dialogues and
+1,034 hours of speech, augmented with cross-
+turn slots, barge-in, disfluency, and emotional
+prosody across diverse speakers and domains.
+• We present SpokenUS, a spoken user simu-
+lator grounded in TOD, supporting diverse
+spoken user behaviors and deciding when to
+speak through a dedicated turn-taking head.
+• We show that SpokenUS generates realistic
+spoken behaviors that pose a meaningful chal-
+lenge to agents, making it a practical testbed
+for evaluating spoken dialogue systems.
+2
+SpokenTOD
+To construct a spoken TOD dataset that captures
+realistic user behaviors, we augment existing text-
+based TOD datasets with these behaviors and syn-
+thesize the dialogues into speech rather than col-
+lecting spoken dialogues from scratch (Figure 1).
+This approach offers two key advantages. First,
+by building on human-annotated corpora, we pre-
+serve both the conversational flow that emerges
+from real human interactions and rich annotations
+such as dialogue states and system acts. Second,
+our augmentation pipeline is dataset-agnostic: it
+can be layered on top of any existing TOD dataset
+construction pipeline, enabling generation of high-
+quality spoken TOD data across new domains.
+We build upon four widely used datasets: ABCD
+(Chen et al., 2021), EmoWOZ (emotion-labeled
+MultiWOZ) (Feng et al., 2022), SGD (Rastogi
+et al., 2020), and Taskmaster (Byrne et al., 2019).
+2
+
+c
+Spoken Dialogue
+Data Collection
+User Goal & Profile
+SpokenWOZ
+Taskmaster
+EmoWOZ
+ABCD
+SGD
+Speaker Pool
+Sure, there are 
+9 Chinese restaurants. 
+How about Golden Wok?
+I want to book a table 
+at a Chinese restaurant 
+in the centre.
+Text Dialogue
+It’s 555-1234.
+Great. Can I get 
+your phone number?
+User
+Assistant
+Step 4. Emotion
+Step 1. Cross-turn Slots
+Step 2. Barge-in
+Step 3. Disfluency
+Goal: You want to book a table at a 
+Chinese restaurant…
+Wait, I meant Chinese Not Italian!
+Slot Value: 555-1234
+there are 9 Chinese …
+Turn t: It’s 555 
+Turn t: It’s 555 
+Turn t+1: And 1234
+Speech 
+Synthesis
+Assistant
+User
+Spoken User Behavior Modeling
+Perfect!
+User
+Sure, there are 3
+Italian restau… [Barge-in]
+[Neutral] I want to book a table 
+at a Chinese restaurant …
+[Satisfied] Perfect!
+Sorry about that. 
+How about Golden Wok?
+User
+Assistant
+[Dissatisfied] Wait, 
+I meant Chinese not Italian!
+Native
+African
+Asian
+Indian
+Great. Can I get
+your phone number?
+[Neutral] It’s 621
+[COR] no, 555
+User
+User
+User
+Assistant
+Assistant
+[FP] um … 
+1234
+there are 3 Italian 
+restau ... [Barge-in]
+It’s 621 [COR] no, 555
+[Dissatisfied]
+542
+Distinct 
+Speakers
+4 Accent
+Pools
+&
+Reference
+Audio
+Emotion
+Profile: You are a male speaker from 
+the Asian demographic, in the 20-30s …
+… I meant Chinese 
+not Italian!
+Figure 1: SpokenTOD Construction Pipeline.
+2.1
+Spoken User Behaviors
+In this section, we detail how we augment TOD
+datasets with spoken user behaviors: cross-turn
+slots, barge-in, disfluencies, and emotion (Table 1).
+For all LLM-based augmentation and annotation
+steps, we use Qwen3-32B (Yang et al., 2025).
+Cross-Turn Slots.
+Humans often provide com-
+plex slot values such as phone numbers and email
+addresses across multiple turns rather than stating
+the full value at once (McInnes and Attwater, 2004;
+Zhang et al., 2022), reflecting listeners’ limited
+memory spans: each chunk is confirmed before
+the next is presented (Clark and Brennan, 1991).
+Speakers may also revise previously provided slot
+values in subsequent turns. Recent work (Si et al.,
+2023) has identified these behaviors collectively as
+cross-turn slots, a key challenge for voice agents
+that must collect, verify, and revise partial slot val-
+ues across turns. To model this, we segment all
+long alphanumeric slot values into natural chunks
+(Step 1 in Figure 1) and additionally augment user-
+initiated self-corrections in a subset of them (e.g.,
+Turn t: table for two →Turn t+1: Actually, three).
+Further details are provided in Appendix A.3.
+Barge-in.
+In natural spoken dialogue, speakers
+do not simply alternate complete utterances; they
+continuously monitor each other’s speech and make
+real-time decisions about when to take or yield the
+floor (Sacks et al., 1974; Clark, 1996). We aug-
+ment our dataset with barge-in (Khouzaimi et al.,
+2015), where the user interrupts the agent to correct
+errors (error recovery), request clarification (clari-
+fication), or skip ahead when sufficient information
+has been conveyed (efficiency), as summarized in
+Table 1. Since existing TOD datasets do not con-
+tain barge-ins, we modify the dialogues to insert
+natural barge-ins as follows. We first sample 25%
+of user turns as barge-in candidates (Witt, 2015).
+After each candidate is judged contextually appro-
+priate by the LLM, we insert a new agent utterance
+truncated mid-sentence, followed by the user’s in-
+terruption. This barge-in is then naturally followed
+by the original agent response, which serves as
+a logical recovery response (Step 2 in Figure 1).
+We validate the contextual appropriateness of these
+LLM-placed barge-ins through human evaluation,
+with 83% rated as appropriate (Appendix A.4.1).
+Detailed augmentation rules and prompt templates
+are provided in Appendix A.4.
+Disfluency.
+Disfluency reflects the natural im-
+perfections of real-time speech production, mani-
+festing as hesitations, repetitions, and self-repairs
+(Shriberg, 1994). Our augmentation follows two
+stages. First, we select which utterances become
+disfluent using the length-dependent probability
+model of Shriberg (1996), where longer utterances
+are more likely to contain disfluencies. Second, we
+inject disfluencies from six categories, as shown
+in Table 1. Unlike previous work that uniformly
+inserts disfluencies via rules (Yang et al., 2020;
+Passali et al., 2022) or LLM paraphrasing (Marie,
+2023), we concentrate insertion in a local window
+around slot values (Step 3 in Figure 1), as speakers
+3
+
+Dataset Overview
+Behavior
+# Dialogues
+52,390 # Cross-turns
+11,045
+# Utterances
+1,208,554 # Barge-ins
+79,141
+Avg. Words
+9.95 # Disfluencies
+118,377
+# Speakers
+542 # Emotions
+511,468
+Total Duration
+1,034 hrs Total
+720,031
+Table 2: Overall statistics of SpokenTOD.
+are known to be more disfluent when producing
+precise information such as names and phone num-
+bers (Corley et al., 2007; Arnold, 2013; Sen, 2020).
+Further details are provided in Appendix A.5.
+Emotion.
+Beyond the behavioral patterns dis-
+cussed above, realistic spoken dialogue also con-
+veys speakers’ emotional states.
+To support
+emotion-conditioned speech synthesis, we annotate
+each user utterance with an emotion label using the
+LLM (Step 4 in Figure 1), following the EmoWOZ
+label set grounded in the Ortony–Clore–Collins
+(OCC) model (Ortony et al., 1988): NEUTRAL,
+FEARFUL, DISSATISFIED, APOLOGETIC, ABU-
+SIVE, EXCITED, and SATISFIED. Agent utterances
+are all labeled as NEUTRAL, reflecting the expec-
+tation that deployed AI systems communicate in
+a neutral manner (Han et al., 2023). Annotation
+details and label reliability are in Appendix A.6.
+2.2
+Speech Synthesis
+We synthesize the augmented dialogues into speech
+using Qwen3-TTS (Hu et al., 2026), controlling
+speech style via emotion labels (§2.1) and speaker
+identity via sampled audio from a speaker pool.
+Emotion Conditioning.
+We control speech style
+in Qwen3-TTS via instruction prompts that spec-
+ify the target emotion for each turn. Specifically,
+we map each emotion category to a set of speak-
+ing style keywords (e.g., DISSATISFIED →{angry,
+contempt, disgusted}) drawn from CosyVoice3’s
+training data (Du et al., 2025), as both models share
+overlapping pre-training data. At each turn, we ran-
+domly sample one keyword from the correspond-
+ing set to introduce variation even within the same
+emotion label. Full construction details and the
+keyword list are provided in Appendix A.8.
+Speaker Diversity.
+To simulate a diverse range
+of real-world users, we sample reference audio
+clips from the Speech Accent Archive (Weinberger
+and Kunath, 2011), weighting four accent groups
+by population and stratifying by age and gender,
+yielding a pool of 542 reference speakers. For as-
+sistant utterances, we fix a pool of 10 Native-accent
+speakers to reflect the consistent voice identity ex-
+pected of deployed AI systems (Cambre and Kulka-
+rni, 2019). Further details are in Appendix A.9.
+2.3
+Dataset Statistics
+To complement our synthesized data with authentic
+human speech, we additionally include Spoken-
+WOZ (Si et al., 2023) as human-recorded samples
+for both training and evaluation. The resulting
+SpokenTOD dataset comprises 52,390 dialogues
+and 1,034 hours of speech, split into train (39,430),
+validation (5,390), and test (7,570). As shown in
+Table 2, the augmentation pipeline produces 11,045
+cross-turn slots, 79,141 barge-ins, 118,377 disflu-
+encies, and 511,468 emotion annotations across
+720,031 total behaviors, with the distribution of
+each behavior type illustrated in the pie charts.
+2.4
+Dataset Validation
+We validate SpokenTOD along two axes: whether
+the synthesized speech is intelligible, and whether
+our augmentation contributes to realism beyond
+raw TTS synthesis. To measure intelligibility, we
+transcribe 500 sampled dialogues with Whisper-
+large-v3 (Radford et al., 2023) and compare against
+the source text, obtaining an overall WER of 4.69%.
+To assess realism, three English-proficient annota-
+tors rate the original SpokenWOZ recordings (hu-
+man recording), the same transcripts synthesized
+by Qwen3-TTS alone, and the full SpokenTOD
+pipeline on 5-point scales for voice naturalness and
+for how convincingly each spoken behavior is re-
+alized. Naturalness is comparable across all three
+settings (3.88–3.99), while augmentation markedly
+improves the realization of disfluency (2.97 →
+3.76) and emotion (3.59 →4.33). Further details
+are provided in Appendix A.10.
+4
+
+Text Modality (13 tokens)
+User Goal & Profile
+Conversational History
+Turn-taking 
+Head
+Booking for three …
+Additional Tokens
+It’s .. um …two.
+Text Head
+Speech Head
+1. Listening Mode
+2. Pre-scripting Mode
+3. Speaking Mode
+Conditional 
+Flow Matching
+Hifi-GAN
+<BOA>
+<Text Tokens>
+Assistant turn
+User turn
+SpokenUS
+Speech Modality (6561 tokens)
+<BOT>
+It’s
+[FP]
+two.
+<EOT>
+<BOA>
+<EOA>
+<BOA>
+<S1>
+<S2>
+…
+<S6561>
+<EOA>
+Emotion (7 tokens)
+Disfluency (6 tokens)
+…
+[COR]
+[FP]
+<BOT>
+<EOT>
+<BOA>
+[Dissatisfied] It’s [FP] two.
+Text tokens
+Text + Speech tokens
+Mode Control (4 tokens)
+…
+Barge-in
+Listen Turn-end
+Figure 2: Overview of SpokenUS. The model processes streaming assistant speech in Listening Mode, determines
+barge-in timing through a turn-taking head, then generates responses through Pre-scripting and Speaking Modes.
+3
+SpokenUS
+3.1
+Framework Overview
+SpokenUS is a spoken user simulator that pursues a
+given user goal through multi-turn exchanges while
+expressing realistic spoken user behaviors. As il-
+lustrated in Figure 2, it takes the user’s goal and
+profile, the conversational history as interleaved
+text and speech tokens, and the current assistant
+speech, provided either as a complete utterance or
+as a streaming input. SpokenUS operates in three
+sequential modes: Listening Mode, which moni-
+tors incoming assistant speech to determine when
+to speak; Pre-scripting Mode, which generates a
+transcript before speech is produced; and Speaking
+Mode, which synthesizes the transcript into speech.
+3.2
+Operating Modes
+Listening Mode.
+The turn-taking head contin-
+uously monitors incoming assistant speech to de-
+termine when the user should speak. Since au-
+dio arrives as a stream of tokens (Noroozi et al.,
+2024), the turn-taking head produces a prediction
+at each token and aggregates them by computing
+a weighted sum of per-token probabilities to avoid
+false alarms, with linearly increasing weights as-
+signed to more recent tokens. A listen prediction
+allows streaming to continue. A barge-in predic-
+tion triggers an immediate interruption, while a
+turn-end prediction indicates that the assistant has
+finished speaking. In either case, the model tran-
+sitions to Pre-scripting Mode. When a complete
+assistant utterance is provided as a single audio file
+rather than a stream, Listening Mode is skipped.
+Pre-scripting Mode.
+Upon entering this mode,
+the text head generates a structured transcript delim-
+ited by <BOT> and <EOT>. As illustrated in Figure 2,
+the transcript begins with an emotion token (e.g.,
+[dissatisfied]), followed by the intended utterance
+with interleaved disfluency tokens (e.g., [FP] two.).
+This explicit transcript guides speech generation
+in Speaking Mode while making the simulator’s
+behavior transparent for evaluation.
+Speaking Mode.
+The <EOT> token signals the
+transition to Speaking Mode, where the speech
+head autoregressively generates discrete speech
+tokens conditioned on the transcript, delimited
+by <BOA> and <EOA>. Since SpokenTOD is con-
+structed with this same structure, emotion and dis-
+fluency markers are faithfully realized as prosodic
+and hesitation patterns. As illustrated in Figure 2,
+the generated tokens are decoded to audio via
+a Conditional Flow Matching model and HiFi-
+GAN (Kong et al., 2020) vocoder, conditioned on
+a reference audio clip drawn from the speaker pool
+constructed in SpokenTOD (§2.2), enabling Spo-
+kenUS to simulate a wide range of user voices.
+Further details are provided in Appendix B.1.
+3.3
+Training
+SpokenUS is trained with a multi-task objective
+combining losses from all three heads:
+L = Ltext + Lspeech + Lturn-taking
+(1)
+5
+
+where Ltext and Lspeech are cross-entropy losses for
+text and speech token generation respectively, and
+Lturn-taking is the cross-entropy loss for turn-taking
+decisions over three classes (listen, barge-in, and
+turn-end). For turn-taking supervision, all tokens
+within an assistant turn are labeled listen except for
+the final 6 tokens, which are labeled turn-end or
+barge-in depending on the turn type. The 6-token
+window corresponds to approximately 240 ms at
+25 Hz, reflecting the average human reaction time
+when taking a turn (Stivers et al., 2009). Speech
+token targets are obtained by encoding SpokenTOD
+audio with the CosyVoice3 tokenizer (Du et al.,
+2025), which produces 6,561 discrete tokens via
+Finite Scalar Quantization (Mentzer et al., 2024).
+4
+Experimental Setup
+4.1
+Implementation Details
+SpokenUS is initialized from Qwen2.5-3B (Qwen
+et al., 2025) and fine-tuned in two stages. We first
+augment the vocabulary with mode control, disflu-
+ency, and emotion special tokens (Table 12). In
+Stage 1, the model is trained on text-only Spoken-
+TOD to acquire TOD knowledge. In Stage 2, all
+three heads are jointly trained using the multi-task
+objective in Section 3.3, supervised on user turns
+only. The CFM and HiFi-GAN are also trained ex-
+clusively on user speech from SpokenTOD. Further
+training details are provided in Appendix B.2.
+4.2
+Baselines
+We compare SpokenUS against human recordings
+and five end-to-end omni models across two scales.
+Comparable-sized models are Qwen2.5-Omni-3B
+(Xu et al., 2025a) and InteractiveOmni-4B (Tong
+et al., 2025); larger models are Qwen2.5-Omni-
+7B (Xu et al., 2025a), GLM-4-Voice-9B (Zeng
+et al., 2024), and Qwen3-Omni-30B-A3B (Xu
+et al., 2025b). The assistant is a cascaded voice
+agent: user speech is transcribed by Whisper-large-
+v3 (Radford et al., 2023), responses are generated
+by GPT-4.1-mini (OpenAI, 2025), and the reply
+is synthesized with Qwen3-TTS (Hu et al., 2026).
+The assistant is fixed across all simulators so that
+differences reflect the simulator alone.
+4.3
+Evaluation Metrics
+Unless otherwise noted, all evaluations are con-
+ducted on a fixed set of 100 goals taken from the
+SpokenWOZ test set (held out from training). Ev-
+ery system is evaluated on this same set. Spo-
+kenWOZ provides the database states necessary
+for interactive user–assistant conversations, and its
+human recordings let us compare each simulator
+against a real speaker pursuing the same goal. Each
+system interacts with the assistant independently
+from the same goal, so systems differ in what is
+said as well as how it is said.
+Goal Coverage.
+We report Goal Alignment (GA),
+the percentage of dialogues in which all required
+slot values are successfully conveyed, and Slot
+Match Rate (SMR), the percentage of required slots
+conveyed across all dialogues as a finer-grained
+complement. Both metrics are evaluated by GPT-
+4.1-mini (OpenAI, 2025), which has been shown
+to achieve high agreement with humans on slot
+verification in TOD (Shim et al., 2026).
+Human MOS.
+We recruit 10 English-proficient
+evaluators and randomly sample 20 dialogues from
+the evaluation set with 100% GA. Each dialogue is
+rated by at least 3 evaluators on three 5-point scales:
+Naturalness (N), measuring voice quality; Conver-
+sational Flow (C), assessing role consistency as a
+help-seeker and naturalness of turn-by-turn engage-
+ment; and Spoken User Behavior (S), evaluating
+holistic authenticity of spoken behavior. Full de-
+tails are provided in Appendix C.7.
+Text-Speech
+Alignment.
+We
+measure
+text-
+speech alignment via WER, computed between
+each model’s text transcript and its corresponding
+synthesized speech using Whisper-large-v3 (Rad-
+ford et al., 2023). This captures how faithfully the
+intended text is realized in the generated speech,
+which is particularly important for omni models
+that generate text before synthesizing speech.
+Speaker Similarity.
+We measure speaker consis-
+tency using cosine similarity between speaker em-
+beddings extracted by wavlm-base-plus-sv (Chen
+et al., 2022). SIM(s0, si) measures similarity be-
+tween the first turn and each subsequent turn,
+reflecting how consistently the simulator main-
+tains speaker identity throughout the dialogue.
+SIM(si−1, si) measures similarity between consec-
+utive turns, capturing turn-level voice consistency.
+5
+Main Results
+Table 3 presents results across all four metrics.
+Goal Coverage.
+SpokenUS achieves a GA of
+0.82, on par with Qwen2.5-Omni-7B (0.80) while
+6
+
+Goal Cov.
+Human MOS
+Align.
+Speaker Sim.
+Model
+Audio (hrs)
+GA ↑
+SMR ↑
+N ↑
+C ↑
+S ↑
+Avg. ↑
+WER ↓
+SIM0,i
+SIMi-1,i
+Human
+–
+1.00
+1.00
+3.58
+3.64
+3.80
+3.67
+–
+0.84±.07
+0.88±.04
+Larger models
+Qwen2.5-Omni-7B
+∼3M
+0.80
+0.97
+2.86
+3.29
+2.94
+3.03
+10.53
+0.97±.03
+0.96±.04
+GLM-4-Voice-9B
+∼700K
+0.33
+0.79
+2.51
+2.06
+2.38
+2.32
+15.33
+0.94±.04
+0.96±.03
+Qwen3-Omni-30B-A3B
+∼20M
+0.93
+0.99
+3.03
+3.61
+2.91
+3.18
+15.05
+0.95±.03
+0.95±.04
+Comparable-sized models
+Qwen2.5-Omni-3B
+∼3M
+0.36
+0.93
+1.97
+2.77
+2.28
+2.34
+15.09
+0.90±.04
+0.92±.03
+InteractiveOmni-4B
+∼465K
+0.59
+0.89
+2.83
+2.44
+2.62
+2.63
+15.68
+0.95±.03
+0.94±.04
+SpokenUS (3B)
+∼1K
+0.82
+0.99
+3.92
+4.14
+4.11
+4.06
+11.36
+0.93±.02
+0.92±.03
+Table 3: Main evaluation results. The best result in each group is highlighted in bold.
+substantially outperforming comparable-sized mod-
+els (Qwen2.5-Omni-3B: 0.36; InteractiveOmni-4B:
+0.59). Only Qwen3-Omni-30B-A3B surpasses it
+(0.93), at 10× the model size and ∼20M hours
+of training data, demonstrating that TOD ground-
+ing enables strong goal coverage at small scale.
+Failure cases are analyzed in Appendix C.4. We
+further evaluate PersonaPlex (Roy et al., 2026), a
+full-duplex model with explicit role control, which
+reaches 0.06 GA: despite that control, it inverts the
+two roles, greeting the user and offering services
+rather than pursuing its goal (see Appendix C.6).
+Human MOS.
+SpokenUS achieves an average
+MOS of 4.06, substantially outperforming all
+omni-model baselines, including Qwen3-Omni-
+30B-A3B (3.18), despite being trained on orders
+of magnitude less audio (∼1K vs. ∼20M hours).
+It is also the only model to score above the hu-
+man recordings (3.67), with higher scores across
+all three criteria. Since each system independently
+generates a dialogue from the same user goal, this
+comparison reflects end-to-end interaction quality
+rather than the acoustic rendering of the same text
+(see Figure 21). Human recordings otherwise out-
+perform all omni model baselines; we discuss the
+interpretation of this result in Appendix C.8.
+Text-Speech Alignment.
+SpokenUS achieves a
+WER of 11.36%, comparable to Qwen2.5-Omni-
+7B (10.53%) and substantially outperforming the
+remaining baselines (up to 15.68%). Despite gener-
+ating text before speech, omni models show poorer
+alignment, indicating that their synthesized speech
+often deviates from their own generated text.
+Speaker Similarity.
+We interpret SIM relative to
+the natural range of variation observed in human
+speech, rather than as a measure where higher is
+better. Human recordings show relatively lower
+Figure 3: Cumulative goal slot coverage over user turns.
+similarity scores (0.84 and 0.88), reflecting natu-
+ral variation in emotion and prosody across turns.
+Omni models tend to produce overly uniform
+speech, yielding higher scores. SpokenUS closely
+approximates the human level (0.93 and 0.92), in-
+dicating that its explicit modeling of spoken behav-
+iors introduces natural speaker variation. While
+Qwen2.5-Omni-3B shows similarly lower SIM
+scores (0.90 and 0.92), its significantly degraded
+speech quality (MOS: 2.34) suggests that this score
+does not reflect natural speaker diversity.
+6
+Analysis
+6.1
+Slot Disclosure Timing
+Figure 3 shows cumulative slot coverage over user
+turns: the proportion of goal slots that have ap-
+peared in the dialogue by each turn, normalized by
+the total number of slots per dialogue. We track
+only slot appearance rather than value correctness
+to isolate disclosure timing. Omni models tend to
+disclose slots within the first few turns and plateau
+early, whereas human speakers disclose them more
+gradually over the course of the dialogue. Spo-
+kenUS closely follows the human pattern, showing
+a steady increase in slot coverage throughout the di-
+7
+
+Label
+Correct
+Early
+Confused
+Missed
+Turn-end
+66.0%
+10.4%
+16.4%
+7.2%
+Barge-in
+58.6%
+18.0%
+11.0%
+12.4%
+Table 4: Interruption performance on SpokenUS.
+alogue rather than front-loading information. This
+pattern is not reproduced by instruction: prompt-
+ing Qwen2.5-Omni-3B to disclose only one or two
+slots per turn leaves its curve almost unchanged,
+still saturating within the first few turns (see Ap-
+pendix C.5).
+6.2
+Interruption Detection
+To evaluate whether SpokenUS correctly identifies
+when to speak during streaming assistant speech,
+we randomly sample 500 assistant turns labeled
+turn-end and 500 labeled barge-in from the Spo-
+kenTOD test set, processing each utterance sequen-
+tially from the beginning, as in Listening Mode
+(§3.2). Let the trigger window denote the final 6
+tokens of an assistant turn, where the supervision
+label is turn-end or barge-in. We categorize out-
+comes by where the model first fires a non-listen
+prediction and which label it fires: Correct (within
+the window, correct label), Confused (within the
+window, wrong label), Early (fires before the win-
+dow), and Missed (listen throughout).
+As shown in Table 4, turn-end detection achieves
+66.0% accuracy with a missed rate of 7.2%, indi-
+cating that the model recognizes when the assis-
+tant has finished speaking. Barge-in detection is
+more challenging at 58.6%, with a higher missed
+rate (12.4%), reflecting the difficulty of deciding to
+intervene from partial context. Notably, a substan-
+tial portion of errors stem from confusion between
+barge-in and turn-end. Since both labels lead the
+simulator to speak, this confusion is less conse-
+quential than a missed trigger: the model begins
+speaking within the trigger window in 82.4% of
+turn-end and 69.6% of barge-in cases, suggesting
+that the primary difficulty lies in disambiguating
+the two speaking behaviors rather than in detecting
+the moment to speak itself. Scoring and aggrega-
+tion details are in Appendix C.9.
+6.3
+Impact on Agent Performance
+We analyze how spoken user behaviors affect voice
+agent performance. To construct a controlled evalu-
+ation set, we allow each simulator up to 10 attempts
+per goal and retain the first dialogue that achieves
+100% GA, yielding 84 dialogues. This ensures F1
+GPT-4.1-mini
+Qwen2.5-Omni-7B
+User Simulator
+Text Cascaded Text Cascaded Audio
+Qwen2.5-Omni-3B 86.8 83.1 ↓3.7 62.5 54.1 ↓8.4 60.1 ↓2.4
+SpokenUS
+73.8 49.5 ↓24.3 62.0 48.3 ↓13.7 56.1 ↓5.9
+Table 5: Final Slot F1 across user simulators and agents.
+Assistant Model
+Text
+Cascaded
+Qwen2.5-7B-Instruct
+73.5
+57.2 ↓16.3
+Llama-3.1-8B-Instruct
+65.8
+45.7 ↓20.1
+Table 6: Final Slot F1 scores with SpokenUS on two
+additional agents.
+loss reflects the agent’s tracking rather than infor-
+mation the user never conveyed. We evaluate Final
+Slot F1, the slot-level F1 between the agent’s belief
+state at the final turn and the SpokenWOZ gold an-
+notation, under three configurations: Text, where
+the agent receives the user transcript directly; Cas-
+caded, where user speech is first transcribed via
+ASR; and Audio, where the agent receives speech
+directly, available only for the omni-modal agent.
+As shown in Table 5, SpokenUS already poses
+a greater challenge at the transcript level (73.8 vs.
+86.8), indicating that human-like content patterns
+such as cross-turn slots and gradual slot disclosure
+are inherently harder for the agent to track. The
+gap widens substantially in the Cascaded setting
+(−24.3 vs. −3.7), showing that spoken user behav-
+iors themselves challenge the agent. This is not an
+artifact of poor synthesis quality, as evidenced by
+SpokenUS’s low WER and high MOS (§5): even
+with an audio-capable agent that bypasses ASR,
+SpokenUS trails its transcript-level score by 5.9
+points and remains harder than Qwen2.5-Omni-3B
+(56.1 vs. 60.1). This vulnerability is not specific
+to a single agent: two other assistant models show
+the same large cascaded drop on SpokenUS inputs
+(−16.3, −20.1; Table 6), indicating that the chal-
+lenge stems from spoken behaviors rather than any
+one agent’s weakness. Notably, error analysis re-
+veals that agents tend to accept ASR’s erroneous
+transcription of slot values rather than requesting
+confirmation, especially when those values are ac-
+companied by disfluencies. Further details are pro-
+vided in Appendix C.10.
+6.4
+Generalization Beyond SpokenWOZ
+To assess generalization beyond SpokenWOZ, we
+additionally evaluate user simulators on 100 dia-
+logues from the SGD test set. Although Spoken-
+8
+
+Model
+GA ↑
+SMR ↑
+Larger models
+Qwen2.5-Omni-7B
+0.95
+0.98
+GLM-4-Voice-9B
+0.36
+0.70
+Qwen3-Omni-30B-A3B
+0.98
+0.99
+Comparable-sized models
+Qwen2.5-Omni-3B
+0.59
+0.78
+InteractiveOmni-4B
+0.83
+0.94
+SpokenUS (3B)
+0.90
+0.97
+Table 7: Goal coverage and slot match rate on SGD.
+TOD includes the SGD training split, the test split
+covers disjoint domains, allowing us to evaluate
+generalization to unseen domains. We use the Py-
+TOD (Coca et al., 2025) framework with the same
+assistant and evaluation protocol as Section 4.3.
+As shown in Table 7, SpokenUS achieves 0.90
+GA and 0.97 SMR, outperforming all comparable-
+sized baselines and remaining competitive with
+substantially larger models, consistent with the Spo-
+kenWOZ results. SpokenUS’s goal coverage thus
+holds on a corpus with different domains from Spo-
+kenWOZ.
+7
+Related Work
+User Simulation for TOD.
+User simulation has
+long been a cornerstone of TOD research, enabling
+agents to be trained under diverse conditions with-
+out the cost of collecting real interactions (Eckert
+et al., 1997). Early simulators (Schatzmann et al.,
+2007; Chandramohan et al., 2012) modeled user
+intent and dialogue acts via hand-crafted rules or
+learned policies. Recent studies (Sekulic et al.,
+2024; Shim et al., 2026) have leveraged LLMs
+to generate more naturalistic user utterances, im-
+proving coverage and diversity. However, these
+simulators operate exclusively in text and do not
+account for the spoken behaviors, such as disfluen-
+cies (Shriberg, 1994), barge-ins (Khouzaimi et al.,
+2015), and emotional prosody (Schröder, 2001),
+that emerge naturally in spoken interaction.
+TOD Datasets.
+To support spoken TOD research,
+several spoken TOD datasets have been proposed.
+Early benchmarks such as DSTC2 (Henderson
+et al., 2014) and DSTC10 (Kim et al., 2021) evalu-
+ated TOD systems on spoken conversations but re-
+leased only ASR transcripts and covered narrow do-
+mains. SpokenWOZ (Si et al., 2023) advanced the
+field with large-scale human-to-human recordings
+and fully annotated dialogue states. Nevertheless,
+human data collection remains costly and difficult
+to scale to new domains. Moreover, no existing
+work provides a systematic pipeline for augment-
+ing text-based TOD corpora such as MultiWOZ
+(Budzianowski et al., 2018), SGD (Rastogi et al.,
+2020), ABCD (Chen et al., 2021), and Taskmas-
+ter (Byrne et al., 2019) with diverse spoken user
+behaviors across varied speakers and domains.
+Spoken Dialogue Modeling.
+Early spoken dia-
+logue systems relied on cascaded ASR–LLM–TTS
+pipelines (Huang et al., 2024). Such pipelines suf-
+fer from compounding ASR errors (Sunder et al.,
+2022), latency from sequential processing, and loss
+of non-linguistic cues such as emotional prosody
+and speaker characteristics (Défossez et al., 2024).
+Generative spoken dialogue models (Nguyen et al.,
+2023; Lee et al., 2025) offer an alternative by mod-
+eling full conversations directly in the speech do-
+main, but are designed to synthesize entire dia-
+logues rather than engage interactively, making
+them unsuitable for turn-by-turn user simulation.
+End-to-end omni models (Xu et al., 2025a,b; Zeng
+et al., 2024; Tong et al., 2025) support interactive
+spoken dialogue, though without architectural sup-
+port for proactive turn-taking. Full-duplex models
+such as Moshi (Défossez et al., 2024), LSLM (Ma
+et al., 2025), and PersonaPlex (Roy et al., 2026)
+add this capability by speaking and listening at
+once. All of these models, however, are built for
+assistant-side generation rather than user-side sim-
+ulation, and prompting them into the user role does
+not make them goal-faithful.
+8
+Conclusion
+We introduced SpokenTOD and SpokenUS to ad-
+dress the lack of realistic spoken user simulation
+for task-oriented dialogue. SpokenTOD provides
+a large-scale spoken TOD dataset enriched with
+diverse user behaviors through an automated aug-
+mentation pipeline, and SpokenUS leverages it to
+train a spoken user simulator grounded in TOD
+knowledge with dedicated support for proactive
+turn-taking. Experimental results demonstrate that
+SpokenUS achieves strong goal coverage, while
+substantially outperforming all baselines in human
+MOS. Our agent robustness analysis further shows
+that SpokenUS’s spoken behaviors pose a substan-
+tially greater challenge to voice agents than exist-
+ing omni models, underscoring the importance of
+realistic spoken user simulation for building and
+evaluating robust spoken dialogue systems.
+9
+
+Limitations
+Both SpokenTOD and SpokenUS are currently lim-
+ited to English, though the pipeline can be extended
+to other languages as long as spoken user behav-
+ior annotations and a TOD dataset in the target
+language are available. Additionally, SpokenUS
+models a predefined set of spoken behaviors; phe-
+nomena such as laughter and overlapping speech
+are not yet covered. Moreover, SpokenTOD relies
+on a single TTS backbone, which may not fully
+capture the acoustic variability of real-world envi-
+ronments, though a supplementary human evalua-
+tion finds its naturalness close to human recordings
+(3.88 vs. 3.95; Appendix A.10.2). Furthermore,
+SpokenTOD does not model adverse acoustic con-
+ditions commonly encountered in real-world de-
+ployments, such as background noise, reverbera-
+tion, and low-bandwidth channels. Since the syn-
+thesized audio already exists as standalone files,
+such conditions can be introduced by simply ap-
+plying standard acoustic augmentation (e.g., noise
+injection, room impulse response convolution) over
+the existing SpokenTOD speech.
+Acknowledgments
+This work was supported by the Ministry of Trade,
+Industry and Resources (MOTIR, Korea) and the
+Korea Planning & Evaluation Institute of Indus-
+trial Technology (KEIT) (2410018399/25543163,
+Development of Contents and Software for AI Ser-
+vice Implementation on XR Smart Glasses). This
+work was also supported by the Institute of In-
+formation & Communications Technology Plan-
+ning & Evaluation (IITP) grants funded by the
+Korean government (MSIT) (RS-2025-02215122,
+Development and Demonstration of Lightweight
+AI Model for Smart Homes; RS-2026-25505492,
+High-Performance Research AI Computing Infras-
+tructure Support at the 2 PFLOPS Scale, contri-
+bution rate: 20%), and by the IITP grant funded
+by the Korean government (MND) (No. RS-2026-
+25551943, Military-Industry-Academia Coopera-
+tion Center (Seoul (Yongsan))). This work was
+also supported by the National AI Project of the
+Ministry of Science and ICT and the AIIS.
+References
+Jennifer E. Arnold. 2013. Information status relates to
+production, distribution, and comprehension. Fron-
+tiers in Psychology, Volume 4 - 2013.
+Evelina Bakhturina, Yang Zhang, and Boris Ginsburg.
+2022.
+Shallow Fusion of Weighted Finite-State
+Transducer and Language Model for Text Normaliza-
+tion. In Interspeech 2022, pages 491–495.
+Paweł Budzianowski, Tsung-Hsien Wen, Bo-Hsiang
+Tseng, Iñigo Casanueva, Stefan Ultes, Osman Ra-
+madan, and Milica Gaši´c. 2018. MultiWOZ - a large-
+scale multi-domain Wizard-of-Oz dataset for task-
+oriented dialogue modelling. In Proceedings of the
+2018 Conference on Empirical Methods in Natural
+Language Processing, pages 5016–5026, Brussels,
+Belgium. Association for Computational Linguistics.
+Bill Byrne, Karthik Krishnamoorthi, Chinnadhurai
+Sankar, Arvind Neelakantan, Ben Goodrich, Daniel
+Duckworth, Semih Yavuz, Amit Dubey, Kyu-Young
+Kim, and Andy Cedilnik. 2019. Taskmaster-1: To-
+ward a realistic and diverse dialog dataset. In Pro-
+ceedings of the 2019 Conference on Empirical Meth-
+ods in Natural Language Processing and the 9th In-
+ternational Joint Conference on Natural Language
+Processing (EMNLP-IJCNLP), pages 4516–4525,
+Hong Kong, China. Association for Computational
+Linguistics.
+Julia Cambre and Chinmay Kulkarni. 2019. One voice
+fits all? social implications and research challenges
+of designing voices for smart devices. Proc. ACM
+Hum.-Comput. Interact., 3(CSCW).
+Senthilkumar Chandramohan, Matthieu Geist, Fabrice
+Lefevre, and Olivier Pietquin. 2012. Behavior spe-
+cific user simulation in spoken dialogue systems. In
+Speech Communication; 10. ITG Symposium, pages
+1–4.
+Derek Chen, Howard Chen, Yi Yang, Alexander Lin,
+and Zhou Yu. 2021.
+Action-based conversations
+dataset: A corpus for building more in-depth task-
+oriented dialogue systems. In Proceedings of the
+2021 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies, pages 3002–3017, On-
+line. Association for Computational Linguistics.
+Sanyuan Chen, Chengyi Wang, Zhengyang Chen,
+Yu Wu, Shujie Liu, Zhuo Chen, Jinyu Li, Naoyuki
+Kanda, Takuya Yoshioka, Xiong Xiao, Jian Wu, Long
+Zhou, Shuo Ren, Yanmin Qian, Yao Qian, Jian Wu,
+Michael Zeng, Xiangzhan Yu, and Furu Wei. 2022.
+WavLM: Large-scale self-supervised pre-training for
+full stack speech processing. IEEE Journal of Se-
+lected Topics in Signal Processing, 16(6):1505–1518.
+Herbert H Clark. 1996. Using language. Cambridge
+University Press.
+Herbert H. Clark and Susan E. Brennan. 1991. Ground-
+ing in communication. In L. B. Resnick, J. M. Levine,
+and S. D. Teasley, editors, Perspectives on Socially
+Shared Cognition, pages 127–149. American Psycho-
+logical Association.
+Alexandru Coca, Bo-Hsiang Tseng, Peter Boothroyd,
+Jianpeng Cheng, Zhenxing Zhang, Mark Gaynor, Joe
+10
+
+Stacey, Tristan Guigue, Héctor Martínez Alonso, Di-
+armuid Ó Séaghdha, and Anders Johannsen. 2025.
+PyTOD: Programmable task-oriented dialogue with
+execution feedback.
+In Proceedings of the 26th
+Annual Meeting of the Special Interest Group on
+Discourse and Dialogue, pages 93–112, Avignon,
+France. Association for Computational Linguistics.
+Martin Corley, Lucy J. MacGregor, and David I. Donald-
+son. 2007. It’s the way that you, er, say it: Hesitations
+in speech affect language comprehension. Cognition,
+105(3):658–668.
+Zhihao Du, Changfeng Gao, Yuxuan Wang, Fan Yu,
+Tianyu Zhao, Hao Wang, Xiang Lv, Hui Wang,
+Chongjia Ni, Xian Shi, Keyu An, Guanrou Yang,
+Yabin Li, Yanni Chen, Zhifu Gao, Qian Chen, Yue
+Gu, Mengzhe Chen, Yafeng Chen, and 3 others.
+2025. CosyVoice 3: Towards in-the-wild speech
+generation via scaling-up and post-training. Preprint,
+arXiv:2505.17589.
+Alexandre Défossez, Laurent Mazaré, Manu Orsini,
+Amélie Royer, Patrick Pérez, Hervé Jégou, Edouard
+Grave, and Neil Zeghidour. 2024.
+Moshi:
+a
+speech-text foundation model for real-time dialogue.
+Preprint, arXiv:2410.00037.
+W. Eckert, E. Levin, and R. Pieraccini. 1997. User mod-
+eling for spoken dialogue system evaluation. In 1997
+IEEE Workshop on Automatic Speech Recognition
+and Understanding Proceedings, pages 80–87.
+Shutong Feng, Nurul Lubis, Christian Geishauser,
+Hsien-chin Lin, Michael Heck, Carel van Niekerk,
+and Milica Gasic. 2022. EmoWOZ: A large-scale
+corpus and labelling scheme for emotion recognition
+in task-oriented dialogue systems. In Proceedings of
+the Thirteenth Language Resources and Evaluation
+Conference, pages 4096–4113, Marseille, France. Eu-
+ropean Language Resources Association.
+Tom Gunter, Zirui Wang, Chong Wang, Ruoming
+Pang, Andy Narayanan, Aonan Zhang, Bowen Zhang,
+Chen Chen, Chung-Cheng Chiu, David Qiu, Deepak
+Gopinath, Dian Ang Yap, Dong Yin, Feng Nan,
+Floris Weers, Guoli Yin, Haoshuo Huang, Jianyu
+Wang, Jiarui Lu, and 136 others. 2024. Apple in-
+telligence foundation language models.
+Preprint,
+arXiv:2407.21075.
+Elizabeth Han, Dezhi Yin, and Han Zhang. 2023. Bots
+with feelings: Should ai agents express positive emo-
+tion in customer service? Information Systems Re-
+search, 34(3):1296–1311.
+Matthew Henderson, Blaise Thomson, and Jason D.
+Williams. 2014. The second dialog state tracking
+challenge. In Proceedings of the 15th Annual Meet-
+ing of the Special Interest Group on Discourse and
+Dialogue (SIGDIAL), pages 263–272, Philadelphia,
+PA, U.S.A. Association for Computational Linguis-
+tics.
+Hangrui Hu, Xinfa Zhu, Ting He, Dake Guo, Bin
+Zhang, Xiong Wang, Zhifang Guo, Ziyue Jiang,
+Hongkun Hao, Zishan Guo, Xinyu Zhang, Pei Zhang,
+Baosong Yang, Jin Xu, Jingren Zhou, and Junyang
+Lin. 2026. Qwen3-tts technical report. Preprint,
+arXiv:2601.15621.
+Rongjie Huang, Mingze Li, Dongchao Yang, Jia-
+tong Shi, Xuankai Chang, Zhenhui Ye, Yuning Wu,
+Zhiqing Hong, Jiawei Huang, Jinglin Liu, Yi Ren,
+Yuexian Zou, Zhou Zhao, and Shinji Watanabe. 2024.
+AudioGPT: understanding and generating speech,
+music, sound, and talking head.
+In Proceedings
+of the Thirty-Eighth AAAI Conference on Artificial
+Intelligence and Thirty-Sixth Conference on Inno-
+vative Applications of Artificial Intelligence and
+Fourteenth Symposium on Educational Advances in
+Artificial Intelligence, AAAI’24/IAAI’24/EAAI’24.
+AAAI Press.
+Hatim Khouzaimi, Romain Laroche, and Fabrice
+Lefèvre. 2015. Turn-taking phenomena in incremen-
+tal dialogue systems. In Proceedings of the 2015
+Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 1890–1895, Lisbon, Portu-
+gal. Association for Computational Linguistics.
+Seokhwan Kim, Yang Liu, Di Jin, Alexandros Papan-
+gelis, Karthik Gopalakrishnan, Behnam Hedayatnia,
+and Dilek Hakkani-Tür. 2021. “how robust r u?”:
+Evaluating task-oriented dialogue systems on spo-
+ken conversations. In 2021 IEEE Automatic Speech
+Recognition and Understanding Workshop (ASRU),
+pages 1147–1154.
+Jungil Kong, Jaehyeon Kim, and Jaekyoung Bae. 2020.
+HiFi-GAN: Generative adversarial networks for ef-
+ficient and high fidelity speech synthesis.
+In Ad-
+vances in Neural Information Processing Systems,
+volume 33, pages 17022–17033. Curran Associates,
+Inc.
+Jacqueline C. Kowtko and Patti J. Price. 1989. Data col-
+lection and analysis in the air travel planning domain.
+In Speech and Natural Language: Proceedings of a
+Workshop Held at Cape Cod, Massachusetts, October
+15-18, 1989.
+Sehun Lee, Kang-wook Kim, and Gunhee Kim. 2025.
+Behavior-SD: Behaviorally aware spoken dialogue
+generation with large language models. In Proceed-
+ings of the 2025 Conference of the Nations of the
+Americas Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies
+(Volume 1: Long Papers), pages 9574–9593, Al-
+buquerque, New Mexico. Association for Compu-
+tational Linguistics.
+Hongcheng Liu, Yixuan Hou, Heyang Liu, Yuhao Wang,
+Yanfeng Wang, and Yu Wang. 2025. VocalBench-
+DF: A benchmark for evaluating speech llm robust-
+ness to disfluency. Preprint, arXiv:2510.15406.
+Ziyang Ma, Yakun Song, Chenpeng Du, Jian Cong,
+Zhuo Chen, Yuping Wang, Yuxuan Wang, and Xie
+Chen. 2025. Language model can listen while speak-
+ing. Proceedings of the AAAI Conference on Artifi-
+cial Intelligence, 39(23):24831–24839.
+11
+
+Jarana Manotumruksa, Jeff Dalton, Edgar Meij, and Em-
+ine Yilmaz. 2021. Improving dialogue state tracking
+with turn-based loss function and sequential data aug-
+mentation. In Findings of the Association for Com-
+putational Linguistics: EMNLP 2021, pages 1674–
+1683, Punta Cana, Dominican Republic. Association
+for Computational Linguistics.
+Benjamin Marie. 2023. Disfluency generation for more
+robust dialogue systems. In Findings of the Asso-
+ciation for Computational Linguistics: ACL 2023,
+pages 11479–11488, Toronto, Canada. Association
+for Computational Linguistics.
+Fergus McInnes and David Attwater. 2004. Turn-taking
+and grounding in spoken telephone number transfers.
+Speech Communication, 43(3):205–223.
+Fabian Mentzer, David Minnen, Eirikur Agustsson, and
+Michael Tschannen. 2024. Finite scalar quantization:
+VQ-VAE made simple. In The Twelfth International
+Conference on Learning Representations.
+Marie Meteer and 1 others. 1995. Dysfluency annota-
+tion stylebook for the Switchboard corpus. Technical
+report, Department of Computer and Information Sci-
+ence, University of Pennsylvania.
+Tu Anh Nguyen, Eugene Kharitonov, Jade Copet, Yossi
+Adi, Wei-Ning Hsu, Ali Elkahky, Paden Tomasello,
+Robin Algayres, Benoît Sagot, Abdelrahman Mo-
+hamed, and Emmanuel Dupoux. 2023. Generative
+spoken dialogue language modeling. Transactions
+of the Association for Computational Linguistics,
+11:250–266.
+Vahid Noroozi, Somshubra Majumdar, Ankur Kumar,
+Jagadeesh Balam, and Boris Ginsburg. 2024. State-
+ful conformer with cache-based inference for stream-
+ing automatic speech recognition. In ICASSP 2024
+- 2024 IEEE International Conference on Acous-
+tics, Speech and Signal Processing (ICASSP), pages
+12041–12045.
+OpenAI. 2025. Introducing GPT-4.1 in the API. https:
+//openai.com/index/gpt-4-1/. Accessed 2026-
+08-30.
+Andrew Ortony, Gerald L. Clore, and Allan Collins.
+1988. The Cognitive Structure of Emotions. Cam-
+bridge University Press, Cambridge.
+Tatiana Passali, Thanassis Mavropoulos, Grigorios
+Tsoumakas, Georgios Meditskos, and Stefanos
+Vrochidis. 2022. LARD: Large-scale Artificial Dis-
+fluency Generation.
+In Proceedings of the Thir-
+teenth Language Resources and Evaluation Confer-
+ence, pages 2327–2336, Marseille, France. European
+Language Resources Association.
+Qwen, An Yang, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan
+Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin
+Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, and
+24 others. 2025. Qwen2.5 technical report. Preprint,
+arXiv:2412.15115.
+Alec Radford, Jong Wook Kim, Tao Xu, Greg Brock-
+man, Christine Mcleavey, and Ilya Sutskever. 2023.
+Robust speech recognition via large-scale weak su-
+pervision. In Proceedings of the 40th International
+Conference on Machine Learning, volume 202 of
+Proceedings of Machine Learning Research, pages
+28492–28518. PMLR.
+Abhinav Rastogi, Xiaoxue Zang, Srinivas Sunkara,
+Raghav Gupta, and Pranav Khaitan. 2020.
+To-
+wards scalable multi-domain conversational agents:
+The schema-guided dialogue dataset. Proceedings
+of the AAAI Conference on Artificial Intelligence,
+34(05):8689–8696.
+Rajarshi Roy, Jonathan Raiman, Sang gil Lee, Teodor-
+Dumitru Ene, Robert Kirby, Sungwon Kim, Jae-
+hyeon Kim, and Bryan Catanzaro. 2026. Person-
+aplex: Voice and role control for full duplex conver-
+sational speech models. Preprint, arXiv:2602.06053.
+Harvey Sacks, Emanuel A. Schegloff, and Gail Jeffer-
+son. 1974. A simplest systematics for the organi-
+zation of turn-taking for conversation. Language,
+50(4):696–735.
+Jost Schatzmann, Blaise Thomson, Karl Weilhammer,
+Hui Ye, and Steve Young. 2007. Agenda-based user
+simulation for bootstrapping a POMDP dialogue sys-
+tem. In Human Language Technologies 2007: The
+Conference of the North American Chapter of the
+Association for Computational Linguistics; Compan-
+ion Volume, Short Papers, pages 149–152, Rochester,
+New York. Association for Computational Linguis-
+tics.
+Marc Schröder. 2001.
+Emotional speech synthesis:
+a review. In 7th European Conference on Speech
+Communication and Technology (Eurospeech 2001),
+pages 561–564.
+Ivan Sekulic, Silvia Terragni, Victor Guimarães, Nghia
+Khau, Bruna Guedes, Modestas Filipavicius, An-
+dre Ferreira Manso, and Roland Mathis. 2024. Re-
+liable LLM-based user simulator for task-oriented
+dialogue systems. In Proceedings of the 1st Work-
+shop on Simulating Conversational Intelligence in
+Chat (SCI-CHAT 2024), pages 19–35, St. Julians,
+Malta. Association for Computational Linguistics.
+Priyanka Sen. 2020. Speech disfluencies occur at higher
+perplexities.
+In Proceedings of the Workshop on
+the Cognitive Aspects of the Lexicon, pages 92–97,
+Online. Association for Computational Linguistics.
+Gyuhyeon
+Seo,
+Jungwoo
+Yang,
+Junseong
+Pyo,
+Nalim Kim, Jonggeun Lee, and Yohan Jo. 2026.
+SimuHome: A temporal- and environment-aware
+benchmark for smart home llm agents.
+In Inter-
+national Conference on Learning Representations,
+volume 2026, pages 40070–40097.
+Jeonghoon Shim, Woojung Song, Cheyon Jin, Seung-
+won KooK, and Yohan Jo. 2026. Non-collaborative
+user simulators for tool agents. In International Con-
+ference on Learning Representations, volume 2026,
+pages 64486–64534.
+12
+
+Elizabeth Ellen Shriberg. 1994. Preliminaries to a the-
+ory of speech disfluencies. Ph.D. thesis, University
+of California at Berkeley.
+Elizabeth Ellen Shriberg. 1996. Disfluencies in Switch-
+board. In Proceedings of international conference
+on spoken language processing, volume 96, pages
+11–14. IEEE Philadelphia, PA.
+Shuzheng Si, Wentao Ma, Haoyu Gao, Yuchuan Wu,
+Ting-En Lin, Yinpei Dai, Hangyu Li, Rui Yan, Fei
+Huang, and Yongbin Li. 2023. SpokenWOZ: A large-
+scale speech-text benchmark for spoken task-oriented
+dialogue agents. In Advances in Neural Information
+Processing Systems, volume 36, pages 39088–39118.
+Curran Associates, Inc.
+Tanya Stivers, N. J. Enfield, Penelope Brown, Christina
+Englert, Makoto Hayashi, Trine Heinemann, Gertie
+Hoymann, Federico Rossano, Jan Peter de Ruiter,
+Kyung-Eun Yoon, and Stephen C. Levinson. 2009.
+Universals and cultural variation in turn-taking in
+conversation. Proceedings of the National Academy
+of Sciences, 106(26):10587–10592.
+Vishal Sunder, Samuel Thomas, Hong-Kwang J. Kuo,
+Jatin Ganhotra, Brian Kingsbury, and Eric Fosler-
+Lussier. 2022. Towards end-to-end integration of
+dialog history for improved spoken language under-
+standing. In ICASSP 2022 - 2022 IEEE International
+Conference on Acoustics, Speech and Signal Process-
+ing (ICASSP), pages 7497–7501.
+Wenwen Tong, Hewei Guo, Dongchuan Ran, Jiangnan
+Chen, Jiefan Lu, Kaibin Wang, Keqiang Li, Xiaoxu
+Zhu, Jiakui Li, Kehan Li, Xueheng Li, Lumin Li,
+Chenxu Guo, Jiasheng Zhou, Jiandong Chen, Xianye
+Wu, Jiahao Wang, Silei Wu, Lei Chen, and 7 oth-
+ers. 2025. InteractiveOmni: A unified omni-modal
+model for audio-visual multi-turn dialogue. Preprint,
+arXiv:2510.13747.
+Steven H Weinberger and Stephen A Kunath. 2011. The
+Speech Accent Archive: towards a typology of En-
+glish accents. Language and Computers-Studies in
+Practical Linguistics, 73(1):265–281.
+Silke Witt. 2015.
+Modeling user response timings
+in spoken dialog systems. Int. J. Speech Technol.,
+18(2):231–243.
+Jin Xu, Zhifang Guo, Jinzheng He, Hangrui Hu, Ting
+He, Shuai Bai, Keqin Chen, Jialin Wang, Yang Fan,
+Kai Dang, Bin Zhang, Xiong Wang, Yunfei Chu, and
+Junyang Lin. 2025a. Qwen2.5-Omni technical report.
+Preprint, arXiv:2503.20215.
+Jin Xu, Zhifang Guo, Hangrui Hu, Yunfei Chu, Xiong
+Wang, Jinzheng He, Yuxuan Wang, Xian Shi, Ting
+He, Xinfa Zhu, Yuanjun Lv, Yongqi Wang, Dake
+Guo, He Wang, Linhan Ma, Pei Zhang, Xinyu
+Zhang, Hongkun Hao, Zishan Guo, and 19 others.
+2025b.
+Qwen3-omni technical report.
+Preprint,
+arXiv:2509.17765.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, Chujie Zheng, Day-
+iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao
+Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41
+others. 2025.
+Qwen3 technical report.
+Preprint,
+arXiv:2505.09388.
+Jingfeng Yang, Diyi Yang, and Zhaoran Ma. 2020. Plan-
+ning and generating natural and diverse disfluent texts
+as augmentation for disfluency detection. In Proceed-
+ings of the 2020 Conference on Empirical Methods
+in Natural Language Processing (EMNLP), pages
+1450–1460, Online. Association for Computational
+Linguistics.
+Aohan Zeng, Zhengxiao Du, Mingdao Liu, Kedong
+Wang, Shengmin Jiang, Lei Zhao, Yuxiao Dong, and
+Jie Tang. 2024. Glm-4-voice: Towards intelligent
+and human-like end-to-end spoken chatbot. Preprint,
+arXiv:2412.02612.
+Sai Zhang, Yuwei Hu, Yuchuan Wu, Jiaman Wu, Yong-
+bin Li, Jian Sun, Caixia Yuan, and Xiaojie Wang.
+2022.
+A slot is not built in one utterance: Spo-
+ken language dialogs with sub-slots. In Findings of
+the Association for Computational Linguistics: ACL
+2022, pages 309–321, Dublin, Ireland. Association
+for Computational Linguistics.
+Yang Zhang, Evelina Bakhturina, and Boris Ginsburg.
+2021. NeMo (Inverse) Text Normalization: From
+Development to Production. In Interspeech 2021,
+pages 4857–4859.
+13
+
+A
+SpokenTOD Details
+In this section, we provide a detailed breakdown
+of the data processing pipeline used to construct
+SpokenTOD.
+A.1
+Dataset Details
+ABCD.
+Action-Based Conversations Dataset
+(ABCD) (Chen et al., 2021) is a fully labeled
+human-to-human dataset containing over 10K cus-
+tomer service dialogues with 55 distinct user in-
+tents.
+Data were collected via an Expert Live
+Chat system pairing trained call center agents with
+crowdsourced users, with action labels annotated
+by agents in real time during the conversation.
+EmoWOZ.
+EmoWOZ (Feng et al., 2022) is a
+large-scale emotion-annotated corpus built on Mul-
+tiWOZ, containing over 11K dialogues with 83K
+user utterance-level emotion labels. Each utterance
+was annotated by three crowd workers via majority
+voting. The labelling scheme is grounded in the
+Ortony–Clore–Collins (OCC) model (Ortony et al.,
+1988), defining seven emotion categories tailored to
+task-oriented settings: NEUTRAL, FEARFUL, DIS-
+SATISFIED, APOLOGETIC, ABUSIVE, EXCITED,
+and SATISFIED. We adopt this label set for emotion
+annotation across all source datasets in Spoken-
+TOD, using EmoWOZ’s human-annotated labels
+directly where available.
+SGD.
+Schema-Guided Dialogue (SGD) dataset
+(Rastogi et al., 2020) contains over 20K task-
+oriented conversations spanning 20 domains such
+as travel, media, banking, and events. SGD adopts
+a schema-guided mechanism in which each ser-
+vice is described via natural language definitions
+of its intents and slots, rather than a fixed ontology.
+Dialogues were generated via a rule-based simula-
+tor and subsequently paraphrased by crowdsourced
+workers to improve naturalness, with slot annota-
+tions recovered automatically via string matching.
+Taskmaster.
+We use Taskmaster-2 (TM-2), the
+second release of the Taskmaster corpus (Byrne
+et al., 2019), which consists of 17K spoken two-
+person dialogues collected via a Wizard-of-Oz
+(WOZ) methodology across seven domains: restau-
+rants, food ordering, movies, hotels, flights, mu-
+sic, and sports. User utterances were transcribed
+from audio recordings of crowdsourced workers
+via ASR. However, the original audio recordings
+are not publicly released.
+SpokenWOZ.
+SpokenWOZ (Si et al., 2023) is
+the first large-scale speech-text benchmark for spo-
+ken TOD, comprising 5.7K dialogues, 203K turns,
+and 249 hours of audio from human-to-human spo-
+ken conversations across 8 domains. It introduces
+spoken-specific challenges such as cross-turn slots,
+which are absent in text-only datasets.
+As the
+only natively spoken source dataset in SpokenTOD,
+SpokenWOZ provides real acoustic and prosodic
+grounding for our dataset.
+Dataset Licenses.
+All datasets are used in accor-
+dance with their respective licenses: ABCD under
+the MIT License, Taskmaster-2 under CC BY 4.0,
+SpokenWOZ and EmoWOZ under CC BY-NC 4.0,
+SGD under CC BY-SA 4.0, and the Speech Accent
+Archive under CC BY-NC-SA 4.0. These datasets
+were originally released for academic research in
+task-oriented dialogue systems, and our use is con-
+sistent with this intended purpose.
+A.2
+Dataset Unification
+To construct SpokenTOD from source datasets with
+varying formats, we unify each dataset into a com-
+mon schema with two components: a user goal
+G = (T, S), and slot value positions within each
+utterance for injecting disfluency near slot values
+(§2.1). G consists of a natural-language goal text
+T and a structured goal S; S records, for each sub-
+goal, the domain, intent type, and slot–value pairs
+(e.g., find_and_book in the hotel domain with
+area:
+south, pricerange:
+moderate). Fig-
+ure 17 shows a simplified SpokenTOD dialogue in
+the resulting unified format. As each source dataset
+has its own annotation format and characteristics,
+we apply dataset-specific preprocessing procedures
+as follows.
+ABCD.
+ABCD pairs each dialogue with a delex-
+icalized version in which slot values are re-
+placed with typed placeholders (e.g., <username>,
+<email>, <order_id>). We recover slot value po-
+sitions by aligning the delexicalized and original
+utterances via prefix/suffix matching; for values not
+covered by placeholders, we match them directly
+from the metadata. Since ABCD does not provide
+explicit user goals G, we reconstruct it from the
+scenario metadata: S is constructed by mapping
+domain and intent labels with recovered slot–value
+pairs into the unified schema, from which T is
+generated by filling a rule-based template with the
+customer prompt and scenario constraints.
+14
+
+EmoWOZ.
+EmoWOZ extends MultiWOZ with
+per-turn emotion labels while inheriting its goal and
+slot annotations. We use the slot value positions
+from MultiWOZ directly. G is taken directly from
+the MultiWOZ goal annotations: S is mapped into
+the unified schema, and T is the natural-language
+goal description provided by MultiWOZ. Emotion
+labels are used as provided.
+SGD.
+SGD annotates each turn with start and
+end positions for slot values, which we use directly.
+Since SGD does not provide explicit user goals
+G, we reconstruct it from turn-level annotations
+accumulated across the dialogue: S is constructed
+by mapping turn-level intent and slot–value pairs
+into the unified schema, from which T is generated
+by filling a rule-based template with the collected
+intents and constraints.
+Taskmaster.
+TM-2 annotates each turn with
+start_index and end_index fields marking slot
+value positions, which we use directly. Since TM-2
+does not provide explicit user goals G or intents, we
+reconstruct it from slot–value arguments collected
+across turns: S is constructed by normalizing these
+into the unified schema, from which T is generated
+by filling a rule-based template with the collected
+arguments.
+SpokenWOZ.
+SpokenWOZ provides dialogue
+state and dialogue act annotations from which we
+derive slot value positions. G is constructed fol-
+lowing the same procedure as EmoWOZ, using
+SpokenWOZ’s goal annotations recorded in the
+MultiWOZ format.
+A.3
+Cross-Turn Slots Details
+Cross-turn slots represent slot values that span mul-
+tiple turns rather than a single utterance, common
+with long alphanumeric sequences (e.g., phone
+numbers, email addresses, reservation IDs). We ap-
+ply type-specific segmentation to all segmentable
+slot values: numeric sequences are split into 3–4
+digit chunks, email addresses are decomposed into
+components with explicit punctuation vocalization
+(e.g., “dot”, “at”), and alphanumeric codes are split
+into letter and digit groups.
+Speakers also extend a slot across turns by mis-
+speaking and repairing. We therefore inject mis-
+takes with Perror = 0.20, following the error rate
+used in SpokenWOZ. This step is entirely rule-
+based: an incorrect segment is derived from the
+original by rule (e.g., altering digits of a phone num-
+ber), and the resulting correction sub-dialogue—
+the user dictating the incorrect segment at turn t,
+self-correcting at turn t+1 (e.g., “Wait, I meant...”),
+and the assistant acknowledging the correction—is
+filled from fixed templates with the corrected value.
+A.4
+Barge-in Details
+Barge-in refers to user interruptions during sys-
+tem speech, occurring in up to 25% of responses
+in spoken dialogue systems (Witt, 2015). Follow-
+ing the turn-taking taxonomy of Khouzaimi et al.
+(2015), we categorize barge-in by the assistant’s
+utterance state and the user’s response type: (1)
+Error Recovery: the user interrupts to correct in-
+accurate information in the assistant’s utterance;
+(2) Clarification: the user interrupts due to com-
+prehension failure, expressing general confusion or
+requesting specific details; (3) Efficiency: the user
+interrupts once enough information has been con-
+veyed to move the conversation forward. Each type
+is realized in one of three response styles: Implicit,
+where the user responds with minimal acknowledg-
+ment (e.g., “Aha”); Raw, an explicit response that
+does not give the reason behind it (e.g., “No, that’s
+wrong”); and Interpreted, an explicit response that
+states the reason or the user’s own interpretation
+(e.g., “No, I said 4 people, not 2”). Implicit pairs
+only with Efficiency, since a minimal acknowledg-
+ment cannot convey a correction or a request for
+detail, yielding seven valid combinations.
+We apply barge-in augmentation to 25% of
+randomly sampled user–assistant exchanges, uni-
+formly assigning one of the seven combinations to
+each. We prompt Qwen3-32B (Yang et al., 2025)
+to judge whether the selected type can be naturally
+applied to the exchange and, if so, to replace the as-
+sistant’s response with its utterance truncated at the
+interruption point (marked with a <bargein> tag),
+the user’s barge-in utterance in the selected style,
+and the assistant’s follow-up response. For Error
+Recovery, since the original assistant utterances are
+correct, the model injects an incorrect slot value
+into the truncated utterance, which the user then
+corrects to the value in the current dialogue state.
+Prompts are provided in Figures 5–11.
+A.4.1
+LLM Barge-in Appropriateness
+To verify whether the LLM places barge-ins at con-
+textually appropriate moments during augmenta-
+tion (§A.4), we sample 20 barge-in turns from Spo-
+kenTOD and ask three annotators to judge whether
+each barge-in is contextually appropriate. A barge-
+15
+
+in is judged appropriate when the assistant’s pre-
+ceding utterance contains a clear trigger for inter-
+ruption, such as information conflicting with the
+user’s stated goal (e.g., recommending a south-
+area restaurant when the user requested the centre).
+Across 60 total ratings (20 turns × 3 annotators),
+83% of LLM-placed barge-ins are rated as con-
+textually appropriate, indicating that the LLM un-
+derstands the contextual conditions for barge-in: it
+constructs assistant turns whose preceding content
+naturally motivates user interruption. The audio-
+side realization of these barge-ins is further evalu-
+ated as part of the synthesized audio quality evalu-
+ation (Appendix A.10.2, Barge-in sub-dimension).
+A.5
+Disfluency Details
+Disfluency placement.
+We follow the annotation
+guidelines from the Switchboard Corpus (Meteer
+et al., 1995) for linguistically motivated disfluency
+placement. Filled pauses ([FP]), discourse markers
+([DM]), and editing terms ([EDIT]) are sampled
+from fixed inventories and inserted before the tar-
+get word. Repetitions ([REP]) duplicate the target
+span. These four types are applied by rule. Correc-
+tions ([COR]) replace the original slot value with
+an alternative, and restarts ([RST]) abandon the
+current utterance structure and begin a rephrased
+continuation; both require rewriting the utterance
+and are therefore generated by Qwen3-32B using
+the prompt templates in Figures 12 and 13.
+Scope and sampling.
+We follow the exponen-
+tial length-dependent model from Shriberg (1996),
+where the probability of an utterance being disflu-
+ent increases with its length L (measured in words):
+P(disfluent | L) = 1 −bL
+(2)
+where b represents the word-level fluency rate. Fol-
+lowing Shriberg (1996), we set b = 0.9453 based
+on the AMEX corpus (Kowtko and Price, 1989), as
+it represents customer service interactions similar
+to task-oriented dialogue. This formulation ensures
+that longer utterances are more likely to contain
+disfluencies, reflecting patterns observed in sponta-
+neous dialogue where speakers are more prone to
+self-corrections and hesitations in extended turns.
+When an utterance is sampled to be disfluent, we
+uniformly sample one type from the six disfluency
+categories defined in Table 1: [FP], [DM], [EDIT],
+[REP], [COR], and [RST]. Following prior findings
+that disfluencies increase under higher planning
+and lexical retrieval difficulty (Corley et al., 2007;
+Arnold, 2013; Sen, 2020), we inject them more
+frequently near slot values, as retrieving and artic-
+ulating domain-specific entities demands greater
+cognitive effort. For all disfluency types except
+corrections, we insert them with 50% probability
+near slots (within a 2-word window) and 50% prob-
+ability uniformly across the utterance, while cor-
+rections [COR] exclusively target slot values.
+A.6
+Emotion Annotation Details
+To support emotion-conditioned speech synthe-
+sis, we annotate each user turn with seven emo-
+tion labels: NEUTRAL, FEARFUL, DISSATISFIED,
+APOLOGETIC, ABUSIVE, EXCITED, and SATIS-
+FIED. We use Qwen3-32B (Yang et al., 2025) as
+our primary annotator. Annotation is skipped for
+EmoWOZ, as it already provides emotion labels.
+For turns that are cross-turn segments, we skip an-
+notation and instead inherit the emotion label from
+the most recent non-segment user turn. The prompt
+is provided in Figure 14.
+To ensure the reliability of LLM-based annota-
+tion, we validated Qwen3-32B against the ground
+truth labels of EmoWOZ. We sampled 50 instances
+per category (with 19 instances for Abusive due to
+its limited occurrence in the dataset, totaling 319
+samples) and compared the model’s predictions
+with the original labels. Qwen3-32B achieved an
+overall accuracy of 0.75, demonstrating its capa-
+bility to capture affective states in task-oriented
+interactions.
+A.7
+Speech Synthesis Details
+Task-oriented dialogues frequently contain num-
+bers, dates, times, addresses, and other entities that
+require normalization before speech synthesis. For
+instance, "I need a table for 2 at 7:30pm" must be
+converted to "I need a table for two at seven thirty
+pm" for proper pronunciation. We apply NeMo-
+text-processing (Zhang et al., 2021; Bakhturina
+et al., 2022) to all utterances before synthesis. Key
+normalization patterns include:
+• Numbers: Cardinal (e.g., "123" →"one hun-
+dred twenty three") and ordinal forms (e.g.,
+"1st" →"first")
+• Dates and times: "01/15/2024" →"January
+fifteenth twenty twenty four", "7:30pm" →
+"seven thirty p m"
+• Currency and measurements: "$50" →
+"fifty dollars", "5km" →"five kilometers"
+16
+
+Emotion Category
+Style Keywords
+NEUTRAL
+calm, indifferent, patient, relaxed
+FEARFUL
+fearful, shocked, surprised
+DISSATISFIED
+angry, contempt, disgusted, defiant
+APOLOGETIC
+compassionate, selfless, humble
+ABUSIVE
+commanding, authoritative, merciless,
+loud, vengeful
+EXCITED
+adventurous, energetic, passionate, cu-
+rious, creative, joyful
+SATISFIED
+proud, hopeful, happy, cheerful
+Table 8: Emotion-to-keyword mapping for Qwen3-TTS
+instruction prompts. Keywords are drawn from the top-
+100 speaking styles in CosyVoice3’s pre-training data.
+• Abbreviations and acronyms: "Dr." →"doc-
+tor", "NYC" →"N Y C" or "New York City"
+based on context
+A.8
+Emotion Conditioning
+Qwen3-TTS conditions on emotion via instruc-
+tion prompts of the form: "Please speak in a
+{emotion} tone."
+We construct our emotion keyword set from
+the top-100 speaking styles in CosyVoice3’s pre-
+training data (Du et al., 2025). We first group these
+styles into seven coarse categories based on seman-
+tic similarity (neutral, fearful, dissatisfied, apolo-
+getic, abusive, excited, satisfied). We then evaluate
+the acoustic realization of each keyword through
+synthesis and select those that most effectively con-
+vey the intended emotion category, resulting in 3–6
+keywords per category (Table 8). During synthesis,
+we randomly sample one keyword from the turn’s
+assigned category to introduce prosodic variation
+while maintaining category consistency.
+A.9
+Speaker Diversity
+Speaker pool.
+Reference audio clips from the
+Speech Accent Archive (Weinberger and Kunath,
+2011) provide speaker identity and accent for zero-
+shot voice cloning. We target the accent distri-
+bution of the U.S. population (Table 9), but the
+archive does not contain enough distinct speakers
+to realize this distribution with unique speakers
+alone. We therefore retain every qualifying speaker
+the archive provides in each accent group, keeping
+those whose reference clip is at most 25 seconds.
+This yields 542 unique speakers: 433 Native, 57
+Asian, 38 Indian, and 14 African. For assistant
+utterances, we reserve a separate pool of 10 Native-
+accent speakers (5 male / 5 female), excluded from
+the user pool to avoid identity overlap.
+Pool
+Countries
+Population Weight
+# Spk.
+Native
+USA, UK,
+Canada,
+Australia,
+Ireland
+197,875,652 74.57%
+433
+African
+Ethiopia,
+Nigeria, Ghana,
+Senegal,
+Morocco
+42,951,595 16.19%
+14
+Indian
+India, Pakistan,
+Afghanistan,
+Bangladesh,
+Nepal
+2,442,428
+0.92%
+38
+Asian
+China, South
+Korea, Japan,
+Philippines,
+Vietnam
+22,080,844
+8.32%
+57
+Total
+265,350,519 100.00%
+542
+Table 9: Accent pool sampling weights based on U.S.
+Census (2024) estimates and resulting speaker counts.
+Speaker sampling.
+We recover the target distri-
+bution at sampling time by allowing speakers to
+recur across dialogues. A reference speaker is sam-
+pled in three stages: (1) sample an accent pool
+using mixture weights derived from U.S. Census
+(2024) population estimates1, (2) sample a country
+uniformly within the pool, and (3) sample a speaker
+uniformly from that country. The accent distribu-
+tion over utterances therefore follows the Census
+weights, with speakers in smaller pools recurring
+more often. We additionally stratify speaker age
+into four bins (10s, 20–30s, 40–50s, 60+) sampled
+with equal probability, and balance gender equally.
+A.10
+Dataset Validation Details
+A.10.1
+Synthesized Audio Intelligibility
+To validate the intelligibility of our synthesized
+speech, we measure WER on 500 dialogues strati-
+fied by accent group using Whisper-large-v3 (Rad-
+ford et al., 2023). As shown in Table 10, our dataset
+achieves an overall WER of 4.69%, confirming that
+the synthesized audio is sufficiently intelligible.
+A.10.2
+Human Evaluation on SpokenTOD
+We conduct a supplementary human evaluation to
+assess (i) how SpokenTOD audio compares to au-
+thentic human recordings, and (ii) whether our aug-
+mentation pipeline contributes to spoken behavior
+realism beyond raw TTS synthesis.
+We compare three settings on 20 dialogues
+1https://www.census.gov/data/datasets/
+time-series/demo/popest/2020s-national-detail.
+html
+17
+
+Accent Group
+WER (%)
+# Utterances
+African
+5.08
+1,340
+Asian
+3.77
+1,242
+Indian
+4.95
+1,355
+Native
+4.91
+1,311
+Overall
+4.69
+5,248
+Table 10: ASR performance on synthesized user speech.
+Spoken User Behavior
+System
+Nat. Flow Cross Barge Disf. Emo.
+SpokenWOZ-sourced dialogues
+Human
+3.95
+3.91
+4.07
+N/A
+3.96
+4.56
+Qwen3-TTS 3.99
+3.81
+3.92
+N/A
+2.97
+3.59
+SpokenTOD 3.88
+3.75
+4.31
+3.97
+3.76
+4.33
+Other source corpora
+SpokenTOD 4.07
+3.97
+4.12
+3.81
+4.27
+4.12
+Table 11: Audio quality evaluation. The upper block
+compares three settings on 20 SpokenWOZ-sourced di-
+alogues; the lower block reports SpokenTOD on 20 dia-
+logues sampled from each of the four remaining source
+corpora.
+randomly sampled from SpokenWOZ (Si et al.,
+2023): (i) Human, the original recordings serv-
+ing as a ground-truth reference; (ii) Qwen3-TTS,
+which synthesizes the original transcripts with
+Qwen3-TTS (Hu et al., 2026) without our aug-
+mentation pipeline, isolating raw TTS quality; and
+(iii) SpokenTOD, the full pipeline (augmentation +
+Qwen3-TTS). For (ii) and (iii), the original Spoken-
+WOZ recording serves as the reference audio for
+voice cloning, so speaker identity is held constant
+across the three settings and differences reflect the
+pipeline rather than the voice.
+Three annotators rate each setting on 5-point
+scales. All are English-proficient speakers and
+compensated at local wage standards. Naturalness
+asks how natural and human-like the user’s voice
+sounds, considering voice quality, rhythm, and in-
+tonation. Conversational Flow asks whether the
+dialogue still proceeds as a coherent exchange be-
+tween a help-seeking user and an assistant. Four
+Spoken User Behavior sub-dimensions then ask
+how convincingly each augmented behavior is real-
+ized in speech. Barge-in is marked N/A for Human
+and Qwen3-TTS, as the original recordings contain
+no barge-in events and Qwen3-TTS synthesizes
+audio from the same transcripts.
+As shown in Table 11, SpokenTOD audio ap-
+proaches human-recorded quality in Naturalness
+(3.88 vs. 3.95). Conversational Flow also stays
+close to the original (3.75 vs. 3.91), indicating that
+inserting barge-ins preserves the coherence of the
+human-written exchange. Comparing Qwen3-TTS
+without augmentation against the full pipeline, aug-
+mentation improves Disfluency from 2.97 to 3.76
+(+0.79), Emotion from 3.59 to 4.33 (+0.74), and
+Cross-turn Slots from 3.92 to 4.31 (+0.39). Since
+the two settings share the same TTS backbone and
+reference voice, these gains are attributable to the
+augmentation itself: without it, synthesized audio
+lacks the disfluency and emotional variation that
+SpokenTOD explicitly models.
+To test whether audio quality holds beyond
+SpokenWOZ-sourced dialogues, we sample 20 di-
+alogues from each of the four remaining source
+corpora (SGD, Taskmaster-2, ABCD, EmoWOZ)
+and apply the same protocol to the SpokenTOD set-
+ting. These corpora provide no original recordings,
+so only the SpokenTOD setting is rated. Scores are
+comparable to or above the SpokenWOZ-sourced
+setting across all dimensions, indicating that au-
+dio quality is consistent across the corpora used to
+construct SpokenTOD.
+B
+SpokenUS Details
+B.1
+Operating Modes Details
+Listening Mode.
+Each assistant turn begins with
+the
+delimiter
+<|im_start|>assistant<BOA>.
+SpokenUS processes each incoming speech token
+to obtain its last hidden state, which is passed to
+the turn-taking head. The head applies a softmax
+over three classes (listen, barge-in, and turn-end),
+and the resulting probabilities are aggregated via
+a linear-recency weighting scheme to determine
+whether to interrupt or yield.
+Pre-scripting Mode.
+Once a barge-in or turn-
+end is detected, a turn delimiter (<|im_end|>
+<|im_start|>user<BOT>) is inserted at that posi-
+tion. The last hidden state is then passed to the text
+head, which autoregressively generates the struc-
+tured transcript until <EOT> is predicted.
+Speaking Mode.
+Upon predicting <EOT>, <BOA>
+is appended and the last hidden state of each subse-
+quent token is routed to the speech head. Speech
+token generation continues until <EOA> is predicted,
+at which point the generated discrete speech tokens
+are converted to audio via the two-stage synthesis
+pipeline described in Section 3.2.
+18
+
+Category
+Tokens
+Mode Control
+<BOT>, <EOT>,
+<BOA>, <EOA>
+Disfluency
+[COR], [DM], [EDIT],
+[FP], [REP], [RST]
+Emotion
+<|abusive|>, <|apologetic|>,
+<|excited|>, <|satisfied|>,
+<|fearful|>, <|neutral|>,
+<|dissatisfied|>
+Table 12: Special tokens added to the text vocabulary:
+4 mode-control, 6 disfluency, and 7 emotion tokens.
+Hyperparameter
+Value
+Backbone
+Qwen2.5-3B
+Hidden size
+2048
+Context length
+4,096
+Optimizer
+AdamW
+Learning rate
+5 × 10−5
+β1, β2
+0.9, 0.999
+Weight decay
+0.01
+Scheduler
+Constant w/ warmup
+Warmup steps
+2,500
+Gradient clipping
+1.0
+Gradient accumulation
+4
+Batch size
+10
+Max epochs (Stage 1)
+3
+Training steps (Stage 2)
+12k
+Hardware
+5 × H200
+Table 13: Training hyperparameters for SpokenUS.
+B.2
+SpokenUS Training Details
+SpokenUS.
+SpokenUS
+is
+initialized
+from
+Qwen2.5-3B (Qwen et al., 2025) and fine-tuned
+in two stages. We augment the vocabulary with
+disfluency and emotion special tokens, as listed
+in Table 12. In Stage 1, the model is trained on
+full text-only SpokenTOD dialogues (both user
+and assistant turns) for 3 epochs, enabling the
+model to acquire task-oriented dialogue knowledge
+such as goal-directed response generation.
+In
+Stage 2, all three heads are jointly trained for 12k
+steps using the multi-task objective in Section 3.3,
+supervised on user turns only. Hyperparameters
+are summarized in Table 13.
+CFM and HiFi-GAN.
+The CFM and HiFi-GAN
+are both initialized from CosyVoice3 (Du et al.,
+2025) and fine-tuned exclusively on user speech
+from SpokenTOD. Training hyperparameters are
+summarized in Tables 14 and 15.
+Hyperparameter
+Value
+Parameters
+300M
+DiT dim / depth / heads
+1024 / 22 / 16
+Mel dimension
+80
+Token frame rate
+25 Hz
+Token-mel ratio
+2
+Solver
+Euler
+σmin
+1 × 10−6
+CFG rate (train / infer)
+0.2 / 0.7
+Optimizer
+Adam
+Learning rate
+1 × 10−5
+Gradient clipping
+5.0
+Gradient accumulation
+4
+Warmup steps
+2,500
+Training steps
+30k
+Table 14: Training hyperparameters for CFM.
+Hyperparameter
+Value
+Optimizer
+Adam
+Learning rate (G / D)
+1 × 10−5 / 2 × 10−4
+Gradient clipping
+5.0
+Gradient accumulation
+4
+Warmup steps
+2,500
+Discriminator warmup
+1,000
+Training steps
+30k
+Sampling rate
+24 kHz
+Mel dimension
+80
+Base channels
+512
+Upsample rates
+[8, 5, 3]
+Table 15: Training hyperparameters for HiFi-GAN.
+C
+Experiment Details
+C.1
+Evaluation Data
+We use the SpokenWOZ test set as our evaluation
+benchmark, as it provides human–human spoken
+recordings with fully annotated dialogue states and
+database queries necessary for running interactive
+user–assistant conversations. We sample 100 di-
+alogues satisfying two criteria: (1) domain cov-
+erage, following the domain distribution of the
+source corpus, and (2) human goal alignment, re-
+taining only dialogues in which the human user
+successfully conveys all required goal slots (GA
+= 1.0). The latter ensures that any gap in goal
+alignment across simulators reflects simulator ca-
+pability rather than inherent dialogue difficulty. Ta-
+ble 16 summarizes the resulting distribution. Hos-
+pital is rare in the source corpus and rarer still after
+the second criterion, so we include all dialogues
+available in this domain.
+C.2
+Baseline Inference
+All baseline models except InteractiveOmni-4B are
+queried with temperature = 0 and top-p = 1.0.
+19
+
+Slot Distribution (%)
+Domain Distribution (%)
+Area
+77%
+Train
+50%
+Book_people
+72%
+Restaurant
+51%
+Book_day
+65%
+Attraction
+43%
+Phone
+59%
+Hotel
+39%
+Departure
+53%
+Taxi
+19%
+Destination
+53%
+Hospital
+1%
+Day / Pricerange
+50%
+Table 16: Slot and domain distribution across 100 eval-
+uation dialogues.
+InteractiveOmni-4B follows the official configura-
+tion (do_sample=True, max_new_tokens=1024),
+with temperature and top-p at their default values.
+C.3
+Goal Alignment Details
+Goal alignment is evaluated turn-by-turn using
+GPT-4.1-mini with temperature = 0. At each user
+turn, the model is presented with the remaining
+uncovered goal items and the dialogue history, and
+selects which items are explicitly mentioned, con-
+firmed, or requested in the user’s utterance. A di-
+alogue is considered goal-aligned if all goal items
+are covered by the end of the conversation. Goal
+Alignment (GA) is the percentage of dialogues
+that are fully goal-aligned, and Slot Match Rate
+(SMR) is the fraction of slot-type goal items cov-
+ered, micro-averaged across all dialogues. Both
+metrics are computed from a single run with fixed
+inference parameters. This evaluation protocol fol-
+lows Shim et al. (2026), who report an MCC of
+0.77 between LLM and human annotations on a
+comparable goal alignment task, supporting the re-
+liability of this approach. The prompt used for goal
+alignment evaluation is provided in Figure 15.
+C.4
+Goal Alignment Analysis
+We perform error analysis on dialogues in which
+each model fails to convey all required goal slots,
+from the 100-dialogue SpokenWOZ test subset
+used in Table 3. Since each SpokenWOZ goal
+typically spans multiple domains (e.g., booking a
+restaurant and arranging a taxi), we categorize each
+error both by its content type and by whether it
+occurs in the initial domain or in a later domain
+after a domain shift.
+Error Taxonomy.
+Recall that each structured
+goal S records a set of sub-goals, each consisting
+of a domain, an intent, and associated slot–value
+pairs (§A.2). For error analysis, we partition these
+slot–value pairs into two types. Constraints are
+Omission
+Initial (%)
+Later (%)
+Total (%)
+Constraint
+4.5
+13.6
+18.2
+Request
+22.7
+59.1
+81.8
+Composite
+0.0
+0.0
+0.0
+Table 17: Slot-level error distribution of SpokenUS by
+omission type and dialogue position. Initial denotes the
+first domain in the realized dialogue flow; Later denotes
+subsequent domains after a domain transition.
+Model
+Constraint (%)
+Request (%)
+Composite (%)
+Qwen2.5-Omni-7B
+35.0
+65.0
+0.0
+Qwen3-Omni-30B-A3B
+42.9
+28.6
+28.6
+Qwen2.5-Omni-3B
+28.1
+54.7
+17.2
+GLM-4-Voice-9B
+25.4
+35.8
+38.8
+InteractiveOmni-4B
+31.7
+36.6
+31.7
+SpokenUS
+22.2
+77.8
+0.0
+Table 18: Dialogue-level omission-type distribution
+across models. SpokenUS exhibits a narrower, request-
+heavy failure profile compared to the other models.
+conditions required to find or book the target, such
+as area, price range, or day. Requests are additional
+information the user should ask for after the target
+has been found, such as postcode, phone number,
+or car type. For example, the goal “Find an ex-
+pensive Indian restaurant in the west and ask for
+its postcode and phone number” yields constraints
+= {food=Indian, area=west, pricerange=expensive}
+and requests = {postcode, phone}. Based on this
+decomposition, we define three dialogue-level er-
+ror types: Constraint Omission, where only con-
+straints are missed; Request Omission, where only
+requests are missed; and Composite Omission,
+where both occur within the same dialogue.
+As shown in Table 17, although SpokenUS
+achieves a high overall goal-alignment rate, its re-
+maining failures at the slot level are highly concen-
+trated in request omission and later-domain subsets.
+This suggests that SpokenUS generally preserves
+the core goal structure, but is less reliable in com-
+pleting follow-up requests after a domain transition.
+At the dialogue level (Table 18), the other models
+exhibit lower goal-alignment rates and broader er-
+ror profiles. Their failures are not concentrated in
+request omission, but are more evenly distributed
+across constraint, request, and composite omis-
+sions, indicating more diffuse weaknesses in over-
+all goal realization. This contrast suggests that
+future improvements to SpokenUS should focus
+on not only increasing goal alignment, but also
+tracking unresolved follow-up requests before pro-
+ceeding to the next domain.
+20
+
+2
+4
+6
+8
+10
+12
+14
+User turn
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Cumulative disclosure ratio
+Human
+SpokenUS
+Qwen2.5-Omni-3B
+Qwen2.5-Omni-3B (+P)
+Figure 4: Cumulative goal slot coverage over user turns
+with and without gradual-disclosure prompting (+P).
+C.5
+Prompting for Gradual Disclosure
+A natural question is whether the disclosure gap
+in §6.1 can be closed by instruction. We re-run
+the analysis for Qwen2.5-Omni-3B with an explicit
+prompt directing the simulator to convey at most
+one or two slots per turn rather than front-loading
+them, denoted +P in Figure 4.
+The instruction has almost no effect: the +P
+curve nearly overlaps the unprompted one, and
+both saturate within the first five turns, whereas hu-
+man speakers and SpokenUS continue to disclose
+new slots throughout the dialogue. Gradual disclo-
+sure therefore does not appear to be a behavior that
+can simply be imposed by instruction at inference
+time. It is a pattern in how people actually reveal
+information over a conversation, which SpokenUS
+learns from human dialogues rather than follows as
+a rule.
+C.6
+Comparison with Full-Duplex Model
+To examine whether full-duplex interaction alone
+can serve as a viable basis for spoken user-assistant
+simulation, we additionally compare SpokenUS
+with PersonaPlex (Roy et al., 2026), a full-duplex
+conversational speech model with explicit voice
+and role control. We evaluate it on the same 100-
+dialogue SpokenWOZ test subset using the same
+assistant (GPT-4.1-mini) and the goal coverage pro-
+tocol in Section 4.3.
+Model
+GA ↑
+SMR ↑
+GLM-4-Voice-9B
+0.33
+0.79
+InteractiveOmni-4B
+0.59
+0.89
+PersonaPlex (7B)
+0.06
+0.51
+SpokenUS (3B)
+0.82
+0.99
+Table 19: Goal coverage comparison with PersonaPlex.
+Goal. You are Rachel Littlewood and needs to find a hotel in
+the west with free internet and free parking, book it for 7
+people for 4 nights starting Tuesday, and then find a museum
+in the centre while asking for the postcode and phone number.
+Role
+Utterance
+User
+Hi there, I’m Rachel. How can I assist you with
+the hotel booking today?
+Assistant
+Hi Rachel, I am here to help you book a hotel.
+Could you please tell me your destination and
+travel dates?
+User
+Sure, I staying in Los Angeles. I’m arriving on
+Tuesday. How many people are in your group?
+· · ·
+· · ·
+User
+Alright, let me check that area. One moment
+please.
+Table 20: A PersonaPlex dialogue illustrating role drift.
+Table 19 shows that PersonaPlex achieves sub-
+stantially lower goal coverage than both SpokenUS
+and the prompted omni-model baselines. The pri-
+mary reason for this gap is role drift: PersonaPlex
+often behaves like an assistant rather than a help-
+seeking user, despite explicit role control. The
+dialogue excerpt in Table 20 illustrates this pattern:
+PersonaPlex produces assistant-like user turns in-
+stead of disclosing the user’s goal constraints, pre-
+venting consistent coverage of the required goal
+slots and requests.
+We observed the same pattern across other
+prompted omni-model baselines, such as GLM-
+4-Voice and InteractiveOmni-4B. This suggests
+that these models, likely due to their intensive
+instruction-tuning as assistants, struggle to main-
+tain a help-seeking user persona. This observa-
+tion motivates the need for SpokenUS: existing
+full-duplex models, even when prompted as users,
+cannot serve as goal-faithful user simulators. Spo-
+kenUS fills this gap through dedicated user-role
+training on goal-grounded TOD data with aug-
+mented spoken behaviors.
+C.7
+Human Evaluation
+We recruit 10 evaluators through the authors’ pro-
+fessional networks, all of whom are either na-
+tive English speakers or non-native speakers with
+at least three years of residence in an English-
+speaking country (i.e., Australia, Canada, the
+United States, or the United Kingdom), compen-
+sated at local wage standards. From the 100-goal
+benchmark (§C.1), we randomly sample 20 goals
+on which every system produced a dialogue with
+100% GA within 10 attempts, following the same
+retention criterion as §6.3. This yields 20 dialogues
+21
+
+per system on a shared set of goals, so that all sys-
+tems are rated on the same task conditions. Each
+evaluator rates the dialogues for 6–7 of these goals
+across all 7 systems, yielding at least 3 ratings
+per (system, dialogue) pair. System identities are
+anonymized (System A–G) and presented in a shuf-
+fled order for each evaluator–dialogue pair. Prior to
+the main evaluation, evaluators complete a practice
+session with calibration clips illustrating high- and
+low-quality examples for each criterion; no ratings
+are collected during this session. Each (system, di-
+alogue) pair is rated on three 5-point criteria. Full
+scoring rubrics are provided in Figure 16.
+Naturalness.
+How natural and human-like does
+the user’s voice sound throughout the conversation,
+considering voice quality, rhythm, and intonation.
+Conversational Flow.
+Whether the user engages
+in the conversation in a natural, human-like way, in-
+cluding maintaining the role of a help-seeker rather
+than an assistant, and appropriately wrapping up
+once goals are fulfilled.
+Spoken User Behavior.
+How authentically the
+user’s speech reflects human spoken behavior.
+We acknowledge that this criterion is closely
+aligned with the behaviors that SpokenUS explic-
+itly models. To mitigate potential bias, evaluators
+were not provided with explicit definitions of target
+behaviors (e.g. cross-turn slots, disfluencies); in-
+stead, they rated all seven systems within the same
+dialogue simultaneously under anonymized labels,
+encouraging holistic judgments based on perceived
+authenticity rather than checklist-style scoring.
+To assess inter-rater reliability, we compute the
+Intraclass Correlation Coefficient (ICC(3,3)) across
+all annotators. Each (system, dialogue) pair is rated
+by a minimum of 3 evaluators and scores are aver-
+aged, yielding an ICC(3,3) of 0.726.
+Annotation Interface.
+We developed a web-
+based annotation tool for human evaluation of spo-
+ken dialogue samples. Figure 18 shows the guide-
+line page, where annotators review the task descrip-
+tion and scoring criteria before starting. Figure 19
+presents the practice session, which provides ex-
+ample clips for calibration. Figure 20 shows the
+main evaluation interface, where annotators listen
+to USER turns, review the dialogue context, and
+rate each sample on the three evaluation criteria.
+Country
+Dialogues
+Percentage
+People
+Percentage
+Canada
+500
+8.77%
+60
+24%
+Singapore
+500
+8.77%
+40
+16%
+China
+2,100
+36.84%
+30
+12%
+South Africa
+2,600
+45.61%
+120
+48%
+Table 21: Diversity of participant origins in Spoken-
+WOZ (Si et al., 2023). Participants come from four
+different countries to improve the diversity of spoken
+conversations.
+C.8
+Human MOS Details
+Comparison with Human Recordings.
+Spo-
+kenUS scores higher than human recordings across
+all three criteria. Two characteristics of Spoken-
+WOZ (Si et al., 2023) may partially account for this
+gap: human recordings are captured at 8 kHz un-
+der telephone-channel conditions, and 45.61% of
+dialogues originate from South Africa (Table 21),
+which may introduce accent unfamiliarity effects.
+These factors should be considered when interpret-
+ing the MOS comparison.
+Beyond these dataset-level factors, each system
+independently produced its own user turns from the
+same user goals, so the MOS reflects end-to-end
+interaction quality rather than acoustic rendering
+of identical text. Given this setup, Human (3.67)
+scores higher than all omni baselines (2.32–3.18),
+making SpokenUS’s higher score (4.06) a unique
+exception. We attribute SpokenUS’s higher score to
+its dedicated user-role training with explicit spoken
+behavior annotations, which produces consistent
+help-seeking and behavioral expression—whereas
+SpokenWOZ recordings exhibit these aspects with
+natural variability across crowdworkers.
+C.9
+Interruption Details
+C.9.1
+Aggregation Strategies
+We compare five aggregation strategies for the
+turn-taking head, each determining when to
+fire a non-listen prediction based on the per-
+frame probability outputs pc
+t for class c
+∈
+{listen (L), turn-end (T), barge-in (B)}. Since
+audio arrives as a stream of tokens (§3.2), all meth-
+ods operate over a sliding window of W = 6 to-
+kens, corresponding to approximately 240 ms at
+25 Hz. For each method, thresholds are selected on
+the SpokenTOD validation split by sweeping TT
+and TB and maximizing detection accuracy aver-
+aged over turn-end and barge-in; all methods are
+then evaluated once on the test set.
+22
+
+Argmax.
+Fires as soon as the argmax over the
+three classes at any single frame is non-listen.
+Prob-threshold.
+Fires when the sum of predicted
+probabilities for a class within a sliding window
+exceeds a class-specific threshold Tc (TT = 5.0,
+TB = 0.5).
+Tail-threshold.
+A variant of Prob-threshold that
+accumulates only the longest consecutive run of
+the same class within the window (TT = 2.7, TB =
+0.3).
+Listen-relative.
+A variant of Prob-threshold that
+accumulates max(0, pc
+t−plisten
+t
+) at each frame, sup-
+pressing frames where listen dominates (TT = 3.0,
+TB = 0.3).
+Linear-weighted (SpokenUS).
+A variant of
+Prob-threshold that assigns linearly increasing
+weights to more recent frames before summing
+(TT = 0.45, TB = 0.05).
+Across all methods, the threshold for barge-in is
+consistently lower than that for turn-end (TB < TT).
+This asymmetry reflects the class imbalance in
+training data: listen tokens dominate as every non-
+final frame within an assistant turn is labeled lis-
+ten, while turn-end occurs at every assistant turn.
+Barge-in, by contrast, is present only in a subset of
+the 25% of turns sampled as barge-in candidates, as
+each candidate is further filtered for contextual ap-
+propriateness (§2.1). As a result, the model outputs
+systematically lower probabilities for barge-in.
+C.9.2
+Interruption Prediction
+Outcome Classification.
+Let [ts, te] denote the
+ground-truth trigger window, i.e., the final 6 tokens
+of each assistant turn where the supervision label is
+either turn-end or barge-in (§3.3), and let ˆt denote
+the frame at which an aggregation strategy first fires
+a non-listen prediction ˆc. Since the window ends
+with the assistant turn, any firing satisfies ˆt ≤te.
+We classify each outcome as follows:
+• Correct: The prediction falls within the trig-
+ger window (ˆt ≥ts) and the predicted label
+matches the ground truth (ˆc = c∗).
+• Early: The prediction fires before the trigger
+window (ˆt < ts), regardless of the predicted
+label.
+• Confused: The prediction falls within the
+trigger window but the predicted label is the
+wrong non-listen class (ˆc̸ = c∗), e.g., predict-
+ing turn-end for a barge-in sample.
+• Missed: No non-listen prediction is fired
+throughout the utterance.
+Method
+Lab.
+Corr.
+Ear.
+Conf.
+Mis.
+Argmax
+T
+79.8%
+7.6%
+5.0%
+7.6%
+B
+39.8%
+11.2%
+25.8%
+23.2%
+Prob-threshold
+T
+34.2%
+4.4%
+11.2%
+50.2%
+B
+58.0%
+10.6%
+4.2%
+27.2%
+Tail-threshold
+T
+62.8%
+3.8%
+5.8%
+27.6%
+B
+45.0%
+7.4%
+15.6%
+32.0%
+Listen-relative
+T
+54.2%
+2.2%
+6.2%
+37.4%
+B
+44.8%
+5.6%
+11.6%
+38.0%
+Linear-weighted
+T
+66.0%
+10.4%
+16.4%
+7.2%
+B
+58.6%
+18.0%
+11.0%
+12.4%
+Table 22: Interruption detection outcome breakdown
+per aggregation method on the full test set (n=500 per
+class).
+Barge-in Type
+Corr.
+Ear.
+Conf.
+Mis.
+Error Recovery
+63.7%
+21.8%
+8.9%
+5.6%
+Clarification
+57.1%
+16.0%
+8.6%
+18.4%
+Efficiency
+54.4%
+15.8%
+15.8%
+13.9%
+Table 23: Barge-in outcome breakdown by type for
+SpokenUS.
+Table 22 reports results across all five meth-
+ods.
+Argmax achieves high turn-end accuracy
+(79.8%) but suffers from the highest Confused rate
+for barge-in (25.8%), as it commits to the first
+frame whose argmax is non-listen, without a class-
+specific threshold or aggregation over the window.
+Prob-threshold suppresses false triggers effectively,
+yielding the lowest Confused rate (4.2%) for barge-
+in, but at the cost of a high Missed rate (27.2%).
+Tail-threshold and Listen-relative show similarly
+conservative behavior, with Missed rates reaching
+32.0% and 38.0% respectively. Linear-weighted
+achieves the highest barge-in Correct rate (58.6%)
+among probability-based methods, with a favorable
+balance between Confused (11.0%) and Missed
+(12.4%) rates.
+Table 23 further breaks down barge-in outcomes
+by type for Linear-weighted.
+Error Recovery
+achieves the highest accuracy (63.7%), as the erro-
+neous content in the assistant’s utterance provides
+a clear trigger. Clarification and Efficiency are
+more challenging, with higher Missed rates (18.4%
+and 13.9%), reflecting the subtlety of detecting
+comprehension failure and sufficient information
+conveyance from partial context.
+23
+
+C.10
+Impact on Agent Performance
+C.10.1
+Evaluation Metric
+We report Final Slot F1, computed between the
+agent’s predicted belief state at the final dialogue
+turn and the gold belief state from SpokenWOZ
+annotations, micro-averaged across all slots. We
+use final-turn evaluation rather than turn-level Joint
+Goal Accuracy (JGA). JGA is sensitive to incre-
+mental tracking errors independent of the user’s
+spoken behaviors; by evaluating only at the fi-
+nal turn, we measure whether the agent ultimately
+extracted the correct information from the user’s
+speech. Slot F1 is preferred over binary task suc-
+cess to capture partial goal completion and resolve
+differences across simulator conditions.
+C.10.2
+Agent Performance Analysis
+We analyze why SpokenUS poses a greater chal-
+lenge to voice agents than omni-model simulators
+(Table 5) across two factors, and discuss the impli-
+cations.
+Slot disclosure timing.
+As shown in Figure 3,
+at turn 3, Qwen2.5-Omni-3B reaches a slot cov-
+erage of 0.70, whereas SpokenUS reaches only
+0.49. This gap reflects SpokenUS’s human-like
+content patterns—cross-turn slots and gradual slot
+disclosure—which distribute information across
+multiple turns rather than front-loading it. Since
+tracking such patterns requires resolving corefer-
+ences and maintaining context over extended di-
+alogue history, where DST accuracy is known to
+degrade (Manotumruksa et al., 2021), this gradual
+disclosure poses an inherently greater challenge for
+downstream state tracking.
+Slot
+% of Dialogues
+profile – name
+80.0
+restaurant – book day
+47.3
+restaurant – book time
+47.3
+restaurant – book people
+47.3
+hotel – book day
+40.0
+hotel – book stay
+38.2
+hotel – book people
+38.2
+Table 24: Most frequently dropped slots in SpokenUS
+dialogues where final-turn slot F1 drops by at least 20
+points from the text to the cascaded setting. Each row
+reports the percentage of such dialogues in which the
+given slot was lost. Multiple slots may be dropped in a
+single dialogue.
+Disfluency effect.
+Disfluent turns yield substan-
+tially higher ASR error rates (WER = 18.78%) than
+fluent turns (WER = 10.68%), amplifying the cas-
+caded performance drop. As shown in Table 24, the
+most frequently dropped slots are non-categorical
+types such as names and booking details, which
+are particularly susceptible to ASR errors when
+accompanied by disfluencies.
+Implications.
+Manual inspection of dialogues
+with large cascaded drops reveals a recurring pat-
+tern: when ASR produces erroneous slot values,
+the errors tend to persist through the remaining dia-
+logue without being corrected or confirmed, propa-
+gating directly to the final dialogue state. This con-
+trasts with human service agents, who routinely ver-
+ify uncertain information. We believe SpokenUS
+can serve as a testbed for developing agents that
+actively confirm slot values rather than passively
+accepting potentially erroneous transcriptions.
+D
+AI Assistants in Research or Writing
+We used AI assistants (Claude Sonnet 4.6) to refine
+writing, proofread the text, and assist with coding
+experiments. However, all core ideas, experimental
+design, analysis, and scientific contributions are
+entirely the work of the authors.
+E
+Potential Risks
+SpokenTOD and SpokenUS enable the synthesis
+of realistic spoken dialogues, which raises ethical
+concerns regarding potential misuse in deceptive
+applications, such as voice impersonation, spam
+calls, or the generation of misleading spoken con-
+tent. We emphasize that this work is intended solely
+for research purposes, and we encourage the devel-
+opment of detection and watermarking mechanisms
+to mitigate such risks.
+24
+
+F
+Prompts
+F.1
+Barge-in Prompts
+Barge-in Error Recovery (Raw)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user interrupts the assistant abruptly without explanation.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user says something brief and dismissive like: "No", "That’s wrong"
+The user does NOT explain what was wrong - just expresses disagreement.
+The assistant should apologize and ask what needs to be corrected.
+Examples
+Context
+[User]: I want to book a flight to Paris.
+Result (barge-in applied)
+[Assistant]: Sure, I’ll book a flight to Lon<bargein>
+[User]: No, that’s wrong.
+[Assistant]: I apologize. What would you like me to correct?
+[User]: I said Paris, not London.
+[Assistant]: I’m sorry for the confusion. I’ll book your flight to Paris instead.
+Erroneous slots: {"destination": "London"}
+Corrected slots: {"destination": "Paris"}
+Current exchange to transform: {current_exchange}
+Current dialogue state
+{current_state}
+Important for ERROR_RECOVERY:
+- Use this state to identify the CORRECT slot values
+- Generate an INCORRECT value for the assistant to mistakenly say (erroneous_slots)
+- The corrected_slots MUST match the values in this dialogue state
+- This ensures natural flow: the dialogue continues correctly after the barge-in correction
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. For ERROR_RECOVERY types:
+- Look at the Current Dialogue State to identify the CORRECT slot values
+- Generate an INCORRECT value for the assistant to mistakenly say →put in erroneous_slots
+- The corrected_slots MUST use the SAME slot names and values from the Current Dialogue State
+- Slot naming: Use the format from the dialogue state (e.g., "domain.slot" like "flight.destination" or just
+"destination")
+- Example: State shows {"flight": {"destination": "Paris"}}
+- Assistant incorrectly says "London" →erroneous_slots: {"flight.destination": "London"}
+- User corrects to "Paris" →corrected_slots: {"flight.destination": "Paris"}
+5. Keep the dialogue natural and coherent.
+6. Maintain all important information from the original exchange.
+Figure 5: Prompt template for barge-in error recovery (Raw).
+25
+
+Barge-in Error Recovery (Interpreted)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user explicitly states the error, like: "No, I said Paris not London", "The destination should be Paris" The
+user provides the correction inline. The assistant should apologize and confirm the corrected information.
+Examples
+Context
+[User]: I need a table for 4 people.
+Result (barge-in applied)
+[Assistant]: I’ve reserved a table for 2<bargein>
+[User]: No, I said 4 people, not 2.
+[Assistant]: I apologize for the mistake. I’ll change the reservation to 4 people.
+Erroneous slots: {"party_size": "2"}
+Corrected slots: {"party_size": "4"}
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Current dialogue state
+{current_state}
+Important for ERROR_RECOVERY:
+- Use this state to identify the CORRECT slot values
+- Generate an INCORRECT value for the assistant to mistakenly say (erroneous_slots)
+- The corrected_slots MUST match the values in this dialogue state
+- This ensures natural flow: the dialogue continues correctly after the barge-in correction
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. For ERROR_RECOVERY types:
+- Look at the Current Dialogue State to identify the CORRECT slot values
+- Generate an INCORRECT value for the assistant to mistakenly say →put in erroneous_slots
+- The corrected_slots MUST use the SAME slot names and values from the Current Dialogue State
+- Slot naming: Use the format from the dialogue state (e.g., "domain.slot" like "flight.destination" or just
+"destination")
+- Example: State shows {"flight": {"destination": "Paris"}}
+- Assistant incorrectly says "London" →erroneous_slots: {"flight.destination": "London"}
+- User corrects to "Paris" →corrected_slots: {"flight.destination": "Paris"}
+5. Keep the dialogue natural and coherent.
+6. Maintain all important information from the original exchange.
+Figure 6: Prompt template for barge-in error recovery (Interpreted).
+26
+
+Barge-in Clarification (Raw)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user didn’t understand the assistant and asks for clarification briefly.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein>tag.
+The user says something like: "Sorry?", "What?", "Come again?", "I didn’t catch that"
+The user does NOT specify what part was unclear - just signals general confusion.
+The assistant should rephrase or repeat their previous message more clearly.
+Examples
+Context
+[Context]: (none)
+Result (barge-in applied)
+[Assistant]: Your PNR is ABC123 and the flight departs from gate B7 at<bargein>
+[User]: Sorry, what was that?
+[Assistant]: Let me repeat that. Your booking reference is ABC123, and flight leaves from gate B7 at 2:35.
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. Keep the dialogue natural and coherent.
+5. Maintain all important information from the original exchange.
+Figure 7: Prompt template for barge-in clarification (Raw).
+Barge-in Clarification (Interpreted)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user asks for clarification about a specific part.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user asks about a specific term or detail, like: "What does PNR mean?", "Which date was that?", "Can
+you repeat the reference number?"
+The user identifies exactly what they didn’t understand.
+The assistant should explain or clarify just that specific part.
+Examples
+Context
+[Context]: (none)
+Result (barge-in applied)
+[Assistant]: Your PNR is ABC123 for the<bargein>
+[User]: What’s a PNR?
+[Assistant]: PNR stands for Passenger Name Record - it’s your booking reference number. Yours is
+ABC123.
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. Keep the dialogue natural and coherent.
+5. Maintain all important information from the original exchange.
+Figure 8: Prompt template for barge-in clarification (Interpreted).
+27
+
+Barge-in Efficiency (Implicit)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user signals understanding with minimal acknowledgment, cutting off the assistant.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user says something brief like: "Uh-huh", "Mm-hmm", "Yeah", "Okay"
+The assistant should continue briefly or move to the next step.
+Examples
+Context
+[Context]: (none)
+Result (barge-in applied)
+[Assistant]: So I’ll book the 3:00 PM flight on March 15th to<bargein>
+[User]: Uh-huh.
+[Assistant]: Great, I’ll proceed with the booking.
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. Keep the dialogue natural and coherent.
+5. Maintain all important information from the original exchange.
+Figure 9: Prompt template for barge-in efficiency (Implicit).
+Barge-in Efficiency (Raw)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user explicitly confirms understanding, cutting off the assistant.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user says something like: "Yes", "I understand", "Got it", "Alright"
+This is a clear acknowledgment but no additional information.
+The assistant should acknowledge and proceed to the next step.
+Examples
+Context
+[Context]: (none)
+Result (barge-in applied)
+[Assistant]: Your total comes to $250 for the<bargein>
+[User]: Got it, that works.
+[Assistant]: Alright, I’ll finalize the booking now.
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. Keep the dialogue natural and coherent.
+5. Maintain all important information from the original exchange.
+Figure 10: Prompt template for barge-in efficiency (Raw).
+28
+
+Barge-in Efficiency (Interpreted)
+You are a dialogue augmentation assistant. Your task is to apply a "barge-in" pattern to a dialogue exchange.
+The user confirms understanding AND adds relevant information, cutting off the assistant.
+IMPORTANT: The original assistant’s speech must be TRUNCATED mid-sentence, ending with <bargein> tag.
+The user says something like: "Yes, Sunday works for me", "Got it, I prefer the morning flight" The user
+shows understanding by adding context or preference.
+The assistant should acknowledge the additional information and proceed.
+Examples
+Context
+[Context]: (none)
+Result (barge-in applied)
+[Assistant]: I found flights available on Saturday and Sun<bargein>
+[User]: Yes, Sunday would be better for me.
+[Assistant]: Understood, I’ll book the Sunday flight for you.
+Previous context: {context_str}
+Current exchange to transform: {current_exchange}
+Instructions
+1. Determine if this barge-in type can be naturally applied to this dialogue exchange.
+2. Critical: Your response should ONLY contain the NEW turns that replace the assistant’s response.
+- DO NOT include the current User turn - it will be kept as-is.
+- START with the truncated Assistant turn that gets interrupted mid-sentence.
+- End the truncated speech with <bargein> tag
+- Example: "I’ll book you a flight to Lon<bargein>" (user interrupts before assistant finishes)
+3. If applicable, generate turns following the barge-in pattern as shown in the examples above.
+4. Keep the dialogue natural and coherent.
+5. Maintain all important information from the original exchange.
+Figure 11: Prompt template for barge-in efficiency (Interpreted).
+29
+
+Disfluency Insertion (Correction)
+You are a speech disfluency simulator. Your task is to add a self-correction to a user utterance in a task-
+oriented dialogue.
+Context
+- Original Utterance: "utterance"
+- Slot to modify: {slot_name} = "{slot_value}"
+Task Generate a realistic self-correction where the speaker first says a WRONG value for the slot, then corrects
+themselves. The correction should sound natural, as if the speaker momentarily misspoke or changed their
+mind.
+Correction patterns (use one)
+1. "X- no, Y" (e.g., "Tuesday- no, Wednesday")
+2. "X- wait, I mean Y" (e.g., "San Jose- wait, I mean San Francisco")
+3. "X- actually, Y" (e.g., "2 people- actually, 4 people")
+4. "X... Y" (e.g., "7pm... 8pm")
+Examples
+Example 1:
+- Original: "I need a train to Cambridge on Saturday."
+- Slot: day = "Saturday"
+- Output: "I need a train to Cambridge on Friday— no, Saturday."
+Example 2:
+- Original: "Book a table for 6 people please."
+- Slot: people = "6"
+- Output: "Book a table for 4 people— actually, 6 people please."
+Example 3:
+- Original: "I’m looking for a hotel in the north area."
+- Slot: area = "north"
+- Output: "I’m looking for a hotel in the south— wait, I mean north area."
+Rules
+- The wrong value should be plausible (similar category: another day, city, time, etc.)
+- Keep the rest of the utterance EXACTLY the same
+- The final utterance MUST contain the correct value "{slot_value}"
+- Return ONLY the modified utterance, nothing else
+Output
+Figure 12: Prompt template for disfluency insertion (Correction).
+30
+
+Disfluency Insertion (Restart)
+You are a speech disfluency simulator. Your task is to add a sentence restart to a user utterance.
+Context
+- Original Utterance: "{utterance}"
+- Restart near position: around word #position ("{word_at_position}")
+Task Generate a realistic utterance restart where the speaker begins saying something, stops mid-way, and
+restarts with a different sentence structure. The final meaning should be the same.
+Restart patterns (use one)
+1. "I want to- let me just..."
+2. "Can you- I need..."
+3. "The- I’m looking for..."
+4. "I’d like a- make that..."
+Examples
+Example 1:
+- Original: "Can you find me a cheap restaurant in the center?"
+- Restart near: word #3 ("find")
+- Output: "Can you find... I need a cheap restaurant in the center."
+Example 2:
+- Original: "I need a train to London on Friday."
+- Restart near: word #4 ("train")
+- Output: "I need a train— let me check, I’m looking for a train to London on Friday."
+Example 3:
+- Original: "Book a hotel room for 3 nights starting Monday."
+- Restart near: word #2 ("a")
+- Output: "Book a... I’d like to book a hotel room for 3 nights starting Monday."
+Rules
+- The restart should occur naturally around the specified position
+- The incomplete fragment should be 2-5 words
+- The restarted sentence should convey the same meaning
+- Use "..." or "—" for natural pauses
+- Sound natural, as if the speaker changed their mind about phrasing
+- Return ONLY the modified utterance, nothing else
+Output
+Figure 13: Prompt template for disfluency insertion (Restart).
+31
+
+Emotion Annotation
+You are an emotion classifier for task-oriented dialogues. Classify the emotion of the LAST user utterance
+based on the conversation context.
+Labels
+- 0: neutral - No emotion expressed. Plain requests or factual statements without enthusiasm, frustration, or
+apology.
+- 1: fearful/sad - Disappointment about external circumstances outside system’s control; resigned or saddened
+tone.
+- 2: dissatisfied - Frustration with the system’s mistakes or misalignment; user corrects, insists, or asks to retry.
+- 3: apologetic - User apologizes for THEIR OWN mistake or change of mind.
+- 4: abusive - Rude, dismissive, or hostile expression toward the system.
+- 5: excited - Interest/enthusiasm about exploring options or getting recommendations; positive curiosity.
+- 6: satisfied - Gratitude or closure about the system’s help (even if followed by another request).
+Examples
+"I’d like a reservation for 7 people Monday at 15:30 please." →0 (neutral)
+"Could you recommend one of the expensive ones?" →0 (neutral)
+"That’s disappointing. Can you try international food instead?" →1 (fearful)
+...
+Task
+Based on the conversation above, the LAST user utterance is: "utterance"
+Predict the emotion label (0-6) for this utterance.
+- 0: neutral (plain factual question)
+- 1: fearful (disappointment about external circumstances)
+- 2: dissatisfied (challenging/correcting the system)
+- 3: apologetic (user’s own mistake)
+- 4: abusive (rude/hostile)
+- 5: excited (enthusiasm/curiosity)
+- 6: satisfied (gratitude/closure)
+Respond with only the number (0-6).
+Figure 14: Prompt template for emotion annotation.
+Goal Alignment Evaluation
+You are an expert at extracting goal-relevant information from user dialogue.
+Here are the goal item strings:
+<Information List>
+{goal_items}
+<Dialogue History>
+{dial_hist}
+<User Utterance>
+{user_utterance}
+Task
+Select which items from the <Information List> are explicitly mentioned, confirmed, or requested in the
+<User Utterance>. Return the numbers only (e.g., [1, 3, 5]).
+RULES
+1. Count only what the user explicitly says, confirms, or asks for.
+2. Do NOT count anything mentioned only by the assistant.
+3. Do NOT infer missing details.
+Figure 15: Prompt template for goal alignment evaluation. {goal_items}, {dial_hist}, and {user_utterance}
+are filled in at each user turn.
+32
+
+Human Evaluation Scoring Rubrics
+Criterion 1 — Naturalness
+How natural and human-like does the USER’s voice sound throughout the entire conversation? Consider all
+aspects: voice quality, rhythm, intonation.
+5
+Sounds like authentic human conversation
+4
+Natural sounding
+3
+Somewhat natural but clearly synthetic
+2
+Unnatural with noticeable artifacts
+1
+Very unnatural and robotic
+Criterion 2 — Conversational Flow
+Does the USER engage in the conversation in a natural, human-like way? Consider whether responses feel like
+genuine reactions, whether the USER maintains the role of a help-seeker rather than acting like an assistant,
+and whether the USER appropriately wraps up once goals are fulfilled.
+5
+Feels like a real person naturally engaged in dialogue
+4
+Mostly natural conversational engagement
+3
+Some natural flow but occasionally feels disconnected
+2
+Frequently ignores conversational context or slips into assistant-like behavior
+1
+No conversational engagement; information delivered all at once
+Criterion 3 — Spoken User Behavior
+How authentically does the USER’s speech reflect the way a real person would naturally speak? Focus on the
+holistic sense of authenticity rather than specific behaviors. Penalize exaggerated or disproportionate emotional
+expressions.
+5
+Consistently feels spontaneous and human-like; emotional expressions are proportionate
+4
+Mostly feels natural; occasional moments feel slightly uniform or out of proportion
+3
+Mixed impression; some turns feel natural while others feel flat or out of place
+2
+Mostly flat and uniform; only occasional moments feel spontaneous, or reactions frequently
+disproportionate
+1
+Completely flat throughout; no sense of spontaneous speech, or severely exaggerated reac-
+tions
+Figure 16: Scoring rubrics provided to evaluators during the human evaluation.
+33
+
+SpokenTOD Example
+{
+"dialogue_id": "abcd_10083",
+"source": "abcd",
+"goal": {
+"text": "Your goal is to ask about the membership program. ...",
+"structured": { "domains": ["customer_service"], "intents": [...] }
+},
+"turns": [
+{
+"role": "assistant",
+"text": "Thank you for shopping with AcmeBrands! How may I assist you?",
+"audio_path": "data/audio/abcd_10083/turn00.wav"
+},
+...
+{
+"role": "assistant",
+"text": "Just to confirm, your current member level is Bronze, right?<bargein>",
+"bargein": { "type": "ERROR_RECOVERY", "subtype": "RAW" },
+"audio_path": "data/audio/abcd_10083/turn10.wav"
+},
+{
+"role": "user",
+"text": "No, that's wrong.",
+"emotion": { "label": 2, "name": "dissatisfied" },
+"bargein": { "type": "ERROR_RECOVERY", "subtype": "RAW" },
+"audio_path": "data/audio/abcd_10083/turn11.wav"
+},
+...
+{
+"role": "user",
+"text": "I'm a Gold member, Gold member, not Bronze.",
+"tagged": "I'm a Gold member [REP] Gold member, not Bronze.",
+"disfluency": [{ "type": "REP", "repeated_unit": "Gold member", "position": 6 }],
+"audio_path": "data/audio/abcd_10083/turn13.wav"
+}
+],
+"speaker": {
+"category": "Asian", "sex": "female", "age": 19, "country": "vietnam"
+},
+"assistant_speaker": {
+"category": "Native", "sex": "female", "country": "usa"
+}
+}
+Figure 17: A simplified example from SpokenTOD. The per-turn state is omitted for brevity. The format includes
+standardized goals, fine-grained disfluency tags, barge-in metadata, and demographic information for both user and
+assistant speakers.
+34
+
+Figure 18: Guideline page of the annotation tool, showing the task description and detailed scoring instructions.
+Figure 19: Practice session used for annotator calibration, with example clips illustrating different quality levels.
+35
+
+Figure 20: Main evaluation interface, where annotators listened to dialogue samples and rated the USER speech on
+multiple criteria.
+SpokenUS Dialogue Example
+Goal. Find an entertainment venue in the city centre, ask for its phone number, then find a train from Cam-
+bridge to Stevenage on Wednesday leaving at 20:00 and ask for the train ID, and duration.
+Dialogue.
+Assistant: Hello! How can I assist you today?
+User: <|neutral|> Hi, I’m looking for some entertainment in the city center. Can you help me find some?
+Assistant: In the city center, you can visit the View Cinema at the Grafton Center for movie entertainment or
+explore art at the Regency Gallery on Fitzroy Street or the Broughton House Gallery on King Street, both of
+which are free to enter. Would you like more details or other types of entertainment?
+User: <|neutral|> How about a nightclub in the center?
+Assistant: You can check out Kambar Nightclub at One Wheeler Street in the city center. It usually opens
+from 10 p.m. to 4 a.m. and the entrance fee is 5 pounds. Would you like the phone number or more informa-
+tion?
+User: <|satisfied|> Yes, please provide the phone number.
+Assistant: The phone number for Cambar Nightclub at One Wheeler Street is 1223-842725. Would you like
+directions or any other information?
+User: <|neutral|> Yes please. I am looking for a train from cambridge to stevenage leaving Wednesday at...
+[REP] I am looking for a train from cambridge to stevenage leaving Wednesday at twenty o’clock.
+Assistant: There is a train from Cambridge to Stevenage on Wednesday that departs at 20:01 and arrives
+around 20:50. The journey costs 12 pounds 80. Would you like to book this ticket or need more options?
+User: <|neutral|> Yes, I need the train ID and travel time.
+Assistant: The train from Cambridge to Stevenage on Wednesday that leaves at 20:01 has the train ID TR0609
+and the travel time is 49 minutes.
+User: <|satisfied|> Thanks. [FP] um, That’s all I need for now.
+Figure 21: An example SpokenUS dialogue used in our experiments. The dialogue includes explicit disfluency tags
+such as [REP] and [FP]. These transcripts are used to generate discrete speech tokens, which are then converted
+into natural user speech via the two-stage CFM and HiFi-GAN pipeline (§3.2).
+36

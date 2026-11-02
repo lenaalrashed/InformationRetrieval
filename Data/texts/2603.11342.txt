@@ -1,0 +1,3439 @@
+Cambridge Medium (2020), 37, 1–37
+ARTICLE TYPE
+Evaluating Explainable AI Attribution Methods in
+Neural Machine Translation via Attention-Guided
+Knowledge Distillation
+Aria Nourbakhsh,* Salima Lamsiyah, Adelaide Danilov, and Christoph Schommer
+Department of Computer Science, University of Luxembourg, 4364 Esch-sur-Alzette, Luxembourg
+*Corresponding author. Email: aria.nourbakhsh@uni.lu
+Abstract
+The study of the attribution of input features to the output of neural network models is an active area of
+research. While numerous Explainable AI (XAI) techniques have been proposed to interpret these models,
+the systematic and automated evaluation of these methods in sequence-to-sequence (seq2seq) models is less
+explored. This paper introduces a new approach for evaluating explainability methods in transformer-based
+seq2seq models, building upon forward simulation of XAI methods. We use teacher-derived attribution
+maps as a structured side signal to guide a student model, and quantify the utility of different attribution
+methods through the student’s ability to simulate targets. Using the Inseq library, we extract attribution
+scores over source–target sequence pairs and inject these scores into the attention mechanism of a student
+transformer model under four composition operators (addition, multiplication, averaging, and replacement).
+Across three language pairs (de–en, fr–en, ar–en) and attributions from Marian-MT and mBART models,
+Attention, Value Zeroing, and Layer Gradient × Activation consistently yield the largest gains in BLEU
+(and corresponding improvements in chrF) relative to baselines. In contrast, other gradient-based methods
+(Saliency, Integrated Gradients, DeepLIFT, Input × Gradient, GradientShap) lead to smaller and less
+consistent improvements. These results suggest that different attribution methods capture distinct signals
+and that attention-derived attributions better capture alignment between source and target representations
+in seq2seq models. Finally, we introduce an Attributor transformer that, given a source–target pair,
+learns to reconstruct the teacher’s attribution map. Our findings demonstrate that the more accurately
+the Attributor can reproduce attribution maps, the more useful an injection of those maps is for the
+downstream task. The source code can be found on GitHub.a.
+a. https://github.com/ariana2011/seq2seq_xai_attributions/
+Keywords: Explainability, Sequence-to-Sequence Model, Attribution Maps, Transformer, Knowledge Distillation
+1.
+Introduction
+In recent years, natural language processing (NLP) generative models have advanced rapidly and
+found applications in a wide range of domains (Chang et al. 2024; Kalyan 2024). These models,
+especially transformer-based sequence-to-sequence (seq2seq) architectures (Sutskever, Vinyals, and
+Le 2014; Vaswani 2017), excel at capturing complex relationships between input and output sequences.
+However, they are typically built on complex neural network architectures, which are often described
+as ‘black boxes’ due to their opaque internal mechanisms (Dayhoff and DeLeo 2001; Burkart and
+Huber 2021). To address this challenge, the field of Explainable AI (XAI) has attracted researchers
+seeking to improve transparency and interpretability, and to explain models’ behavior. One of the
+main objectives of XAI is to assess, quantify, or characterize the importance (or attribution) of
+arXiv:2603.11342v1 [cs.CL] 11 Mar 2026
+
+2
+Aria Nourbakhsh et al.
+input features in shaping the final outputs of these models (Arya et al. 2019; Vieira and Digiampietri
+2022; Saeed and Omlin 2023). Several XAI methods have been developed and applied specifically
+to NLP models to evaluate the contribution of input information to the model’s output across
+various tasks (Madsen, Reddy, and Chandar 2022; Mohammadi et al. 2025). Despite these advances,
+identifying which explanation methods more accurately reflect model reasoning remains challenging,
+especially in seq2seq settings, which are characterized by intricate encoding-decoding dynamics and
+many-to-many mappings (J. Li et al. 2020; Gurrapu et al. 2023).
+The calculation and extraction of the decision-making process of neural networks per input
+features, which are also applied to Neural Machine Translation (NMT) models (X. Li et al. 2019; He et
+al. 2019; Eksi et al. 2021; Fomicheva, Specia, and Aletras 2022; Perrella et al. 2024), are often grouped
+into three broad families of gradient-based, model-based, and perturbation-based methods (Dwivedi
+et al. 2023; Sarti et al. 2023; Fantozzi and Naldi 2024). Gradient-based approaches estimate the
+contribution of each input by computing derivatives of the model output with respect to the input
+or intermediate representations; examples include Saliency (Simonyan, Vedaldi, and Zisserman
+2014) and Integrated gradients (Sundararajan, Taly, and Yan 2017). Model-based approaches rely on
+components that already produce interpretable signals, such as the attention mechanism. Perturbation-
+based methods, instead, modify or remove parts of the input and measure the resulting change in
+model output; LIME (Ribeiro, Singh, and Guestrin 2016) and Value Zeroing (Mohebbi et al. 2023)
+fall into this category. However, the boundaries between these families are not always strict. Some
+techniques combine properties of multiple categories, such as GradientSHAP (Lundberg and Lee
+2017), which blends gradient information with stochastic perturbations. Nevertheless, because these
+methods rest on different assumptions about how models encode and use information, they compute
+feature importance in different ways and can therefore produce divergent explanations for the same
+prediction, raising the question of which methods best reflect the model’s behavior.
+Despite the proliferation of explainability methods, comprehensive and scalable evaluation of
+XAI methods in NLP remains limited. Current evaluation practices that rely on human-centered
+validation, which, although insightful, are costly and difficult to scale (Leiter et al. 2022; Kim,
+Maathuis, and Sent 2024). Automated evaluation frameworks that are common in computer vision
+(Ribeiro, Singh, and Guestrin 2016; Chang et al. 2018; Hooker et al. 2019) are underrepresented in
+NLP and NMT, and existing work typically focuses on a small number of explanation methods. This
+signifies the need for systematic, model-based evaluation approaches capable of objectively comparing
+diverse explainability techniques in seq2seq settings. Prior evaluations have, for example, compared
+attribution maps with human-annotated word alignments (see Section 2.1). Yet, such alignments
+only approximate the underlying translation dynamics and may not represent the information flow
+within modern NMT systems.
+In this work, we address these gaps by proposing an automated evaluation framework based on
+the simulatability of XAI methods (Doshi-Velez and Kim 2017; Hase and Bansal 2020), specifically
+designed to assess and compare multiple attribution methods within seq2seq models for NMT.
+Intuitively, if an attribution method captures a model’s input–output dependencies, it should provide
+useful guidance for a student model to make better predictions. We operationalize this idea through
+a teacher-student setup: attribution maps are extracted from a pre-trained teacher NMT model and
+injected into the attention mechanism of a smaller, untrained student model. Concretely, we treat
+the attribution maps as attention priors within the encoder-decoder architecture and explore several
+ways to combine them with the student’s own attention scores. The resulting student performance
+provides an automated, task-specific measure for evaluating different explanation methods. Within
+this framework, higher-quality explanations produce more informative attribution maps, which in
+turn allow the student to make more accurate predictions, thereby serving as a proxy for judging
+the effectiveness of the XAI attribution method. We apply this framework across three language
+pairs, using Marian-MT (Tiedemann and Thottingal 2020) and mBART (Liu et al. 2020) models’
+
+Cambridge Medium
+3
+attributions.
+As part of our analysis, we deliberately compute attribution maps with respect to the gold reference
+translation, and in another part, we compute the attributions based on the teacher’s generation. This
+defines an oracle setting in which the explanation is allowed to depend on the true target sequence
+and the resulting translation. Therefore, the model sees the source and attribution maps for all
+target tokens during encoding and at each autoregressive step. We use this oracle setup to address
+two questions. First, to what extent can attribution-guided attention priors help a student model
+reproduce the gold, human-generated target when the student model has access to the attributions?
+Second, given a fixed teacher-generated translation, which attribution methods produce maps that
+are most helpful for a student model to approximate that teacher, i.e., which explanations best
+capture the teacher’s input-output behavior under our idealized conditions? In this way, the oracle
+setting serves as a controlled environment for comparing attribution methods, and we interpret
+the reported BLEU/chrF scores as relative indicators of explanation quality rather than as standard
+test-set performance.
+To interpret the discrepancy in student performance under different attribution methods, we
+propose a hypothesis that their behavior can be explained by the closeness of their mappings to
+what a transformer is able to produce. To investigate that, we design a separate encoder-decoder
+transformer, named Attributor, and train it to reconstruct the teacher’s attribution map based on the
+respective source-target pair. Our experiments confirm the claim and highlight that the Attributor’s
+ability to reproduce scores of top-3 salient tokens per column of the attribution maps very strongly
+correlates with the student performance in the MT task utilizing those maps.
+Beyond the primary goal of evaluating XAI attribution methods in NMT, this work also provides
+insight into the behavior of the attention mechanism itself. We show that attributions derived from
+the teacher model’s attention tend to be more effective in guiding the student model. It is aligned
+with the fact that attention maps are the easiest for the Attributor to reproduce. We also observe
+an interesting and somewhat unintuitive pattern in how the student model responds to externally
+injected attribution signals. In particular, the intervention is more effective when applied to the
+encoder attention (see Section 3). A detailed discussion of these findings appears later in the paper.
+In summary, the main contributions of this work are as follows:
+• We propose an evaluation framework that uses knowledge distillation to systematically assess
+and compare explainability methods by integrating attribution explanations into seq2seq model
+architectures.
+• We conduct extensive experiments exploring multiple strategies for incorporating explanations
+within the Transformer architecture and systematically compare their effects on model perfor-
+mance across various language pairs.
+• We provide empirical evidence that XAI attribution methods influence the performance of
+seq2seq models. Our findings demonstrate that the quality and type of explanations can enhance
+or degrade model output relative to baseline models without attribution guidance.
+• Finally, we investigate reasons why each attribution mapping yields different results when used
+within the student model for NMT tasks and show a strong correlation of those results with the
+ability of a transformer to approximate top-3 salient scores per target token of such mappings.
+The paper is organized as follows: Section 2 reviews the background and related work. Section 3
+describes the proposed approach. Sections 4 and 5 present and discuss the obtained results. In section
+6 we present the Attributor network. Section 7 concludes the paper and outlines the limitations of
+this work, highlighting directions for future research.
+
+4
+Aria Nourbakhsh et al.
+2.
+Related work
+In this section, we first summarize related work on evaluating and analyzing XAI attribution methods,
+with a particular focus on NMT. We then briefly review the seq2seq NMT architecture and outline
+the XAI methods used in this study.
+2.1
+Evaluation of Explanations and their Application in NMT
+The XAI literature distinguishes several dimensions of what explanations can provide. A central dis-
+tinction is between plausibility and faithfulness/fidelity: plausibility refers to how well an explanation
+aligns with human intuition, whereas faithfulness describes how accurately an explanation reflects
+the model’s actual decision-making process (Arrieta et al. 2020; Jacovi and Goldberg 2020). Doshi-
+Velez and Kim (Doshi-Velez and Kim 2017, 2018) have proposed three approaches to evaluate XAI
+methods, one of which is a functionally grounded evaluation protocol. In this protocol, explanations
+are assessed by automatic task performance metrics rather than human judgments. This paradigm
+has been adopted in NLP for evaluating the faithfulness of saliency1 methods. For example, Arras
+et al. 2016; Nguyen 2018; DeYoung et al. 2020; Atanasova et al. 2020; Nauta et al. 2023 proposed
+automatic, task-based metrics for classification models that quantify how well feature attributions
+capture model behavior.
+Our focus is on the NMT task, in particular, transformer-based (Vaswani 2017) seq2seq mod-
+els (Sutskever, Vinyals, and Le 2014). Compared to standard classification, NMT introduces additional
+challenges for explanation because it decomposes prediction into a sequence of conditional next-token
+decisions, one per decoding timestep, and the importance of each source token depends not only
+on the current target token but also on the previous target prefix (Stahlberg 2020; Shakil, Farooq,
+and Kalita 2024). This temporal and source–target coupling complicates both the design and the
+evaluation of token-level attribution methods.
+A large body of work has studied the attention mechanism as an interpretable component of
+NMT, using encoder–decoder attention weights to estimate word importance and to approximate
+word alignments (Ghader and Monz 2017; Raganato and Tiedemann 2018; Kobayashi et al. 2020;
+Ferrando and Costa-jussà 2021). These studies show that attention patterns correlate with, but do
+not faithfully reproduce, traditional word alignments, and that attention weights also reflect how
+the model balances source information against the evolving target prefix. On the other hand, other
+work has questioned the plausibility and faithfulness of attention as an explanation, arguing that
+attention weights should be interpreted cautiously based on the task and model, and in some cases,
+augmented with more explicit attribution mechanisms (Jain and Wallace 2019; Meister et al. 2021;
+Madsen et al. 2022).
+Beyond attention, other explanation methods exist to compute per-token importance. The
+most common metrics to evaluate token importance are comprehensiveness (does removing the
+highlighted tokens reduce the model’s confidence or translation quality?) and sufficiency (are the
+highlighted tokens alone sufficient to preserve model performance?) (DeYoung et al. 2020; Nauta
+et al. 2023). In NMT, such approaches have been explored to measure the drop in log-probability of
+the chosen next token after input perturbations or at the sequence level, where changes in BLEU
+scores after manipulating important source tokens, according to XAI methods, were used as a test
+bed for assessing whether attribution maps identify tokens that are necessary and/or sufficient for the
+model’s predictions (He et al. 2019; Moradi, Kambhatla, and Sarkar 2021).
+Word alignment (Brown et al. 1993) has also been widely used as a proxy for the plausibility of
+model attributions in NMT. X. Li et al. (2019) showed that attention-based alignments have clear
+limitations, motivating alternative alignment models and prediction-difference techniques to improve
+alignment quality. In parallel, Zenkel, Wuebker, and DeNero (2019) proposed augmenting NMT
+1. In the broader literature, feature-importance methods are sometimes referred to collectively as “saliency methods.” In
+this paper, however, later, we use Saliency to denote a specific gradient-based attribution method.
+
+Cambridge Medium
+5
+models with dedicated alignment layers, treating alignment as an auxiliary prediction task rather
+than a by-product of standard attention. Their approach improves alignment accuracy compared to
+classical tools such as GIZA++ (Och and Ney 2003) and FastAlign (Dyer, Chahuneau, and Smith
+2013). Ding, Xu, and Koehn (2019) introduced saliency-driven, gradient-based methods that
+yield more interpretable alignment signals without modifying the underlying NMT architecture.
+Building on these ideas, Ferrando and Costa-jussà (2021) analyzed encoder–decoder attention in
+detail, highlighting systematic alignment errors and proposing techniques that explicitly quantify the
+relative contributions of source and target contexts. Ferrando et al. (2022) further developed ALTI+,
+an attention-rollout-based framework that traces contributions from both source and target contexts
+across layers in multilingual Transformer models. ALTI+ has been used as an internal explanation
+metric for downstream diagnostic tasks; for instance, Dale et al. (2023) employ ALTI+-based scores
+to detect and mitigate hallucinations in NMT outputs. Related work by Voita, Sennrich, and Titov
+(2021) used layer-wise propagation (LPR) to analyze the intrinsic contributions of source and target
+contexts under different training regimes and dataset conditions, while Kobayashi et al. (2020)
+performed a norm-based analysis of attention and transformed representations to study internal
+alignment mechanisms within Transformers. Closer to the current work, J. Li et al. (2020) evaluated
+XAI methods in NMT by training surrogate models on the important words identified by the XAI
+methods and measuring the prediction success of each token i based on the top-k tokens identified as
+the most contributing tokens to the generation of that token. Other work has explored and compared
+XAI methods such as gradient and perturbation methods to detect word-level translation errors in
+NMT (Eksi et al. 2021; Fomicheva, Specia, and Aletras 2022).
+2.2
+Simulatability of XAI Methods
+A complementary line of work evaluates explanations through simulatability. Simulatability is how
+well an explanation helps a user replicate a model’s behavior. Doshi-Velez and Kim (2017) and Hase
+and Bansal (2020) propose human-grounded protocols in which participants are asked to predict a
+model’s output on a given input, first without and then with access to explanations. The underlying
+idea is that an explanation method is better if it improves human prediction accuracy of the model’s
+decisions. These studies implement such user-in-the-loop evaluations on tabular and text classification
+tasks, using common XAI techniques to generate explanations that are shown to human subjects.
+Closer to our setting, Pruthi et al. (2022) worked on a related idea without relying on human
+annotators. Building on the notion of simulatability, they transfer important information learned
+from one model to another. Token-level importance scores are used to guide a new model on several
+classification tasks, and the resulting change in performance is taken as evidence for the usefulness
+of the original attributions. In other words, an explanation is considered higher quality if it can be
+leveraged to train another model that better simulates or reconstructs the original model’s behavior.
+Our work adopts a similar spirit of model-based simulatability, but in the more complex seq2seq
+NMT setting.
+2.3
+Injection of Knowledge into the Attention Mechanism
+There is also some work on injecting external or structured linguistic knowledge directly into the
+attention mechanism (Jiao et al. 2020; Bai et al. 2022; Zhao, Wang, and Wang 2023). In NMT
+Bugliarello and Okazaki (2020) incorporate syntactic information by encoding, for each token, the
+distance to the syntactic ‘parent’ in a dependency tree, and using this signal to bias attention patterns.
+In their approach, knowledge injection is applied on the encoder side for the source sentence,
+enabling attention heads to exploit syntactic structure. Slobodkin, Choshen, and Abend (2022)
+augment encoder attention with syntactic and semantic information in the form of alignment-like
+constraints over the input. Their architecture modifies the attention computation so that heads are
+explicitly informed by these external signals, rather than learning them implicitly. They report that
+
+6
+Aria Nourbakhsh et al.
+enriching attention with semantic information benefits translation quality. Similar to current work
+Nourbakhsh, Lamsiyah, and Schommer (2025) inject attributions in the form of hard alignments and
+compare them to linguistic information, such as POS and Dependency information. In this work,
+we deal with soft attributions and more diverse XAI methods. These works suggest that attention
+can serve as a locus for the injection of task-relevant prior knowledge.
+Bringing together these strands of work, we propose an evaluation framework for XAI attribution
+methods to inject attribution matrix scores into the attention mechanism and compare the resulting
+effects on the translation task itself. Our design is inspired by Remove and Retrain (ROAR) retraining
+paradigms (Hooker et al. 2019), simulatability of XAI methods (Hase and Bansal 2020), and prior
+work on knowledge injection into attention, and it contributes to this line of research by providing
+a comprehensive, functionally grounded comparison of several attribution methods in the seq2seq
+NMT model.
+2.4
+NMT with Sequence-to-sequence Models
+Seq2seq models (Sutskever, Vinyals, and Le 2014; Bahdanau, Cho, and Bengio 2016), originally
+introduced for machine translation (Cho et al. 2014), are conditional language models that learn to
+generate the target sentence token by token, conditioned on the source sentence and the previously
+generated target tokens. The original Transformer model, a precursor to encoder-based classifiers
+and decoder-based large language models, was an encoder–decoder (Vaswani 2017):
+An NMT encoder–decoder model operates on two sequences:
+x = (x1, x2, . . . , xTx),
+y = (y1, y2, . . . , yTy).
+Where x and y are the source and target sequences, an NMT model with a seq2seq architecture
+defines a conditional probability distribution over the target sequence given the source sequence and
+previous target tokens:
+p(y | x; θ) =
+Ty
+Y
+t=1
+p
+ yt | y<t, x; θ
+
+,
+where y<t = (y1, . . . , yt−1) and θ are all model parameters.
+The encoder maps the source sequence to a sequence of continuous contextual representations
+based on stacked self-attention and feed-forward layers.
+H = (h1, . . . , hTx),
+The decoder is another neural network that, at each time step t, takes as input the previously generated
+target tokens (through masked self-attention over y<t) and attends to the encoder representations H
+(via cross-attention), producing a decoder representation st from which the next-token distribution
+p(yt | y<t, x; θ) is computed.
+Given a training corpus
+D = {(x(n), y(n))}N
+n=1
+of source–target pairs, model parameters θ are typically learned by maximizing the conditional
+log-likelihood:
+L(θ) = −
+N
+X
+n=1
+T(n)
+y
+X
+t=1
+log p
+ y(n)
+t
+| y(n)
+<t , x(n); θ
+
+.
+During training, teacher forcing is commonly used, meaning that the decoder receives the ground-
+truth previous token y(n)
+t−1 as input when predicting y(n)
+t .
+
+Cambridge Medium
+7
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+(a) Marian-MT model.
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+(b) mBART model.
+Figure 1. An example of attribution maps derived from different XAI methods. For the source sentence ’Dann gibt
+es noch Anbieter, die kaum Fahrraderfahrung, jedoch gute Fernostkontakte haben und so an günstige E-Bikes
+kommen.’ and the target ’Then there are suppliers with little or no experience in the bicycle industry but good
+contacts in the Far East, thus giving them access to low-cost e-bikes.’. In the heatmaps, the rows correspond to
+source tokens, and the columns to target tokens. The heatmaps are generated from the normalized columns using
+the MinMax normalizer.
+2.5
+AI Explainability Methods
+XAI attribution methods can be broadly categorized into three main types: gradient-based, internal
+model-based, and perturbation-based approaches. Below, we briefly describe the attribution methods
+used in this work to extract attribution maps. To extract these attribution maps we used the Inseq
+Python library (Sarti et al. 2023).
+Saliency:
+The saliency method was originally introduced for image classification tasks using
+convolutional neural networks (CNNs) and is one of the earliest gradient-based explanation tech-
+niques (Simonyan, Vedaldi, and Zisserman 2014). It treats a trained neural network as a locally linear
+function of its input around a given example. The primary objective is to identify which pixels in an
+input image are most influential for a particular class prediction. The ‘saliency map’ is defined as the
+gradient of the class score with respect to each input dimension, often visualized as the element-wise
+magnitude of this gradient. Intuitively, if a small change in a particular input dimension (e.g., a pixel
+intensity) leads to a large change in the class score, that dimension is considered important for the
+model’s decision for class c.
+Let x ∈Rd be an input and Sc(x) the score for class c. The saliency map for class c at x0 is defined
+as:
+M(i)
+c (x0) = ∂Sc(x0)
+∂xi
+,
+i = 1, . . . , d.
+(1)
+In NLP, x corresponds to token embeddings; we aggregate per-dimension gradients to obtain a
+scalar attribution per token (see Section 3).
+Input × Gradient (I×G):
+It is a simple extension of saliency that combines information about how
+sensitive a prediction is to a feature with how strongly that feature is present in the input (Denil,
+Demiraj, and De Freitas 2014). As in the saliency method, it considers the gradient of the class score
+with respect to the input, but instead of using the gradient alone, each input dimension is weighted
+by its own value. Intuitively, a feature should only be considered important if (i) small changes in that
+feature have a large effect on the score, and (ii) the feature is actually active in the current example.
+Raw gradients ignore the importance of the feature itself. I×G takes this information into account
+
+8
+Aria Nourbakhsh et al.
+by scaling the gradient by the input. In image models, this corresponds to weighting pixel-wise
+gradients by the pixel intensities. Let x ∈Rd be an input and Sc(x) the score for class c. The Input ×
+Gradient attribution for class c at x0 is defined as:
+M(i)
+c (x0) = x0,i
+∂Sc(x0)
+∂xi
+,
+i = 1, . . . , d.
+(2)
+Layer Gradient × Activation (LG×A):
+LG×A applies I×G to a chosen hidden layer. Let h(x0) ∈
+Rm be its activation vector; the attribution for unit j is:
+M(j)
+c (x0) = hj(x0) ∂Sc(x0)
+∂hj
+,
+j = 1, . . . , m.
+(3)
+Integrated Gradients (IG):
+IG is motivated by two axioms: (i) Sensitivity, which requires that
+features responsible for a change in the model output relative to a baseline receive non-zero attribution,
+and (ii) Implementation invariance, which requires that attributions depend only on the input-output
+function S(x), not on a particular network parameterization (Sundararajan, Taly, and Yan 2017). The
+authors define IG as:
+IGi(x0; x′) = (x0,i −x′
+i)
+Z 1
+0
+∂Sc(x′ + α(x0 −x′))
+∂xi
+dα.
+(4)
+Given an input x and a baseline x′ representing the absence of information (e.g., the zero vector),
+IG attributes feature i by integrating gradients along the straight-line path from x′ to x, capturing
+how the prediction changes as the input moves from the baseline to the actual example.
+Gradient SHAP (GSHAP):
+GSHAP mixes IG with SHAP and estimates SHAP-style (Lundberg
+and Lee 2017) attributions by averaging gradients over randomized reference points. For each of n
+samples, it adds small noise to the input, draws a random baseline from a set of baselines, and picks a
+random interpolation point along the straight line to compute the gradient2 .
+Deep Learning Important Features (DeepLIFT):
+DeepLIFT explains a prediction by comparing
+the network’s response on an input x0 to a reference input x′ (Shrikumar, Greenside, and Kundaje
+2017). Instead of raw gradients, it propagates differences from reference layer by layer and assigns
+contribution scores to input features that sum to the output difference Sc(x0) −Sc(x′), which helps
+mitigate gradient saturation and captures both positive and negative influences more reliably than
+standard gradient-based saliency methods.
+Attention:
+In the Transformer model (Vaswani 2017), each token representation xt ∈Rdmodel is
+linearly projected into a query, key, and value using learned parameter matrices WQ, WK, WV ∈
+Rdmodel×dk. Scaled dot-product attention computes similarities between queries and keys, normalizes
+them with a softmax to obtain attention weights, and then uses these weights to form weighted sums
+of the values. In multi-head attention, H such projections {W(h)
+Q , W(h)
+K , W(h)
+V }H
+h=1 are used in parallel,
+and the concatenated head outputs are linearly projected back to the model dimension with a learned
+matrix WO ∈R(Hdk)×dmodel.
+2. https://github.com/shap/shap
+
+Cambridge Medium
+9
+Given queries Q ∈RTq×dk, keys K ∈RTk×dk, and values V ∈RTk×dv, scaled dot-product
+attention is
+Attention(Q, K, V) = softmax
+ 
+QK⊤
+p
+dk
+!
+V.
+(5)
+In (5), the score matrix QK⊤can be interpreted as pairwise similarity scores between queries and
+keys; after softmax normalization, these become attention weights that determine how strongly each
+query attends to each key.
+Value Zeroing (ValueZeroing):
+In the attention mechanism, the value vector Vj for token j carries
+contextual content that is mixed into the representation of other tokens via attention weights derived
+from the QK⊤scores. ValueZeroing is an ablation technique that quantifies how much a context
+token j contributes to the representation of an output token at position i by recomputing the model’s
+hidden representation at i after zeroing out the value vector of token j, while keeping all keys and
+queries fixed (Mohebbi et al. 2023).
+Let ˜xi denote the original representation of the output token at position i, and let ˜x¬j
+i
+denote
+the representation obtained when the value vector of token j is replaced by the zero vector. The
+context-mixing score between output position i and token j is defined as the cosine distance between
+these two representations:
+Ci,j = 1 −cos
+ ˜x¬j
+i , ˜xi
+
+.
+(6)
+Higher values of Ci,j indicate that token j induces a larger change in the output representation at
+position i, and therefore has a stronger influence on that output.
+In this subsection, we briefly summarised the XAI attribution methods used in our comparison.
+Our goal was to include representatives from all three major families of attribution methods while
+also respecting practical constraints on computation. In particular, many perturbation-based methods
+are computationally expensive, and generating their attribution maps at scale for our datasets would
+be infeasible within a reasonable runtime.
+3.
+Methodology
+Inspired by the forward simulation of XAI methods (Hase and Bansal 2020), we design a pipeline to
+compare different explainability attribution maps based on their impact on model performance in the
+NMT task. For this purpose, we use teacher-student knowledge distillation (Hinton 2015)(Fig. 2).
+In the first step, we use the Inseq library3 to extract input-output attribution maps using the eight
+explainability algorithms specified in subsection 2.5. The teacher model receives source-target sample
+pairs as input, and the output of Inseq is a set of attributions (x, y) →E mapping the target to the
+source tokens . Then, the student models are trained under teacher forcing, receiving (x, y, E) for
+training. During testing, the student model gets the source token and attributions to predict the
+target (x, E) →ˆy.
+Gradient-based attributions are in the shape e ∈Rj×k×l, where j is the input sequence length, k
+is the output sequence length, and l is the hidden dimension of the model. Gradient-based methods
+get the weight of the gradient for each individual input feature in the vector space. We aggregate
+these values along the last dimension by getting the L2 norm ∥ei∥2 of the token vectors. L2 norm
+represents the magnitude of a vector and has a non-negative value4. The final result is in the shape
+of e ∈Rj×k. For all the attribution methods, we get the scores from the first layer of the transformer
+model. However, for LG×A, where the attribution from the first layer is the same as I×G, we chose
+3. https://inseq.org/en/latest/
+4. We did experiments with average pooling of the importance vectors; however, L2 norm representation always yielded
+better results.
+
+10
+Aria Nourbakhsh et al.
+𝑋𝑡𝑟𝑎𝑖𝑛
+𝐸
+෠𝑌
+Pre-trained teacher model
+Training student model
+𝐸
+෠𝑌
+Pre-trained teacher model
+Testing student model
+Training phase
+Testing phase
+𝑌𝑡𝑟𝑎𝑖𝑛
+𝑋𝑡𝑟𝑎𝑖𝑛
+𝑌𝑡𝑟𝑎𝑖𝑛
+𝑋𝑡𝑒𝑠𝑡
+𝑌𝑡𝑒𝑠𝑡
+𝑋𝑡𝑒𝑠𝑡
+Figure 2. (a) Illustrates the overall design of our approach. The input sequence and the gold output (x, y) are given
+to a teacher model, and their attributions E are obtained. Then, a new untrained model is trained using the same
+(x, y, E) triples. In the testing phase, the model gets the (x, E) →ˆy. (b) Shows two places where we inject the
+attributions obtained from XAI methods.
+to obtain attributions from the encoder’s last layer. Prior work has examined which task-relevant
+properties are encoded at different layers (Langedijk et al. 2024), but for our purposes, the encoder’s
+final layer is the natural choice since its representations are the ones the decoder attends to when
+producing predictions.
+The Attention attributions are extracted in the shape e ∈Rj×k×n×h, where j and k are the same as
+before, n represents the number of layers of the transformers, and h is the number of attention heads.
+We then compute the average along both of the last two axes to obtain a final shape of e ∈Rj×k.
+ValueZeroing yields the importance score for each layer, and therefore the scores are in the shape of
+e ∈Rj×k×n. Similarly, we get the average of the scores on the last dimension to reach e ∈Rj×k. To
+normalize and handle negative values in the attribution matrices, we apply the MinMaxScaler5 to the
+columns of the attribution maps as follows:
+e′
+i,j =
+ei,j −min
+i (e:,j)
+max
+i (e:,j) −min
+i (e:,j)
+(7)
+Minmax transformation rescales values linearly to the [0, 1] interval while preserving their rank
+and relative structure. This choice over the softmax function avoids the additional inductive bias
+introduced by a softmax transformation, which converts scores into a probability distribution whose
+shape depends nonlinearly on their scale and forces scores to compete with one another. In our
+setting, we were interested in comparing the pattern and relative magnitude of attributions across
+methods and tokens, rather than imposing a probabilistic interpretation. Minmax normalization,
+therefore, preserves the geometry of the original attribution map 6.
+Next, the student model receives as input the triple (x, y, E′), where E′ represents the (normalized)
+5. https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.MinMaxScaler.html
+6. That said, the choice of the normalizer would affect the results; in our limited experiments, the minmax scaler scored
+better than the softmax; however, more investigations may be needed.
+
+Cambridge Medium
+11
+attribution map associated with the source–target pairs. Subsequently, we perform four distinct
+operations on the pre-softmax attention scores A(h) = Q(h)K(h)⊤
+√
+dk
+for each head h:
+˜
+Attention(Q, K, V, E′) = softmax
+ f
+ A, E′
+V,
+(8)
+where f is one of the following operations (applied elementwise):
+Addition (+): add attributions to the attention scores:
+˜A(h) = A(h) + E′.
+(9)
+Multiply (⊙): elementwise multiplication with the attention scores:
+˜A(h) = A(h) ⊙E′.
+(10)
+Average (µ): take the average of attributions and attention scores:
+˜A(h) = A(h) + E′
+2
+.
+(11)
+Replace (R): substitute the attention scores with attribution maps:
+˜A(h) ←E′.
+(12)
+The last operation replaces A(h) with E′, completely substituting QK⊤
+√
+dk
+. The point of applying these
+simple element-wise operators is to treat the normalized attribution matrices E′ as soft importance
+weights over the similarity scores A(h) = QK⊤in each attention head. Acting directly on QK⊤(i.e.,
+at the level of the similarity matrix before softmax) rather than on the values V or the hidden states
+confines the intervention to the alignment structure between source and target tokens, which is
+precisely what attribution methods aim to characterize.
+The four operators correspond to qualitatively different ways of using E′ as a scaling factor for the
+similarity matrix. The multiplicative update ˜A(h) = A(h) ⊙E′ implements a gating mechanism where
+attributions close to zero suppress specific query–key interactions, whereas attributions close to one
+leave them largely unchanged. Also, from another perspective, multiplication has a more dire effect
+if the attribution maps are incorrect. In contrast, the additive update ˜A(h) = A(h) + E′ behaves like a
+bias term on the similarity scores; when applied before softmax, it shifts probability mass toward
+positions preferred by the attribution map while preserving much of the relative structure induced by
+QK⊤. The averaging operator ˜A(h) = 1
+2(A(h) + E′) can be seen as a symmetric compromise between
+the model’s own attention and the external explanation, which smooths extreme scores from both
+matrices. Finally, the replacement variant, which feeds E′ directly into the attention module in place
+of QK⊤
+√
+dk
+, provides a raw testbed in which the attribution map is treated as the only alignment signal.
+This yields an approximate lower bound on how well a given XAI method can affect the translation
+task.
+By comparing these operators within the same teacher–student framework, we can probe two
+questions at once: (i) whether they are strong enough to reliably gate or reroute information flow,
+and (ii) quantify the influence of attribution maps on the MT task. In all cases, applying E′ as
+element-wise weights on QK⊤makes a source-target token pair suitable for forward-simulation
+style evaluation, since changes in translation quality can be traced back to the manipulation of the
+attention matrix by the XAI attribution maps.
+
+12
+Aria Nourbakhsh et al.
+4.
+Results
+In this section, we first describe our experimental setup, including datasets, metrics, and implementa-
+tion details. We then analyze the results along four dimensions: (1) the comparison of eight attribution
+methods based on their influence on translation quality when integrated into the model; (2) the
+impact of the attribution injection location, comparing encoder self-attention and cross-attention
+modules; (3) the effect of selectively applying attributions to half of the attention heads (8 Heads vs. 4
+Heads); (4) the ability of the student model to approximate the generation from the teacher model.
+4.1
+Experimental Setup
+To evaluate the proposed pipeline, we train the Marian-MT model (Tiedemann and Thottingal
+2020)7 on three datasets from scratch. We choose two datasets belonging to a more closely related
+language family: German→English (de-en) and French→English (fr-en). For the third dataset,
+we choose Arabic→English (ar-en) due to its encoding and linguistic differences from the target
+language. For de-en and fr-en, we use the WMT14 dataset (Bojar et al. 2014), and for ar-en, we use
+the UN Parallel Corpus (Ziemski, Junczys-Dowmunt, and Pouliquen 2016).
+We select 220,000 sample pairs from each dataset and preprocess them to suit our experimental
+setup. Considering the numerous seq2seq models we train from scratch, we impose constraints to
+efficiently manage the training process. Specifically, we limit both the input and output sequences
+to at most 128 tokens. Additionally, we discard samples with fewer than ten tokens and filter out
+pairs where the input-to-output length ratio (or vice versa) exceeds 1.7 for de-en and fr-en. Since
+the validation and test sets of the WMT datasets are relatively small, we select an additional 15,000
+samples from their training sets (without overlap with our training data). The UN Parallel Corpus
+does not include separate validation and test sets, so we extract 15,000 samples from the main dataset
+for validation and testing.
+We use two teacher models from which we extract attribution maps: a) monolingual Marian-
+MT systems and b) multilingual mBART-large (Tang et al. 2020) models. We focus most of
+our analysis on Marian-MT, since it is substantially smaller than mBART and, therefore, more
+tractable for computing and training with attribution maps at scale, given its smaller vocabulary
+size. Marian-MT is a Transformer model with six encoder layers and six decoder layers, each
+layer containing eight attention heads. In contrast, mBART-large has 12 encoder and 12 decoder
+layers, each with 12 attention heads. As a multilingual model, mBART uses a much larger subword
+vocabulary than Marian-MT (on the order of 500k vs. roughly 50k token types), which further
+increases the computational cost of attribution extraction. The student model shares the same
+overall architecture as Marian-MT, with feed-forward dimensionality dff = 2048 and embedding
+dimensionality dmodel = 512. We limit the maximum sequence length to Lmax = 128, while keeping
+the number of layers Nlayers and attention heads H unchanged. Overall, Marian-MT has around 74
+million parameters, and mBART has 610 million parameters.
+We train the student Marian-MT models for 20 epochs and apply early stopping after three
+consecutive epochs without improvement in validation loss. The student model employs the Swish
+activation function, as proposed by Ramachandran, Zoph, and Le 2017, which has been shown to
+enhance training dynamics and convergence. We used 20 Nvidia V100 GPUs for our experiments.
+Throughout our experiments, we report BLEU (Papineni et al. 2002), which measures n-gram
+overlap between system outputs and reference translations, and chrF (Popović 2015), a character-level
+n-gram F-score. This combination is particularly appropriate in our setting. We deliberately do
+not report semantic evaluation metrics such as COMET for two reasons. First, we conceptualize
+attribution maps as an auxiliary ‘memory’ that the student model can use to reconstruct the future
+target sequence Y from the teacher’s representations. Our objective is thus fidelity to the reference
+at the token level, for which BLEU and chrF are sufficient. Second, most of our source–target
+7. https://huggingface.co/Helsinki-NLP
+
+Cambridge Medium
+13
+segments are relatively short, and our datasets are modest in size and length. Thus, COMET can be
+noisy and add limited additional insight beyond n-gram overlap. All in all, consistent changes across
+both BLEU and chrF provide sufficient evidence that attribution-guided attention priors affect the
+underlying translation behavior.
+4.2
+Effectiveness of Attribution Methods (Encoder Attention)
+This analysis evaluates the impact of eight XAI attribution methods on translation quality, comparing
+models with injected attribution maps and the baseline. Tables 1, 2, 3 present the BLEU and chrF of
+this setting and their delta compared to the baseline, using Marian-MT attributions, while 4, 5, and
+6 represent the results of mBART attribution maps. The baseline models are trained and evaluated
+on the same dataset and settings, but without integrating attribution E. The difference between the
+baseline and the models with attribution maps is an indicator that XAI attribution maps changed the
+results relative to the baseline.
+Starting with attribution maps extracted from Marian-MT, across all three language pairs,
+injecting attribution maps into the encoder’s attention mechanism consistently improved translation
+quality over the baseline models. The highest gains come from Attention, ValueZeroing, and LG×A.
+The highest BLEU gains ranged up to +20.0 for de-en, +28.8 for fr-en, and +27.9 for ar-en, with
+corresponding chrF gains up to +13.3, +17.5, and +14.9, respectively. Other gradient-based methods
+score quite similarly to each other, and among them, GSHAP scores lowest across all three language
+pairs. Importantly, BLEU and chrF changes were aligned, and the configurations that improved
+BLEU nearly always improved chrF by a similar margin and vice versa, indicating that the gains are
+not metric-specific but reflect genuine translation quality.
+For mBART attributions, there are more nuances. ValueZeroing scores higher than all other
+attribution methods in all cases. Attention maps that used to achieve higher scores on Marian-MT
+now score lower, and even for de-en, they degrade results in three out of four operators. Among
+the gradient-based methods, LG×A scores highest for all the operators and all the language pairs.
+GSHAP yields the weakest results. Similarly, in mBART fr-en, Attention and ValueZeroing with
+the best operator reached 59.7 and 63.0 BLEU (+32.6 and +35.9), while GSHAP-based injections
+remained close to the baseline or produced only small improvements.
+The choice of operator used to combine attributions with the original attention weights had a
+strong and systematic effect. Across attribution methods, language pairs, and models, the element-
+wise product operator (⊙) consistently yielded the highest BLEU and chrF scores, while averaging
+(µ) was almost always the worst-performing operator, with + and R lying in between. For instance,
+in Marian-MT de-en with ValueZeroing, BLEU improved from 25.82 (baseline) to 41.8 (+16.0) with
++, 40.2 (+14.4) with µ, 41.9 (+16.1) with R, and 45.8 (+20) with ⊙. An analogous pattern appeared
+with Marian-MT fr-en and ar-en, where ⊙systematically dominated the other operators for all
+strong attribution sources. The same trend held with mBART: for fr-en, Attention with ⊙reached
+59.7 BLEU (+32.6) above the other operators, and ValueZeroing with ⊙reached 63.0 BLEU (+35.9)
+versus 51.2, 45.2, and 48.9 BLEU for +, µ and R respectively. The magnitude of the difference
+between the operator for mBART Attention is higher than that for the others. We observed that
+mBART Attention assigns high values to the last source token (also visible in Figure 1), and that’s
+why other operators can’t contribute to the student model.
+Finally, the patterns described above were consistent across de-en, fr-en, and ar-en for Marian-
+MT and across de-en and fr-en for mBART. Although the absolute baselines and magnitudes of
+improvement varied by language pair, the relative rankings of attribution sources and operators
+were nearly identical. This cross-lingual consistency suggests that certain XAI attribution methods
+provide more faithful target–source alignment signals than others, and that these signals can be
+leveraged as a reliable inductive bias for attention-guided knowledge distillation.
+
+14
+Aria Nourbakhsh et al.
+Table 1. BLEU and chrF scores for de-en Marian-MT attributions. Scores followed by ∆over the baseline.
+BLEU scores for de-en (Baseline: 25.82)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+32.1+6.3
+32.3+6.4
+35.5+9.6
+33.6+7.8
+27.5+1.7
+32.8+7.0
+40.5+14.7
+41.8+16.0
+µ
+29.5+3.7
+29.7+3.9
+33.5+7.7
+32.0+6.2
+26.8+1.0
+30.5+4.7
+37.3+11.5
+40.2+14.4
+⊙
+33.7+7.9
+33.8+8.0
+37.7+11.8
+35.4+9.6
+29.1+3.3
+34.2+8.3
+45.8+20.0
+45.8+19.9
+R
+31.4+5.6
+31.7+5.9
+35.4+9.5
+33.0+7.1
+26.7+0.9
+32.3+6.5
+40.2+14.3
+41.9+16.1
+chrF scores for de-en (Baseline: 49.27)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+53.2+3.9
+53.3+4.0
+55.6+6.3
+54.2+4.9
+50.0+0.8
+53.7+4.4
+58.7+9.4
+60.0+10.7
+µ
+51.3+2.0
+51.4+2.2
+54.1+4.8
+53.1+3.8
+49.7+0.4
+52.0+2.7
+56.4+7.1
+58.8+9.5
+⊙
+54.3+5.0
+54.4+5.1
+57.2+7.9
+55.5+6.3
+51.1+1.8
+54.7+5.4
+62.6+13.3
+62.3+13.0
+R
+52.7+3.5
+52.9+3.6
+55.5+6.3
+53.7+4.5
+49.6+0.3
+53.3+4.1
+58.5+9.3
+60.1+10.8
+Table 2. BLEU and chrF scores for fr-en Marian-MT attributions. Scores followed by ∆over the baseline.
+BLEU scores for fr-en (Baseline: 27.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+35.5+8.5
+35.7+8.7
+39.1+12.1
+37.6+10.6
+31.5+4.5
+35.9+8.8
+45.1+18.1
+47.8+20.8
+µ
+32.8+5.8
+33.0+6.0
+36.0+9.0
+34.8+7.8
+28.8+1.8
+33.4+6.4
+40.8+13.8
+45.6+18.6
+⊙
+37.6+10.6
+37.9+10.9
+42.1+15.1
+40.1+13.1
+33.5+6.5
+37.7+10.7
+55.8+28.8
+54.1+27.1
+R
+34.6+7.5
+34.6+7.6
+38.2+11.2
+37.2+10.1
+30.4+3.4
+35.1+8.1
+44.4+17.4
+47.1+20.1
+chrF scores for fr-en (Baseline: 53.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+57.6+4.6
+57.6+4.6
+60.0+7.0
+58.8+5.8
+55.0+2.0
+57.8+4.8
+63.4+10.4
+65.5+12.5
+µ
+55.8+2.8
+55.9+2.9
+57.8+4.8
+57.0+4.0
+53.3+0.3
+56.1+3.1
+60.4+7.4
+63.9+10.9
+⊙
+58.9+5.9
+59.1+6.1
+61.9+8.9
+60.4+7.4
+56.2+3.2
+58.9+5.9
+70.5+17.5
+69.1+16.1
+R
+56.9+3.9
+56.9+3.9
+59.4+6.4
+58.5+5.5
+54.2+1.2
+57.3+4.2
+63.0+9.9
+65.1+12.1
+Table 3. BLEU and chrF scores for ar-en Marian-MT attributions. Scores followed by ∆over the baseline.
+BLEU scores for ar-en (Baseline: 40.68)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+52.0+11.2
+51.7+10.9
+54.9+14.1
+52.1+11.3
+46.4+5.6
+52.7+11.9
+60.8+19.9
+62.9+22.1
+µ
+47.3+6.5
+46.9+6.1
+51.3+10.5
+47.3+6.5
+43.7+2.9
+47.4+6.6
+55.7+14.9
+60.8+20.0
+⊙
+54.1+13.2
+54.2+13.4
+57.5+16.7
+54.2+13.4
+48.1+7.3
+54.2+13.4
+66.4+25.6
+68.7+27.9
+R
+51.1+10.3
+51.0+10.2
+54.4+13.6
+51.1+10.3
+45.1+4.3
+51.9+11.1
+60.2+19.4
+62.7+21.9
+chrF scores for ar-en (Baseline: 66.07)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+71.4+5.3
+71.2+5.1
+73.2+7.1
+71.4+5.4
+68.2+2.1
+71.8+5.7
+76.2+10.1
+77.6+11.6
+µ
+68.7+2.6
+68.5+2.4
+71.0+4.9
+68.7+2.6
+66.8+0.7
+68.8+2.7
+73.2+7.1
+76.4+10.3
+⊙
+72.5+6.4
+72.5+6.4
+74.5+8.4
+72.4+6.3
+68.9+2.9
+72.5+6.5
+79.5+13.4
+81.0+14.9
+R
+70.6+4.6
+70.6+4.5
+72.7+6.6
+70.7+4.7
+67.3+1.3
+71.1+5.0
+75.8+9.7
+77.4+11.4
+
+Cambridge Medium
+15
+Table 4. BLEU and chrF scores for de-en mBART attributions. Scores followed by ∆over the baseline.
+BLEU scores for de-en (Baseline: 26.08)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+24.9-1.2
+25.9-0.2
+29.8+3.8
+26.00.0
+23.2-2.8
+26.2+0.1
+25.0-1.1
+43.4+17.3
+µ
+23.1-3.0
+23.3-2.8
+24.6-1.5
+23.5-2.6
+22.6-3.5
+22.9-3.2
+24.2-1.9
+40.4+14.3
+⊙
+28.2+2.1
+28.4+2.3
+32.2+6.2
+28.8+2.7
+24.9-1.2
+28.4+2.4
+39.0+12.9
+51.4+25.3
+R
+25.0-1.1
+25.4-0.7
+29.0+2.9
+26.2+0.1
+23.9-2.2
+25.4-0.7
+24.7-1.4
+41.4+15.3
+chrF scores for de-en (Baseline: 48.4)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+46.8-1.6
+47.6-0.8
+50.5+2.1
+47.3-1.1
+45.8-2.6
+47.8-0.6
+46.6-1.8
+60.5+12.1
+µ
+45.3-3.1
+45.5-2.9
+46.2-2.2
+45.6-2.8
+45.2-3.2
+45.4-3.0
+46.3-2.1
+58.3+9.9
+⊙
+49.2+0.8
+49.2+0.8
+52.2+3.8
+49.5+1.1
+46.9-1.5
+49.3+0.9
+56.7+8.3
+66.2+17.8
+R
+47.0-1.4
+47.3-1.1
+49.9+1.5
+47.5-0.9
+46.4-2.0
+47.3-1.1
+46.3-2.1
+59.1+10.7
+Table 5. BLEU and chrF scores for fr-en mBART attributions. Scores followed by ∆over the baseline.
+BLEU scores for fr-en (Baseline: 27.12)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+33.2+6.1
+33.9+6.8
+38.9+11.8
+34.8+7.7
+28.4+1.3
+34.0+6.9
+31.8+4.7
+51.2+24.1
+µ
+29.5+2.4
+30.9+3.7
+35.2+8.1
+29.9+2.7
+26.8-0.3
+29.9+2.8
+30.8+3.7
+45.2+18.1
+⊙
+37.5+10.4
+38.0+10.9
+42.9+15.8
+37.5+10.4
+32.7+5.6
+38.2+11.0
+59.7+32.6
+63.0+35.9
+R
+32.2+5.1
+32.4+5.3
+37.4+10.2
+32.3+5.2
+28.0+0.9
+32.7+5.5
+31.3+4.2
+48.9+21.8
+chrF scores for fr-en (Baseline: 53.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+55.9+2.9
+56.3+3.3
+59.6+6.6
+56.9+3.9
+53.2+0.2
+56.3+3.3
+54.5+1.4
+67.7+14.7
+µ
+53.6+0.6
+54.4+1.4
+57.1+4.1
+54.4+1.4
+52.3-0.7
+54.0+1.0
+54.0+1.0
+63.7+10.7
+⊙
+58.4+5.4
+58.7+5.7
+62.1+9.0
+58.3+5.3
+55.3+2.3
+58.8+5.8
+73.2+20.2
+75.5+22.5
+R
+55.1+2.1
+55.2+2.2
+58.4+5.4
+55.4+2.4
+52.8-0.2
+55.4+2.4
+53.9+0.9
+66.1+13.1
+Table 6. BLEU and chrF scores for ar-en mBART attributions. Scores followed by ∆over the baseline.
+BLEU scores for ar-en (Baseline: 40.68)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+50.6+9.9
+51.2+10.5
+55.3+14.6
+50.5+9.8
+44.0+3.3
+50.3+9.6
+49.0+8.3
+63.6+22.9
+µ
+45.1+4.4
+44.7+4.0
+49.7+9.1
+45.0+4.3
+42.1+1.5
+44.2+3.6
+45.7+5.0
+58.4+17.7
+⊙
+53.7+13.0
+54.5+13.8
+59.5+18.9
+53.5+12.8
+48.3+7.6
+54.2+13.6
+73.4+32.7
+74.4+33.7
+R
+48.3+7.6
+48.7+8.0
+52.8+12.1
+48.5+7.7
+42.0+1.3
+48.6+7.9
+47.6+6.9
+60.4+19.7
+chrF scores for ar-en (Baseline: 65.41)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+69.9+4.5
+70.3+4.9
+72.7+7.3
+69.1+3.7
+66.6+1.2
+69.8+4.4
+68.6+3.2
+77.7+12.3
+µ
+67.0+1.6
+66.8+1.4
+69.5+4.1
+67.3+1.9
+66.0+0.6
+66.6+1.2
+67.0+1.5
+74.4+9.0
+⊙
+71.4+6.0
+71.9+6.5
+75.1+9.7
+73.1+7.7
+68.1+2.7
+71.7+6.3
+83.8+18.4
+84.3+18.9
+R
+68.2+2.8
+68.4+3.0
+70.9+5.5
+68.3+2.9
+65.0-0.4
+68.3+2.9
+67.1+1.7
+75.6+10.2
+
+16
+Aria Nourbakhsh et al.
+Overall ranking of attribution methods (best to worst).
+For de-en, we obtain:
+• Marian-MT: Attention ≈ValueZeroing > LG×A > IG > DeepLIFT > Saliency > I×G > GSHAP
+• mBART: ValueZeroing > Attention > LG×A > IG > DeepLIFT > Saliency > I×G > GSHAP
+For fr-en, we obtain:
+• Marian-MT: Attention > ValueZeroing > LG×A > IG > Saliency > DeepLIFT > I×G > GSHAP
+• mBART: ValueZeroing > Attention > LG×A > DeepLIFT > Saliency > I×G ≈IG > GSHAP
+For ar-en, we obtain:
+• Marian-MT: ValueZeroing > Attention > LG×A > DeepLIFT ≈IG ≈Saliency > I×G > GSHAP
+• mBART: ValueZeroing > Attention > LG×A > Saliency >DeepLIFT > I×G > IG > GSHAP
+4.3
+Encoder Self-Attention vs. Cross-Attention Injection
+In contrast to the encoder self-attention experiments, injecting attributions into cross-attention
+rarely improved translation quality and often degraded it (Tables 7, 8, and 9). Across de-en, fr-en,
+and ar-en, most attribution–operator combinations reduced BLEU and chrF relative to the baseline.
+The only consistent but modest gains were observed for de-en and fr-en when using gradient-based
+attributions (IG, LG×A) with a multiplicative operator (⊙), yielding up to +4.7 BLEU and +1.0 chrF.
+ValueZeroing and teacher Attention, which were highly effective for encoder attention, provided
+little benefit in cross-attention and frequently harmed performance, while GSHAP was consistently
+detrimental. Replacement of cross-attention weights (R) was particularly destructive, often leading
+to large drops in BLEU and chrF. These patterns suggest that cross-attention is substantially more
+brittle than encoder attention, and its alignment structure can only tolerate very limited attribution
+guidance, and even then, the resulting gains are small and not always reflected consistently across
+evaluation settings. While the exact reason that attribution injection to the cross-attention does not
+work is obscure and hard to pinpoint, our primary hypothesis is that during autoregressive inference,
+due to a decoding strategy such as beam search, the fixed sequence of the attributions for generated
+targets confuses the model. In other words, the model can deviate from the ground-truth sentence
+during autoregressive generation, but attributions are added for the fixed sequence of tokens, which
+not only no longer matches the tokens generated by the model but also actively prevents it from
+being able to correct itself8.
+8. To reduce energy consumption and training time, we omit training with mBART attributions when using 4-head
+encoder and cross-attention.
+
+Cambridge Medium
+17
+Table 7. BLEU and chrF scores for de-en Cross-attention Marian-MT attributions (Baseline: 25.82). Scores followed
+by ∆over the baseline.
+BLEU scores for de-en (Baseline: 25.82)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+25.3-0.5
+25.4-0.4
+24.9-0.9
+24.8-1.0
+22.4-3.4
+25.6-0.3
+16.9-8.9
+23.9-1.9
+µ
+24.8-1.0
+25.0-0.8
+26.0+0.2
+23.8-2.0
+22.3-3.5
+24.8-1.1
+20.0-5.8
+23.0-2.8
+⊙
+26.1+0.3
+26.1+0.3
+28.6+2.8
+28.5+2.6
+21.8-4.1
+26.3+0.5
+25.6-0.2
+24.7-1.1
+R
+24.2-1.6
+24.2-1.6
+22.6-3.2
+23.0-2.9
+18.2-7.6
+24.4-1.4
+15.7-10.1
+21.0-4.8
+chrF scores for de-en (Baseline: 49.27)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+47.5-1.8
+47.6-1.6
+48.7-0.6
+48.1-1.1
+46.0-3.3
+47.4-1.9
+44.1-5.1
+47.3-1.9
+µ
+47.0-2.3
+47.3-1.9
+48.7-0.5
+47.8-1.4
+45.8-3.5
+47.0-2.2
+45.3-4.0
+46.6-2.6
+⊙
+47.6-1.7
+47.4-1.9
+50.3+1.0
+49.6+0.4
+45.1-4.2
+47.2-2.1
+47.9-1.4
+47.9-1.4
+R
+45.9-3.4
+45.9-3.4
+46.9-2.3
+45.9-3.4
+41.4-7.9
+44.1-5.2
+42.1-7.2
+45.3-4.0
+Table 8. BLEU and chrF scores for fr-en Cross-attention Marian-MT attributions (Baseline: 27.01). Scores followed
+by ∆over the baseline.
+BLEU scores for fr-en (Baseline: 27.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+26.9-0.1
+26.9-0.1
+26.1-0.9
+28.2+1.2
+25.2-1.8
+25.3-1.7
+21.0-6.0
+27.6+0.6
+µ
+26.4-0.6
+26.6-0.4
+26.9-0.1
+27.6+0.6
+24.7-2.3
+24.5-2.6
+22.2-4.8
+25.6-1.4
+⊙
+27.7+0.6
+27.8+0.8
+29.1+2.1
+31.7+4.7
+25.2-1.8
+27.7+0.7
+19.9-7.2
+26.3-0.7
+R
+25.4-1.6
+25.5-1.5
+23.3-3.7
+26.2-0.8
+21.5-5.5
+25.1-1.9
+16.6-10.4
+24.5-2.5
+chrF scores for fr-en (Baseline: 53.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+50.9-2.1
+50.8-2.2
+51.8-1.2
+52.1-0.9
+50.1-2.9
+49.4-3.6
+48.3-4.7
+53.0-0.0
+µ
+50.4-2.6
+50.6-2.4
+51.8-1.2
+52.0-1.0
+49.7-3.4
+48.8-4.2
+48.2-4.8
+50.2-2.9
+⊙
+51.3-1.7
+51.2-1.8
+52.8-0.2
+53.5+0.5
+49.9-3.1
+51.1-2.0
+50.1-2.9
+51.1-1.9
+R
+48.7-4.3
+48.5-4.6
+49.9-3.1
+49.9-3.1
+46.2-6.8
+47.9-5.1
+43.8-9.2
+49.0-4.0
+Table 9. BLEU and chrF scores for ar-en Cross-attention Marian-MT attributions (Baseline: 40.68). Scores followed
+by ∆over the baseline.
+BLEU scores for ar-en (Baseline: 40.68)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+36.2-4.7
+41.9+1.1
+35.9-4.9
+36.2-4.7
+36.0-4.9
+36.1-4.8
+36.1-4.7
+40.6-0.2
+µ
+35.3-5.5
+41.7+0.9
+35.2-5.6
+35.3-5.5
+35.2-5.6
+35.3-5.5
+35.3-5.5
+40.5-0.3
+⊙
+28.5-12.3
+42.2+1.4
+26.5-14.3
+29.6-11.2
+28.3-12.5
+29.3-11.5
+26.3-14.5
+42.9+2.1
+R
+14.3-26.5
+40.0-0.8
+13.9-26.9
+14.5-26.3
+14.3-26.5
+14.2-26.6
+13.7-27.1
+39.1-1.7
+chrF scores for ar-en (Baseline: 66.07)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+62.7-3.4
+64.1-1.9
+62.7-3.3
+62.6-3.5
+62.7-3.4
+62.7-3.4
+62.8-3.3
+64.4-1.7
+µ
+62.3-3.8
+64.1-2.0
+62.3-3.8
+62.3-3.8
+62.2-3.8
+62.3-3.7
+62.3-3.8
+64.1-2.0
+⊙
+55.4-10.6
+64.3-1.7
+53.7-12.4
+56.1-9.9
+55.4-10.7
+56.0-10.1
+53.4-12.7
+65.3-0.8
+R
+43.4-22.6
+62.6-3.5
+43.3-22.8
+43.5-22.6
+43.4-22.7
+43.4-22.7
+43.2-22.9
+63.0-3.1
+
+18
+Aria Nourbakhsh et al.
+4.4
+Selective Attribution Injection (8 vs. 4 Heads)
+In another setting, as an ablation study, we applied the attribution methods to only 4 heads out of
+the 8 heads of the attention only using Marian-MT attributions. We conduct these experiments only
+on the encoder side, as previous results showed that these attribution mappings can be useful at this
+part of the architecture. Tables 14, 15 and 16 show the results of this comparison. This analysis
+investigates how reducing the number of attention heads affects the model’s performance when
+integrating attribution scores. By selectively applying attributions to only four heads (every other
+head), we assess whether information flow can still be captured and whether the model retains its
+translation quality. The changes in BLEU and chrF scores between 8-head and 4-head settings are
+relatively minor. However, some methods and operators show slight improvements. The results
+suggest that combining standard attention mechanisms with attribution-based operators can be a
+‘best of both worlds’ approach, as some heads learn the standard attention mechanisms while others
+utilize the attribution maps.
+4.5
+Faithfulness (predicting the model’s output)
+Up to this point, our experiments have relied on the assumption that attribution maps should help
+the student model better predict the gold (human) translation. Faithfulness, in contrast, relates to
+how precisely an attribution method captures the model’s internal reasoning process that produces a
+particular output (Jacovi and Goldberg 2020). Put differently, a faithful attribution provides a close
+approximation of the model’s actual decision-making procedure that produced the prediction.
+To investigate this notion in a teacher-student setting, we replace the human reference with
+the teacher’s behavior as the supervision signal. Given a source input x, we run the teacher model
+to produce a translation ˆy and compute the corresponding attribution map ˆE with respect to this
+generated output, yielding training triples (x, ˆy, ˆE). The student model is then trained on (x, ˆy, ˆE)
+exactly as in our earlier experiments, injecting ˆE into its attention mechanism. At test time, we
+provide the student model with (x, ˆE) and generate a student translation ˆy′, i.e., (x, ˆE) 7→ˆy′. We
+then compare ˆy′ with ˆy to quantify how well the student model can reproduce the teacher’s outputs
+when guided by a given attribution method. Under this setup, we hypothesize that attribution maps
+that better capture the teacher’s input–output dependencies will provide more useful guidance and,
+in turn, enable the student to generate translations ˆy′ that are closer to ˆy. The resulting agreement
+between ˆy′ and ˆy therefore serves as an empirical proxy for the utility of the underlying attribution
+maps for simulating the teacher model.
+Here, we present the results of this setup for the Marian-MT model in Tables 10–12. The first
+observation is that the baseline scores are substantially higher for predicting the teacher’s generation
+compared to the gold data (BLEU scores 54.55 vs 25.82 for de-en, 53.38 vs 27.01 for fr-en, 59.45 vs
+40.68 for ar-en). As in the previous setting, injecting attribution maps into the encoder attention
+substantially improves performance over the baseline student for Attention and Value Zeroing. For de-
+en, the best configuration reaches 75.4 BLEU and 85.1 chrF (vs. 54.55/72.77 for the baseline), for fr-en
+83.0 BLEU and 90.3 chrF (vs. 53.38/74.05), and for ar-en 82.8 BLEU and 90.0 chrF (vs. 59.45/77.96).
+In these cases, attribution-guided encoder attention markedly reduces the student–teacher gap, with
+absolute BLEU gains of +20–30 points, comparable to the gains observed when training on human
+references, albeit from a higher baseline.
+At a high level, the hierarchy of attribution maps remains similar to the human-reference setting.
+Across de-en, fr-en, and ar-en, the largest gains again come from Attention and ValueZeroing,
+followed by the gradient-based methods, with GSHAP consistently being the weakest. Aggregating
+across language pairs, the approximate ordering under the faithfulness objective is Attention ≈
+ValueZeroing > LG×A > IG > Saliency > I×G ≈DeepLIFT > GSHAP with slight nuances for
+ar-en where IG ranks lower. Because the baseline is already higher, some methods and operators fail
+to help the student model. For example, in Saliency for fr-en, addition does not change the result
+
+Cambridge Medium
+19
+from the baseline, whereas multiplication yields improvements. I×G and DeepLIFT can also degrade
+the results for fr-en with (µ) operator. From the operator’s point of view, the element-wise product
+operator (⊙) yields the largest changes, simple averaging (µ) is almost always the weakest operator,
+and + and R lie in between. For example, in fr-en, the best ⊙configuration with ValueZeroing
+reaches 83.0 BLEU (+29.6) and 90.2 chrF (+16.2) relative to the baseline student, whereas the
+corresponding +, µ, and R configurations with ValueZeroing remain between 74.3–80.6 BLEU and
+85.2–89.0 chrF. A similar pattern holds for de-en and ar-en.
+Table 10. BLEU and chrF scores for de-en generated by the Marian-MT model. Scores followed by ∆over the
+baseline.
+BLEU scores for de-en (Baseline: 54.55)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+64.5+9.9
+64.6+10.1
+68.5+13.9
+65.5+11.0
+58.1+3.5
+65.1+10.5
+72.0+17.4
+73.7+19.1
+µ
+58.4+3.8
+59.7+5.2
+65.2+10.7
+61.8+7.3
+55.1+0.5
+61.1+6.6
+68.8+14.3
+71.6+17.0
+⊙
+66.5+11.9
+66.6+12.0
+70.0+15.5
+67.3+12.8
+59.7+5.1
+66.3+11.8
+75.4+20.9
+74.2+19.6
+R
+63.4+8.8
+63.1+8.6
+67.9+13.3
+64.4+9.8
+56.0+1.4
+64.2+9.7
+72.0+17.4
+73.4+18.9
+chrF scores for de-en (Baseline: 72.77)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+78.3+5.5
+78.3+5.6
+80.8+8.0
+78.9+6.2
+74.4+1.6
+78.7+6.0
+82.8+10.0
+84.0+11.2
+µ
+74.5+1.7
+75.4+2.6
+78.7+5.9
+76.6+3.9
+72.8+0.0
+76.2+3.4
+80.8+8.0
+82.6+9.8
+⊙
+79.5+6.8
+79.6+6.9
+81.8+9.0
+80.1+7.3
+75.3+2.5
+79.5+6.7
+85.1+12.3
+84.0+11.2
+R
+77.6+4.8
+77.4+4.7
+80.4+7.7
+78.2+5.4
+73.2+0.4
+78.1+5.3
+82.8+10.0
+83.8+11.0
+Table 11. BLEU and chrF scores for fr-en generated by the Marian-MT model. Scores followed by ∆over the
+baseline.
+BLEU scores for fr-en (Baseline: 53.38)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+53.7+0.3
+53.6+0.2
+72.6+19.2
+70.7+17.3
+52.8-0.6
+53.6+0.2
+76.3+22.9
+80.6+27.2
+µ
+52.8-0.6
+52.9-0.4
+63.6+10.2
+64.0+10.7
+52.4-1.0
+52.8-0.6
+69.5+16.1
+74.3+20.9
+⊙
+62.2+8.8
+73.4+20.1
+76.5+23.1
+75.8+22.5
+58.7+5.3
+62.9+9.5
+82.9+29.5
+83.0+29.6
+R
+54.1+0.7
+66.5+13.1
+72.8+19.4
+70.9+17.5
+52.2-1.2
+54.2+0.8
+77.4+24.0
+80.5+27.1
+chrF scores for fr-en (Baseline: 74.05)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+73.4-0.7
+73.3-0.7
+84.4+10.3
+83.2+9.1
+72.8-1.3
+73.2-0.8
+86.3+12.3
+89.0+15.0
+µ
+73.1-1.0
+73.2-0.8
+79.5+5.5
+79.7+5.7
+72.9-1.2
+73.0-1.0
+82.5+8.5
+85.2+11.1
+⊙
+78.1+4.1
+84.9+10.8
+86.7+12.6
+86.2+12.1
+76.1+2.0
+78.6+4.5
+90.3+16.2
+90.2+16.2
+R
+73.5-0.5
+80.8+6.8
+84.5+10.5
+83.2+9.2
+72.4-1.7
+73.6-0.5
+87.0+12.9
+88.9+14.9
+
+20
+Aria Nourbakhsh et al.
+Table 12. BLEU and chrF scores for ar-en generated by the Marian-MT model. Scores followed by ∆over the
+baseline.
+BLEU scores for ar-en (Baseline: 59.45)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+69.1+9.6
+68.6+9.1
+73.1+13.6
+69.8+10.3
+63.7+4.2
+70.0+10.6
+76.8+17.4
+78.9+19.4
+µ
+65.1+5.6
+64.6+5.1
+65.3+5.9
+63.8+4.3
+61.7+2.3
+65.1+5.7
+67.4+7.9
+75.1+15.7
+⊙
+72.6+13.2
+72.8+13.3
+75.6+16.1
+72.4+13.0
+66.7+7.2
+72.9+13.5
+81.6+22.2
+82.8+23.3
+R
+68.9+9.4
+68.5+9.0
+72.7+13.3
+68.9+9.4
+63.3+3.8
+69.5+10.1
+77.0+17.6
+78.7+19.2
+chrF scores for ar-en (Baseline: 77.96)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+82.5+4.5
+82.2+4.2
+84.8+6.8
+82.8+4.8
+79.5+1.6
+83.0+5.1
+86.7+8.7
+87.9+10.0
+µ
+80.3+2.4
+80.1+2.1
+80.6+2.6
+79.6+1.7
+78.7+0.7
+80.4+2.4
+81.6+3.6
+85.8+7.8
+⊙
+84.4+6.4
+84.5+6.5
+86.0+8.0
+84.2+6.2
+81.0+3.1
+84.6+6.6
+89.3+11.3
+90.0+12.0
+R
+82.2+4.3
+82.0+4.0
+84.5+6.5
+82.2+4.2
+79.3+1.3
+82.6+4.6
+86.7+8.7
+87.7+9.7
+5.
+Discussion
+Because these attribution mappings come from trained models on larger datasets, they encode a
+learned relation between the source and target pairs, which otherwise cannot be learned by the
+student model. We conjectured that a better learned mapping can contribute to better results,
+and hence it can be a way of comparison between XAI attribution methods. In subsection 4.2,
+we presented the main findings and contributions of this work. Expanding on our observations,
+we saw some consistent results for the injection of Marian-MT and mBART attributions to the
+encoder-attention, with some nuances for the mBART attributions. Particularly for the Marian-
+MT attributions, we saw improvements in almost all the attribution maps. As a sanity check, we
+conducted the same experiments with two settings: 1) Injecting random attribution maps taken
+from the uniform distribution and 2) nearly diagonal matrices. Table 13 shows the results of these
+experiments:
+Table 13. BLEU scores for random attribution matrices (left) and diagonal attribution matrices (right). Scores followed
+by ∆over the baseline.
+Random matrix
+Diagonal matrix
+Op.
+de-en
+fr-en
+ar-en
+de-en
+fr-en
+ar-en
+⊙
+22.98-2.8
+24.85-2.1
+37.96-2.9
+21.64-4.2
+24.11-2.9
+37.34-3.3
+The results of these experiments show that the network still learns, albeit with degraded per-
+formance. We conclude that non-sensical attribution maps can indeed reduce results, even when
+a pattern, such as a quasi-diagonal attribution matrix, is present, and the increase is not accidental.
+There should be some meaningful alignment encoded by the XAI attribution maps.
+While a linguistic and qualitative analysis of the differences between each attribution method and
+whether there is a gold standard alignment in which these attributions approximate is outside the
+scope of this work, we would like to examine some topological differences and similarities among
+the attribution matrices. For this reason, we treat each column of the matrices as a probability
+distribution, from which we can calculate entropy as a measure of confidence in selecting the most
+important source tokens for the target tokens. Our manual inspection using heatmap visualization,
+such as Figure 1, showed that higher-scoring attribution methods exhibit more concentrated values
+around some tokens, and we observed more linear and diagonal patterns.
+
+Cambridge Medium
+21
+Figures 3, 4, and 5 confirm that the three higher attribution maps, ValueZeroing, Attention, and
+LG×A, have lower entropies compared to other methods. For mBART, the Entropy of gradient-
+based methods is higher than that of Marian-MT. One plausible explanation is that, in a deeper model
+with a longer computational graph, gradient signals become less sharp as they propagate toward
+earlier layers (Balduzzi et al. 2017). In particular, LG×A at the last layer of the encoder is more
+informative according to the results. For mBART, we observe that lower-scoring gradient-based
+attribution maps exhibit higher entropy than those of Marian-MT. Indeed, we could visually confirm
+that gradient-based methods have more chaotic representations. One point to note is that Entropy
+does not necessarily completely correlate with the results. For example, for mBART, although
+the Entropy of Attention is lower, we observe that the last input token receives the most weight
+for all target tokens, which, in turn, leads to lower entropy. An observation that was confirmed
+by (Kobayashi et al. 2020), and in general, ValueZeroing scored higher for this model.
+1
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Attribution Method
+Distribution of Column-wise Entropy by Attribution Method
+de-en - Marian
+Summary Statistics:
+IxG : =3.371, =0.759
+Saliency : =3.385, =0.755
+LGxA : =2.798, =0.601
+IG : =3.506, =0.753
+GSHAP : =3.418, =0.797
+DeepLIFT : =3.636, =0.755
+Attention : =2.578, =0.559
+ValueZeroing: =2.147, =0.229
+1
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+fr-en - Marian
+Summary Statistics:
+IxG : =3.885, =0.613
+Saliency : =3.882, =0.615
+LGxA : =3.265, =0.479
+IG : =4.080, =0.629
+GSHAP : =3.985, =0.645
+DeepLIFT : =4.169, =0.617
+Attention : =3.023, =0.468
+ValueZeroing: =2.263, =0.194
+0
+1
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+ar-en - Marian
+Summary Statistics:
+IxG : =3.744, =0.678
+Saliency : =3.711, =0.678
+LGxA : =3.117, =0.520
+IG : =3.991, =0.671
+GSHAP : =3.795, =0.696
+DeepLIFT : =4.015, =0.677
+Attention : =2.836, =0.450
+ValueZeroing: =2.244, =0.200
+Figure 3. Column-wise Entropy based on Marian-MT attributions.
+1
+2
+3
+4
+5
+6
+7
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Attribution Method
+Distribution of Column-wise Entropy by Attribution Method
+de-en - MBart
+Summary Statistics:
+IxG : =3.839, =0.786
+Saliency : =3.864, =0.799
+LGxA : =3.622, =0.772
+IG : =4.179, =0.824
+GSHAP : =3.825, =0.803
+DeepLIFT : =4.153, =0.817
+Attention : =1.920, =0.421
+ValueZeroing: =3.170, =0.586
+1
+2
+3
+4
+5
+6
+7
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+fr-en - MBart
+Summary Statistics:
+IxG : =4.440, =0.625
+Saliency : =4.480, =0.628
+LGxA : =4.239, =0.626
+IG : =4.801, =0.665
+GSHAP : =4.424, =0.646
+DeepLIFT : =4.773, =0.661
+Attention : =2.168, =0.337
+ValueZeroing: =3.558, =0.406
+1
+2
+3
+4
+5
+6
+7
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+ar-en - MBart
+Summary Statistics:
+IxG : =4.628, =0.727
+Saliency : =4.650, =0.741
+LGxA : =4.368, =0.688
+IG : =4.908, =0.757
+GSHAP : =4.630, =0.742
+DeepLIFT : =4.885, =0.751
+Attention : =2.160, =0.362
+ValueZeroing: =3.698, =0.475
+Figure 4. Column-wise Entropy based on mBART attributions.
+
+22
+Aria Nourbakhsh et al.
+1
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Attribution Method
+Distribution of Column-wise Entropy by Attribution Method
+de-en - Marian-Generated
+Summary Statistics:
+IxG : =3.339, =0.731
+Saliency : =3.353, =0.727
+LGxA : =2.799, =0.573
+IG : =3.407, =0.720
+GSHAP : =3.388, =0.774
+DeepLIFT : =3.603, =0.732
+Attention : =2.675, =0.491
+ValueZeroing: =2.069, =0.163
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+fr-en - Marian-Generated
+Summary Statistics:
+IxG : =3.807, =0.585
+Saliency : =3.807, =0.586
+LGxA : =3.192, =0.458
+IG : =3.926, =0.591
+GSHAP : =3.898, =0.623
+DeepLIFT : =4.095, =0.594
+Attention : =3.082, =0.376
+ValueZeroing: =2.149, =0.118
+0
+1
+2
+3
+4
+5
+6
+Mean Entropy per Sentence (bits)
+IxG
+Saliency
+LGxA
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
+Distribution of Column-wise Entropy by Attribution Method
+ar-en - Marian-Generated
+Summary Statistics:
+IxG : =3.731, =0.671
+Saliency : =3.699, =0.673
+LGxA : =3.097, =0.507
+IG : =3.968, =0.664
+GSHAP : =3.780, =0.690
+DeepLIFT : =4.003, =0.671
+Attention : =2.841, =0.432
+ValueZeroing: =2.205, =0.179
+Figure 5. Column-wise entropy based on Marian-MT attributions (Marian-MT-generated targets)
+6.
+Attribution Approximator
+From the previous experiments, particularly those involving the attention mechanism (Attention
+attributions and ValueZeroing), we developed a hypothesis that the usefulness of an attribution method
+is largely determined by how geometrically close its maps are to those that a transformer can generate.
+This hypothesis motivates the introduction of a dedicated Attributor network. The Attributor is
+trained to approximate target–source attribution matrices corresponding to different explanation
+methods. Concretely, given a source sequence and its target sequence, the Attributor network learns
+to reconstruct the associated attribution matrix. We implement it as an encoder–decoder transformer
+so that the function class used to model attributions closely matches the inductive biases of the
+student translation model itself. Intuitively, if the student model can internally reproduce a particular
+attribution pattern, then it should also be better positioned to exploit that signal when the same
+attribution is injected into its attention layers, which in turn leads to more effective attribution-guided
+translation.
+6.1
+Attributor implementation
+Our proposed Attributor network is a lightweight encoder–decoder transformer. The source sentence
+is tokenized and mapped to learned token embeddings, which are combined with learned positional
+embeddings and then processed by a 3-layer, 8-head self-attention encoder. The target sentence
+is embedded separately with its own learned positional embeddings and passed through 3 causal
+decoder layers. A standard triangular mask enforces autoregressive ordering to ensure that each
+target position attends only to previous target tokens. The resulting contextualized source and target
+embeddings are then fed into a modified cross-attention layer. For each target position of each
+attention head it returns a row attention score vector over source positions, which are essentially
+vectors of the per-head attention score matrices.
+More formally, let H denote the number of heads and S the number of source positions. For each
+target token t, the cross-attention block produces per-head attention vectors⃗st,h ∈RS:⃗
+st,h =⃗
+qt,hK⊤
+h
+p
+dk
++ mask,
+h = 1, . . . , H,
+(13)
+where⃗qt,h, Kh ∈Rdk are the query and key projections.
+To aggregate information across heads, we use a weighted mean of these score vectors across the
+head dimension. The weights are produced by a small MLP which maps each contextualized target
+
+Cambridge Medium
+23
+token embedding ht ∈Rd to a probability vector over heads pt:⃗
+pt = softmax
+ W2 GELU(W1⃗ht)
+
+∈RH,
+(14)
+Finally, the combined logit vector over source positions for each target token is obtained as a weighted
+mean of the per-head attention scores vectors for that target token, after which it is passed to softmax
+to obtain a distribution ˆat over source tokens:
+ˆ⃗at = softmax(
+H
+X
+h=1
+pth⃗st,h) ∈RS.
+(15)
+The attribution matrix ˆA is essentially stacked ˆ⃗at for all t.
+The objective function during the training is to minimize the average row-wise Kullback–Leibler
+divergence between the predicted attribution matrix ˆA and the gold attribution matrix A, summed
+over non-padded target positions:
+LKL =
+1
+Tvalid
+X
+t∈Tvalid
+KL
+ At || ˆAt
+
+,
+(16)
+where At and ˆAt denote the gold and predicted distributions over source tokens for target position t.
+6.2
+Attributor Evaluation
+We trained the Attributor on three datasets derived from our earlier experiments, covering all three
+language pairs. (a) A dataset constructed from Marian-MT attribution maps paired with gold (human)
+target translations. (b) A dataset constructed from mBART attribution maps paired with gold (human)
+target translations. (c) A faithfulness-oriented dataset in which Marian-MT attribution maps are
+paired with targets generated by the Marian-MT teacher model.
+As a part of preprocessing, source and target sentences were tokenized according to the respective
+model’s tokenizers, and attribution maps were normalized in the source dimension to represent
+a valid probability distribution (to accommodate the KL-divergence loss function). To assess the
+accuracy of the approximation of their attribution maps by the Attributor, we selected the following
+metrics:
+• KL-divergence. Being the minimization target, it is the first choice to quantify the difference
+between the approximated and the gold attributions
+• Overlap@3 The overlap between sets of top-3 valued source token indices per target token for
+the approximated and gold attribution maps. As highlighted by the Nourbakhsh, Lamsiyah, and
+Schommer (2025) we hypothesized that most of the useful signal attributions per target token
+comes from a small number of the highest-scoring source tokens. The overlap@3 is calculated as
+overlap@3(t) = |Top3(at) ∩Top3(ˆat)|
+3
+(17)
+• Tau@3 Kendall’s τ calculated on top-3 values over the source dimension of the gold attribution
+and values with the same indices but from the approximated attributions. This metric accompanies
+overlap@3 by quantifying the rank correlation.
+6.3
+Attributor Results
+Obtained values for de-en, fr-en, and ar-en pairs are presented in the three settings mentioned above
+and can be seen in Figures 6, 7, and 8.
+
+24
+Aria Nourbakhsh et al.
+Attention
+ValueZeroing
+LGxA
+Saliency
+IG
+DeepLIFT
+IxG
+GSHAP
+0.0
+0.1
+0.2
+0.3
+0.4
+Mean KL (lower is better)
+ar-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IxG
+IG
+GSHAP
+Mean KL (lower is better)
+de-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+Saliency
+DeepLIFT
+IxG
+IG
+GSHAP
+Mean KL (lower is better)
+fr-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+Saliency
+IG
+DeepLIFT
+IxG
+GSHAP
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Score (0 1)
+ar-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IxG
+IG
+GSHAP
+Score (0 1)
+de-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+Saliency
+DeepLIFT
+IxG
+IG
+GSHAP
+Score (0 1)
+fr-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Figure 6. KL-divergence, Overlap@3, and τ@3 for the prediction of attribution on Marian-MT attribution and gold
+(human) data.
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+IxG
+Saliency
+IG
+GSHAP
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+Mean KL (lower is better)
+ar-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+Saliency
+IG
+DeepLIFT
+IxG
+GSHAP
+Mean KL (lower is better)
+de-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IG
+IxG
+GSHAP
+Mean KL (lower is better)
+fr-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+IxG
+Saliency
+IG
+GSHAP
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Score (0 1)
+ar-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+Saliency
+IG
+DeepLIFT
+IxG
+GSHAP
+Score (0 1)
+de-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IG
+IxG
+GSHAP
+Score (0 1)
+fr-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Figure 7. KL-divergence, Overlap@3, and τ@3 for the prediction of attribution on mBART attribution and gold
+(human) data.
+
+Cambridge Medium
+25
+Attention
+ValueZeroing
+LGxA
+IG
+Saliency
+IxG
+DeepLIFT
+GSHAP
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+Mean KL (lower is better)
+ar-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IxG
+IG
+GSHAP
+Mean KL (lower is better)
+de-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+IG
+Saliency
+DeepLIFT
+IxG
+GSHAP
+Mean KL (lower is better)
+fr-en 
+ KL divergence
+Attention
+ValueZeroing
+LGxA
+IG
+Saliency
+IxG
+DeepLIFT
+GSHAP
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Score (0 1)
+ar-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+DeepLIFT
+Saliency
+IxG
+IG
+GSHAP
+Score (0 1)
+de-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Attention
+ValueZeroing
+LGxA
+IG
+Saliency
+DeepLIFT
+IxG
+GSHAP
+Score (0 1)
+fr-en 
+ Top-k=3 agreement
+Overlap k=3
+Kendall k=3
+Figure 8. KL-divergence, Overlap@3, and τ@3 for the prediction of attribution on Marian-MT attribution generated
+target.
+To quantify the link between approximability and downstream gains, we correlate the BLEU
+scores obtained by Marian-MT when augmented with each attribution method with our three
+approximability metrics (mean KL divergence, Overlap@3 and Kendall’s τ@3 between gold and
+predicted target–source maps). We compute BLEU separately for each injection operator (add,
+average, multiply, replace) and also consider the best BLEU per method across operators.
+Across all three language pairs (ar-en, de-en, fr-en) and all operators, BLEU shows a very strong
+positive correlation with the ‘top-3’ alignment metrics. Pearson’s (r) between BLEU and Overlap@3
+lies in the range (r ≈0.88-0.97), and Kendall’s (τ@3) achieves (r ≈0.74–0.95). In other words,
+between roughly 75% and 90% of the variance in BLEU across attribution methods can be explained
+by how well their target–source patterns can be reconstructed by the Attributor. Rank correlations
+show identical results: Spearman’s (ρ) between BLEU and Overlap@3/(τ@3) is consistently high
+(typically ρ ≈0.65–0.85), and for the fr-en pair with multiplication injection the ranking of methods
+by BLEU is exactly the same as the ranking by τ@3 (ρ = 1.0).
+In contrast, KL divergence exhibits only weak and unstable association with BLEU. Pearson
+correlations between BLEU and mean KL are low-moderate and positive (r ≈0.27–0.56), while
+Spearman’s (ρ) tends to be low negative and even changes sign for some operators (ρ ≈-0.26 -
+0.11). This behaviour, especially for Pearson, is largely driven by outliers such as ValueZeroing,
+which combines very high KL divergence with strong BLEU gains. These results suggest that global
+distribution similarity is a poor predictor of downstream effectiveness, whereas agreement on the
+locations and ordering of a few top-k source positions is highly predictive.
+Taken together, these findings support our central claim: attribution methods whose target-
+source maps are closer to what an encoder-decoder transformer (Attributor) can reproduce are
+exactly the ones that yield the largest BLEU gains when injected into the student model. We first
+measured this closeness with full-distribution KL divergence, but the correlation analysis shows that
+the best predictors of BLEU are Overlap@3 and Kendall’s τ@3 between the Attributor’s predictions
+and the gold attribution maps, which correlate very strongly with BLEU, whereas KL shows only
+weak and unstable correlations. These results suggest that an attribution method tends to be useful
+precisely when a transformer can reliably recover the same few most-salient source tokens per target
+
+26
+Aria Nourbakhsh et al.
+token as the teacher. In contrast, matching the full attention distribution beyond the top positions
+appears much less informative for predicting BLEU gains.
+For the other two settings of generated targets, the manifested trend is the same. For mBART,
+the highest correlation is observed with the multiplication operator. It should be noted that the
+approximation accuracy is the highest for Attention from mBART: the last source token consistently
+gets the highest attribution scores and their reconstruction is easier. However, there are still residual
+scores for other tokens whose presence can guide the translation. The regression plot of the above
+approximation metrics for the three language pairs and the corresponding outcomes is provided in
+the figures 9, 10, and 11.
+In short, the student benefits from what it can imitate: attribution methods for which target
+tokens a transformer can reliably reconstruct the same top-3 source tokens are precisely those that
+give student models the largest gains.
+7.
+Conclusion and Future work
+In this work, we demonstrate that XAI attribution maps derived from a learned teacher model can be
+injected into a student model, and that the resulting changes in translation behavior provide a practical
+signal of the relative quality of the XAI attribution methods. We conducted an extensive evaluation
+across German–English, French–English, and Arabic–English language pairs, comparing eight XAI
+methods and multiple composition strategies for integrating attribution scores into Transformer
+attention (addition, multiplication, averaging, and replacement). We further examined where the
+scores are applied (encoder self-attention versus cross-attention) and assessed robustness across two
+distinct teacher models, mBART and Marian-MT.
+Our results indicate that Attention and ValueZeroing, as well as LG×A extracted from the final
+encoder layer, consistently produced the largest gains in BLEU and chrF. We also observed that
+injecting source–target attributions into the encoder self-attention can yield significant improvements,
+which is initially counterintuitive given that the encoder is designed to attend only within the source
+sequence. A plausible explanation is that the non-auto-regressive encoder attention setup makes
+future information accessible to the entire sequence.
+We also showed that getting better results from the different attribution methods is not accidental:
+1) Attribution maps with lower entropy tend to score higher.2) We set up a transformer model,
+Attributor, which shows that the most beneficial attribution maps are the ones for whose target
+tokens the transformer model successfully recreates top-3 salient source tokens. These findings offer
+the NLP community a plausible explanation for the utility of attribution maps and highlight the
+importance of the attribution’s most salient tokens.
+There are some limitations to this work worth noting. First, this study provides an extensive
+exploration of attribution transfer between models. However, the overall pipeline is computationally
+expensive, both in deriving attributions at scale and in retraining student models. For this reason, we
+focused our comparison on attribution signals produced by a range of explainability methods, most of
+which are gradient-based. This choice was driven largely by practicality. Extracting attributions with
+perturbation-based approaches such as LIME (Ribeiro, Singh, and Guestrin 2016) and reAGent (Zhao
+and Shan 2024) is substantially more resource-intensive and time-consuming. In addition, some
+methods available in Inseq produce (self-)attributions on the decoder side of seq2seq models. In this
+work, we restrict our experiments to encoder self-attention and encoder–decoder cross-attention,
+leaving decoder-side attribution transfer for future study.
+More ablation studies are needed. In this work, we tried with cross-attention, 4 attention heads,
+and different operators. However, the effects of layer-wise injection, broader choices of head selection
+and head count, and alternative placement strategies remain underexplored. We also used a coarse
+attribution extraction procedure. We took attention-based attributions from all the layers and
+averaged attention scores, and for the gradient methods, our only alteration was the last encoder layer.
+
+Cambridge Medium
+27
+More systematic investigation of layer-wise signals and aggregation strategies is needed. Moreover,
+it is important to note that, for the Attributor experiments, we used the top-3 tokens for overlap@3
+and Kendall’s τ; it may also be beneficial to extend the experiments to other top-k tokens to draw a
+line for the most salient tokens more precisely. Also, in this work, our focus was limited to machine
+translation tasks. Machine translation tasks are characterized by the alignments between source
+and target pairs. Future work could extend this evaluation framework to other generative models,
+including those applied in question answering and text summarization.
+Funding Statement.
+This work is supported by the Luxembourg National Research Fund (FNR)
+as part of the project C21 - Collaboration 21: IPBG2020/IS/14839977/C21.
+Competing Interests.
+The authors declare that the manuscript complies with the ethical standards
+of the journal and that there are no competing interests to disclose.
+Acknowledgment.
+We thank Richard Albrecht for early assistance and helpful discussions during
+project initiation.
+Artificial Intelligence Usage.
+We used Large Language Models, such as ChatGPT and Copilot,
+for code autocompletion, proofreading, and spellchecking of the manuscript.
+References
+Arras, Leila, Franziska Horn, Grégoire Montavon, Klaus-Robert Müller, and Wojciech Samek. 2016. Explaining predictions
+of non-linear classifiers in NLP. In Proceedings of the 1st workshop on representation learning for NLP, edited by Phil
+Blunsom, Kyunghyun Cho, Shay Cohen, Edward Grefenstette, Karl Moritz Hermann, Laura Rimell, Jason Weston,
+and Scott Wen-tau Yih, 1–7. Berlin, Germany: Association for Computational Linguistics, August. https://doi.org/10.1
+8653/v1/W16-1601. https://aclanthology.org/W16-1601/.
+Arrieta, Alejandro Barredo, Natalia Díaz-Rodríguez, Javier Del Ser, Adrien Bennetot, Siham Tabik, Alberto Barbado, Salvador
+García, Sergio Gil-López, Daniel Molina, Richard Benjamins, et al. 2020. Explainable artificial intelligence (xai):
+concepts, taxonomies, opportunities and challenges toward responsible ai. Information fusion 58:82–115.
+Arya, Vijay, Rachel KE Bellamy, Pin-Yu Chen, Amit Dhurandhar, Michael Hind, Samuel C Hoffman, Stephanie Houde,
+Q Vera Liao, Ronny Luss, Aleksandra Mojsilović, et al. 2019. One explanation does not fit all: a toolkit and taxonomy of
+ai explainability techniques. arXiv preprint arXiv:1909.03012.
+Atanasova, Pepa, Jakob Grue Simonsen, Christina Lioma, and Isabelle Augenstein. 2020. A diagnostic study of explainability
+techniques for text classification. In Proceedings of the 2020 conference on empirical methods in natural language processing
+(emnlp), edited by Bonnie Webber, Trevor Cohn, Yulan He, and Yang Liu, 3256–3274. Online: Association for
+Computational Linguistics, November. https://doi.org/10.18653/v1/2020.emnlp-main.263. https://aclanthology.org/20
+20.emnlp-main.263/.
+Bahdanau, Dzmitry, Kyunghyun Cho, and Yoshua Bengio. 2016. Neural machine translation by jointly learning to align and
+translate. arXiv: 1409.0473 [cs.CL]. https://arxiv.org/abs/1409.0473.
+Bai, Jiangang, Yujing Wang, Hong Sun, Ruonan Wu, Tianmeng Yang, Pengfei Tang, Defu Cao, et al. 2022. Enhancing
+self-attention with knowledge-assisted attention maps. In Proceedings of the 2022 conference of the north american chapter of
+the association for computational linguistics: human language technologies, edited by Marine Carpuat, Marie-Catherine de
+Marneffe, and Ivan Vladimir Meza Ruiz, 107–115. Seattle, United States: Association for Computational Linguistics,
+July. https://doi.org/10.18653/v1/2022.naacl-main.8. https://aclanthology.org/2022.naacl-main.8/.
+Balduzzi, David, Marcus Frean, Lennox Leary, JP Lewis, Kurt Wan-Duo Ma, and Brian McWilliams. 2017. The shattered
+gradients problem: if resnets are the answer, then what is the question? In International conference on machine learning,
+342–350. PMLR.
+Bojar, Ondřej, Christian Buck, Christian Federmann, Barry Haddow, Philipp Koehn, Johannes Leveling, Christof Monz, Pavel
+Pecina, Matt Post, Herve Saint-Amand, et al. 2014. Findings of the 2014 workshop on statistical machine translation. In
+Proceedings of the ninth workshop on statistical machine translation, 12–58.
+
+28
+Aria Nourbakhsh et al.
+Brown, Peter F., Vincent J. Della Pietra, Stephen A. Della Pietra, and Robert L. Mercer. 1993. The mathematics of statistical
+machine translation: parameter estimation. Comput. Linguist. (Cambridge, MA, USA) 19, no. 2 (June): 263–311. ISSN:
+0891-2017.
+Bugliarello, Emanuele, and Naoaki Okazaki. 2020. Enhancing machine translation with dependency-aware self-attention. In
+Proceedings of the 58th annual meeting of the association for computational linguistics, edited by Dan Jurafsky, Joyce Chai,
+Natalie Schluter, and Joel Tetreault, 1618–1627. Online: Association for Computational Linguistics, July. https://doi.org
+/10.18653/v1/2020.acl-main.147. https://aclanthology.org/2020.acl-main.147/.
+Burkart, Nadia, and Marco F Huber. 2021. A survey on the explainability of supervised machine learning. Journal of Artificial
+Intelligence Research 70:245–317.
+Chang, Chun-Hao, Elliot Creager, Anna Goldenberg, and David Duvenaud. 2018. Explaining image classifiers by counter-
+factual generation. arXiv preprint arXiv:1807.08024.
+Chang, Yupeng, Xu Wang, Jindong Wang, Yuan Wu, Linyi Yang, Kaijie Zhu, Hao Chen, Xiaoyuan Yi, Cunxiang Wang,
+Yidong Wang, et al. 2024. A survey on evaluation of large language models. ACM Transactions on Intelligent Systems and
+Technology 15 (3): 1–45.
+Cho, Kyunghyun, Bart van Merriënboer, Caglar Gulcehre, Dzmitry Bahdanau, Fethi Bougares, Holger Schwenk, and
+Yoshua Bengio. 2014. Learning phrase representations using RNN encoder–decoder for statistical machine translation.
+In Proceedings of the 2014 conference on empirical methods in natural language processing (EMNLP), edited by Alessandro
+Moschitti, Bo Pang, and Walter Daelemans, 1724–1734. Doha, Qatar: Association for Computational Linguistics,
+October. https://doi.org/10.3115/v1/D14-1179. https://aclanthology.org/D14-1179/.
+Dale, David, Elena Voita, Loic Barrault, and Marta R. Costa-jussà. 2023. Detecting and mitigating hallucinations in machine
+translation: model internal workings alone do well, sentence similarity Even better. In Proceedings of the 61st annual
+meeting of the association for computational linguistics (volume 1: long papers), edited by Anna Rogers, Jordan Boyd-Graber,
+and Naoaki Okazaki, 36–50. Toronto, Canada: Association for Computational Linguistics, July. https://doi.org/10.1865
+3/v1/2023.acl-long.3. https://aclanthology.org/2023.acl-long.3/.
+Dayhoff, Judith E, and James M DeLeo. 2001. Artificial neural networks: opening the black box. Cancer: Interdisciplinary
+International Journal of the American Cancer Society 91 (S8): 1615–1635.
+Denil, Misha, Alban Demiraj, and Nando De Freitas. 2014. Extraction of salient sentences from labelled documents. arXiv
+preprint arXiv:1412.6815.
+DeYoung, Jay, Sarthak Jain, Nazneen Fatema Rajani, Eric Lehman, Caiming Xiong, Richard Socher, and Byron C. Wallace.
+2020. ERASER: A benchmark to evaluate rationalized NLP models. In Proceedings of the 58th annual meeting of the
+association for computational linguistics, edited by Dan Jurafsky, Joyce Chai, Natalie Schluter, and Joel Tetreault, 4443–
+4458. Online: Association for Computational Linguistics, July. https://doi.org/10.18653/v1/2020.acl-main.408.
+https://aclanthology.org/2020.acl-main.408/.
+Ding, Shuoyang, Hainan Xu, and Philipp Koehn. 2019. Saliency-driven word alignment interpretation for neural machine
+translation. In Proceedings of the fourth conference on machine translation (volume 1: research papers), edited by Ondřej
+Bojar, Rajen Chatterjee, Christian Federmann, Mark Fishel, Yvette Graham, Barry Haddow, Matthias Huck, et al.,
+1–12. Florence, Italy: Association for Computational Linguistics, August. https://doi.org/10.18653/v1/W19-5201.
+https://aclanthology.org/W19-5201/.
+Doshi-Velez, Finale, and Been Kim. 2017. Towards a rigorous science of interpretable machine learning. arXiv preprint
+arXiv:1702.08608.
+. 2018. Considerations for evaluation and generalization in interpretable machine learning. In Explainable and interpretable
+models in computer vision and machine learning, edited by Hugo Jair Escalante, Sergio Escalera, Isabelle Guyon, Xavier
+Baró, Yağmur Güçlütürk, Umut Güçlü, and Marcel van Gerven, 3–17. Cham: Springer International Publishing. ISBN:
+978-3-319-98131-4. https://doi.org/10.1007/978-3-319-98131-4_1. https://doi.org/10.1007/978-3-319-98131-4_1.
+Dwivedi, Rudresh, Devam Dave, Het Naik, Smiti Singhal, Rana Omer, Pankesh Patel, Bin Qian, Zhenyu Wen, Tejal Shah,
+Graham Morgan, et al. 2023. Explainable ai (xai): core ideas, techniques, and solutions. ACM computing surveys 55 (9):
+1–33.
+Dyer, Chris, Victor Chahuneau, and Noah A Smith. 2013. A simple, fast, and effective reparameterization of ibm model 2. In
+Proceedings of the 2013 conference of the north american chapter of the association for computational linguistics: human language
+technologies, 644–648.
+
+Cambridge Medium
+29
+Eksi, Melda, Erik Gelbing, Jonathan Stieber, and Chi Viet Vu. 2021. Explaining errors in machine translation with absolute
+gradient ensembles. In Proceedings of the 2nd workshop on evaluation and comparison of nlp systems, edited by Yang Gao,
+Steffen Eger, Wei Zhao, Piyawat Lertvittayakumjorn, and Marina Fomicheva, 238–249. Punta Cana, Dominican
+Republic: Association for Computational Linguistics, November. https://doi.org/10.18653/v1/2021.eval4nlp-1.23.
+https://aclanthology.org/2021.eval4nlp-1.23/.
+Fantozzi, Paolo, and Maurizio Naldi. 2024. The explainability of transformers: current status and directions. Computers 13 (4):
+92.
+Ferrando, Javier, and Marta R. Costa-jussà. 2021. Attention weights in transformer NMT fail aligning words between sequences
+but largely explain model predictions. In Findings of the association for computational linguistics: emnlp 2021, edited by
+Marie-Francine Moens, Xuanjing Huang, Lucia Specia, and Scott Wen-tau Yih, 434–443. Punta Cana, Dominican
+Republic: Association for Computational Linguistics, November. https://doi.org/10.18653/v1/2021.findings-emnlp.39.
+https://aclanthology.org/2021.findings-emnlp.39/.
+Ferrando, Javier, Gerard I. Gállego, Belen Alastruey, Carlos Escolano, and Marta R. Costa-jussà. 2022. Towards opening
+the black box of neural machine translation: source and target interpretations of the transformer. In Proceedings of the
+2022 conference on empirical methods in natural language processing, edited by Yoav Goldberg, Zornitsa Kozareva, and
+Yue Zhang, 8756–8769. Abu Dhabi, United Arab Emirates: Association for Computational Linguistics, December.
+https://doi.org/10.18653/v1/2022.emnlp-main.599. https://aclanthology.org/2022.emnlp-main.599/.
+Fomicheva, Marina, Lucia Specia, and Nikolaos Aletras. 2022. Translation error detection as rationale extraction. In Findings of
+the association for computational linguistics: acl 2022, edited by Smaranda Muresan, Preslav Nakov, and Aline Villavicencio,
+4148–4159. Dublin, Ireland: Association for Computational Linguistics, May. https://doi.org/10.18653/v1/2022.finding
+s-acl.327. https://aclanthology.org/2022.findings-acl.327/.
+Ghader, Hamidreza, and Christof Monz. 2017. What does attention in neural machine translation pay attention to? In
+Proceedings of the eighth international joint conference on natural language processing (volume 1: long papers), edited by Greg
+Kondrak and Taro Watanabe, 30–39. Taipei, Taiwan: Asian Federation of Natural Language Processing, November.
+https://aclanthology.org/I17-1004/.
+Gurrapu, Sai, Ajay Kulkarni, Lifu Huang, Ismini Lourentzou, and Feras A Batarseh. 2023. Rationalization for explainable nlp:
+a survey. Frontiers in Artificial Intelligence 6:1225093.
+Hase, Peter, and Mohit Bansal. 2020. Evaluating explainable AI: which algorithmic explanations help users predict model
+behavior? In Proceedings of the 58th annual meeting of the association for computational linguistics, edited by Dan Jurafsky,
+Joyce Chai, Natalie Schluter, and Joel Tetreault, 5540–5552. Online: Association for Computational Linguistics, July.
+https://doi.org/10.18653/v1/2020.acl-main.491. https://aclanthology.org/2020.acl-main.491/.
+He, Shilin, Zhaopeng Tu, Xing Wang, Longyue Wang, Michael Lyu, and Shuming Shi. 2019. Towards understanding neural
+machine translation with word importance. In Proceedings of the 2019 conference on empirical methods in natural language
+processing and the 9th international joint conference on natural language processing (emnlp-ijcnlp), edited by Kentaro Inui,
+Jing Jiang, Vincent Ng, and Xiaojun Wan, 953–962. Hong Kong, China: Association for Computational Linguistics,
+November. https://doi.org/10.18653/v1/D19-1088. https://aclanthology.org/D19-1088/.
+Hinton, Geoffrey. 2015. Distilling the knowledge in a neural network. arXiv preprint arXiv:1503.02531.
+Hooker, Sara, Dumitru Erhan, Pieter-Jan Kindermans, and Been Kim. 2019. A benchmark for interpretability methods in
+deep neural networks. Advances in neural information processing systems 32.
+Jacovi, Alon, and Yoav Goldberg. 2020. Towards faithfully interpretable NLP systems: how should we define and evaluate
+faithfulness? In Proceedings of the 58th annual meeting of the association for computational linguistics, edited by Dan Jurafsky,
+Joyce Chai, Natalie Schluter, and Joel Tetreault, 4198–4205. Online: Association for Computational Linguistics, July.
+https://doi.org/10.18653/v1/2020.acl-main.386. https://aclanthology.org/2020.acl-main.386/.
+Jain, Sarthak, and Byron C. Wallace. 2019. Attention is not Explanation. In Proceedings of the 2019 conference of the north
+American chapter of the association for computational linguistics: human language technologies, volume 1 (long and short papers),
+edited by Jill Burstein, Christy Doran, and Thamar Solorio, 3543–3556. Minneapolis, Minnesota: Association for
+Computational Linguistics, June. https://doi.org/10.18653/v1/N19-1357. https://aclanthology.org/N19-1357/.
+Jiao, Xiaoqi, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang Wang, and Qun Liu. 2020. TinyBERT:
+distilling BERT for natural language understanding. In Findings of the association for computational linguistics: emnlp 2020,
+edited by Trevor Cohn, Yulan He, and Yang Liu, 4163–4174. Online: Association for Computational Linguistics,
+November. https://doi.org/10.18653/v1/2020.findings-emnlp.372. https://aclanthology.org/2020.findings-emnlp.372/.
+Kalyan, Katikapalli Subramanyam. 2024. A survey of gpt-3 family large language models including chatgpt and gpt-4. Natural
+Language Processing Journal 6:100048.
+
+30
+Aria Nourbakhsh et al.
+Kim, Jenia, Henry Maathuis, and Danielle Sent. 2024. Human-centered evaluation of explainable ai applications: a systematic
+review. Frontiers in Artificial Intelligence 7:1456486.
+Kobayashi, Goro, Tatsuki Kuribayashi, Sho Yokoi, and Kentaro Inui. 2020. Attention is not only a weight: analyzing
+transformers with vector norms. In Proceedings of the 2020 conference on empirical methods in natural language processing
+(emnlp), edited by Bonnie Webber, Trevor Cohn, Yulan He, and Yang Liu, 7057–7075. Online: Association for
+Computational Linguistics, November. https://doi.org/10.18653/v1/2020.emnlp-main.574. https://aclanthology.org/20
+20.emnlp-main.574/.
+Langedijk, Anna, Hosein Mohebbi, Gabriele Sarti, Willem Zuidema, and Jaap Jumelet. 2024. DecoderLens: layerwise
+interpretation of encoder-decoder transformers. In Findings of the association for computational linguistics: naacl 2024, edited
+by Kevin Duh, Helena Gomez, and Steven Bethard, 4764–4780. Mexico City, Mexico: Association for Computational
+Linguistics, June. https://doi.org/10.18653/v1/2024.findings-naacl.296. https://aclanthology.org/2024.findings-naacl.2
+96/.
+Leiter, Christoph, Piyawat Lertvittayakumjorn, Marina Fomicheva, Wei Zhao, Yang Gao, and Steffen Eger. 2022. Towards
+explainable evaluation metrics for natural language generation. arXiv preprint arXiv:2203.11131.
+Li, Jierui, Lemao Liu, Huayang Li, Guanlin Li, Guoping Huang, and Shuming Shi. 2020. Evaluating explanation methods for
+neural machine translation. In Proceedings of the 58th annual meeting of the association for computational linguistics, edited
+by Dan Jurafsky, Joyce Chai, Natalie Schluter, and Joel Tetreault, 365–375. Online: Association for Computational
+Linguistics, July. https://doi.org/10.18653/v1/2020.acl-main.35. https://aclanthology.org/2020.acl-main.35/.
+Li, Xintong, Guanlin Li, Lemao Liu, Max Meng, and Shuming Shi. 2019. On the word alignment from neural machine
+translation. In Proceedings of the 57th annual meeting of the association for computational linguistics, edited by Anna Korhonen,
+David Traum, and Lluís Màrquez, 1293–1303. Florence, Italy: Association for Computational Linguistics, July. https://d
+oi.org/10.18653/v1/P19-1124. https://aclanthology.org/P19-1124/.
+Liu, Yinhan, Jiatao Gu, Naman Goyal, Xian Li, Sergey Edunov, Marjan Ghazvininejad, Mike Lewis, and Luke Zettlemoyer.
+2020. Multilingual denoising pre-training for neural machine translation. Transactions of the Association for Computational
+Linguistics 8:726–742.
+Lundberg, Scott M, and Su-In Lee. 2017. A unified approach to interpreting model predictions. In Advances in neural information
+processing systems, edited by I. Guyon, U. Von Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R.
+Garnett, vol. 30. Curran Associates, Inc. https://proceedings.neurips.cc/paper_files/paper/2017/file/8a20a8621978632d7
+6c43dfd28b67767-Paper.pdf.
+Madsen, Andreas, Nicholas Meade, Vaibhav Adlakha, and Siva Reddy. 2022. Evaluating the faithfulness of importance measures
+in NLP by recursively masking allegedly important tokens and retraining. In Findings of the association for computational
+linguistics: emnlp 2022, edited by Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang, 1731–1751. Abu Dhabi, United Arab
+Emirates: Association for Computational Linguistics, December. https://doi.org/10.18653/v1/2022.findings-emnlp.125.
+https://aclanthology.org/2022.findings-emnlp.125/.
+Madsen, Andreas, Siva Reddy, and Sarath Chandar. 2022. Post-hoc interpretability for neural nlp: a survey. ACM Computing
+Surveys 55 (8): 1–42.
+Meister, Clara, Stefan Lazov, Isabelle Augenstein, and Ryan Cotterell. 2021. Is sparse attention more interpretable? In
+Proceedings of the 59th annual meeting of the association for computational linguistics and the 11th international joint conference on
+natural language processing (volume 2: short papers), edited by Chengqing Zong, Fei Xia, Wenjie Li, and Roberto Navigli,
+122–129. Online: Association for Computational Linguistics, August. https://doi.org/10.18653/v1/2021.acl-short.17.
+https://aclanthology.org/2021.acl-short.17/.
+Mohammadi, Hadi, Ayoub Bagheri, Anastasia Giachanou, and Daniel L. Oberski. 2025. Explainability in practice: a survey of
+explainable nlp across various domains. arXiv: 2502.00837 [cs.CL]. https://arxiv.org/abs/2502.00837.
+Mohebbi, Hosein, Willem Zuidema, Grzegorz Chrupała, and Afra Alishahi. 2023. Quantifying context mixing in transformers.
+In Proceedings of the 17th conference of the european chapter of the association for computational linguistics, edited by Andreas
+Vlachos and Isabelle Augenstein, 3378–3400. Dubrovnik, Croatia: Association for Computational Linguistics, May.
+https://doi.org/10.18653/v1/2023.eacl-main.245. https://aclanthology.org/2023.eacl-main.245/.
+Moradi, Pooya, Nishant Kambhatla, and Anoop Sarkar. 2021. Measuring and improving faithfulness of attention in neural ma-
+chine translation. In Proceedings of the 16th conference of the european chapter of the association for computational linguistics: main
+volume, edited by Paola Merlo, Jorg Tiedemann, and Reut Tsarfaty, 2791–2802. Online: Association for Computational
+Linguistics, April. https://doi.org/10.18653/v1/2021.eacl-main.243. https://aclanthology.org/2021.eacl-main.243/.
+Nauta, Meike, Jan Trienes, Shreyasi Pathak, Elisa Nguyen, Michelle Peters, Yasmin Schmitt, Jörg Schlötterer, Maurice
+Van Keulen, and Christin Seifert. 2023. From anecdotal evidence to quantitative evaluation methods: a systematic review
+on evaluating explainable ai. ACM Computing Surveys 55 (13s): 1–42.
+
+Cambridge Medium
+31
+Nguyen, Dong. 2018. Comparing automatic and human evaluation of local explanations for text classification. In Proceedings
+of the 2018 conference of the north American chapter of the association for computational linguistics: human language technologies,
+volume 1 (long papers), edited by Marilyn Walker, Heng Ji, and Amanda Stent, 1069–1078. New Orleans, Louisiana:
+Association for Computational Linguistics, June. https://doi.org/10.18653/v1/N18-1097. https://aclanthology.org/N18-
+1097/.
+Nourbakhsh, Aria, Salima Lamsiyah, and Christoph Schommer. 2025. Quantifying the overlap: attribution maps and linguistic
+heuristics in encoder-decoder machine translation models, 822.
+Och, Franz Josef, and Hermann Ney. 2003. A systematic comparison of various statistical alignment models. Computational
+linguistics 29 (1): 19–51.
+Papineni, Kishore, Salim Roukos, Todd Ward, and Wei-Jing Zhu. 2002. Bleu: a method for automatic evaluation of machine
+translation. In Proceedings of the 40th annual meeting of the association for computational linguistics, 311–318.
+Perrella, Stefano, Lorenzo Proietti, Pere-Lluís Huguet Cabot, Edoardo Barba, and Roberto Navigli. 2024. Beyond correlation:
+interpretable evaluation of machine translation metrics. In Proceedings of the 2024 conference on empirical methods in natural
+language processing, edited by Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen, 20689–20714. Miami, Florida,
+USA: Association for Computational Linguistics, November. https://doi.org/10.18653/v1/2024.emnlp-main.1152.
+https://aclanthology.org/2024.emnlp-main.1152/.
+Popović, Maja. 2015. ChrF: character n-gram F-score for automatic MT evaluation. In Proceedings of the tenth workshop
+on statistical machine translation, edited by Ondřej Bojar, Rajan Chatterjee, Christian Federmann, Barry Haddow,
+Chris Hokamp, Matthias Huck, Varvara Logacheva, and Pavel Pecina, 392–395. Lisbon, Portugal: Association for
+Computational Linguistics, September. https://doi.org/10.18653/v1/W15-3049. https://aclanthology.org/W15-3049/.
+Pruthi, Danish, Rachit Bansal, Bhuwan Dhingra, Livio Baldini Soares, Michael Collins, Zachary C Lipton, Graham Neubig,
+and William W Cohen. 2022. Evaluating explanations: how much do explanations from the teacher aid students?
+Transactions of the Association for Computational Linguistics 10:359–375.
+Raganato, Alessandro, and Jörg Tiedemann. 2018. An analysis of encoder representations in transformer-based machine
+translation. In Proceedings of the 2018 EMNLP workshop BlackboxNLP: analyzing and interpreting neural networks for NLP,
+edited by Tal Linzen, Grzegorz Chrupała, and Afra Alishahi, 287–297. Brussels, Belgium: Association for Computational
+Linguistics, November. https://doi.org/10.18653/v1/W18-5431. https://aclanthology.org/W18-5431/.
+Ramachandran, Prajit, Barret Zoph, and Quoc V Le. 2017. Searching for activation functions. arXiv preprint arXiv:1710.05941.
+Ribeiro, Marco Tulio, Sameer Singh, and Carlos Guestrin. 2016. " why should i trust you?" explaining the predictions of any
+classifier. In Proceedings of the 22nd acm sigkdd international conference on knowledge discovery and data mining, 1135–1144.
+Saeed, Waddah, and Christian Omlin. 2023. Explainable ai (xai): a systematic meta-survey of current challenges and future
+opportunities. Knowledge-Based Systems 263:110273. ISSN: 0950-7051. https://doi.org/https://doi.org/10.1016/j.knosys.2
+023.110273. https://www.sciencedirect.com/science/article/pii/S0950705123000230.
+Sarti, Gabriele, Nils Feldhus, Ludwig Sickert, and Oskar van der Wal. 2023. Inseq: an interpretability toolkit for sequence
+generation models. In Proceedings of the 61st annual meeting of the association for computational linguistics (volume 3: system
+demonstrations), edited by Danushka Bollegala, Ruihong Huang, and Alan Ritter, 421–435. Toronto, Canada: Association
+for Computational Linguistics, July. https://doi.org/10.18653/v1/2023.acl-demo.40. https://aclanthology.org/2023.acl-
+demo.40/.
+Shakil, Hassan, Ahmad Farooq, and Jugal Kalita. 2024. Abstractive text summarization: state of the art, challenges, and
+improvements. Neurocomputing, 128255.
+Shrikumar, Avanti, Peyton Greenside, and Anshul Kundaje. 2017. Learning important features through propagating activation
+differences. In Proceedings of the 34th international conference on machine learning - volume 70, 3145–3153. ICML’17. Sydney,
+NSW, Australia: JMLR.org.
+Simonyan, Karen, Andrea Vedaldi, and Andrew Zisserman. 2014. Deep inside convolutional networks: visualising image
+classification models and saliency maps. In Workshop at international conference on learning representations.
+Slobodkin, Aviv, Leshem Choshen, and Omri Abend. 2022. Semantics-aware attention improves neural machine translation.
+In Proceedings of the 11th joint conference on lexical and computational semantics, edited by Vivi Nastase, Ellie Pavlick,
+Mohammad Taher Pilehvar, Jose Camacho-Collados, and Alessandro Raganato, 28–43. Seattle, Washington: Association
+for Computational Linguistics, July. https://doi.org/10.18653/v1/2022.starsem-1.3. https://aclanthology.org/2022.starse
+m-1.3/.
+Stahlberg, Felix. 2020. Neural machine translation: a review. Journal of Artificial Intelligence Research 69:343–418.
+
+32
+Aria Nourbakhsh et al.
+Sundararajan, Mukund, Ankur Taly, and Qiqi Yan. 2017. Axiomatic attribution for deep networks. In International conference
+on machine learning, 3319–3328. PMLR.
+Sutskever, Ilya, Oriol Vinyals, and Quoc V. Le. 2014. Sequence to sequence learning with neural networks. In Proceedings of
+the 28th international conference on neural information processing systems - volume 2, 3104–3112. NIPS’14. Montreal, Canada:
+MIT Press.
+Tang, Yuqing, Chau Tran, Xian Li, Peng-Jen Chen, Naman Goyal, Vishrav Chaudhary, Jiatao Gu, and Angela Fan. 2020.
+Multilingual translation with extensible multilingual pretraining and finetuning, arXiv: 2008.00401 [cs.CL].
+Tiedemann, Jörg, and Santhosh Thottingal. 2020. OPUS-MT – building open translation services for the world. In Proceedings
+of the 22nd annual conference of the european association for machine translation, 479–480. Lisboa, Portugal: European
+Association for Machine Translation, November. https://aclanthology.org/2020.eamt-1.61.
+Vaswani, A. 2017. Attention is all you need. Advances in Neural Information Processing Systems.
+Vieira, Carla Piazzon, and Luciano Antonio Digiampietri. 2022. Machine learning post-hoc interpretability: a systematic
+mapping study. In Proceedings of the xviii brazilian symposium on information systems, 1–8.
+Voita, Elena, Rico Sennrich, and Ivan Titov. 2021. Analyzing the source and target contributions to predictions in neu-
+ral machine translation. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics
+and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), edited by Chengqing
+Zong, Fei Xia, Wenjie Li, and Roberto Navigli, 1126–1140. Online: Association for Computational Linguistics, August.
+https://doi.org/10.18653/v1/2021.acl-long.91. https://aclanthology.org/2021.acl-long.91/.
+Zenkel, Thomas, Joern Wuebker, and John DeNero. 2019. Adding interpretable attention to neural translation models improves
+word alignment. arXiv: 1901.11359 [cs.CL]. https://arxiv.org/abs/1901.11359.
+Zhao, Zhixue, and Boxuan Shan. 2024. Reagent: a model-agnostic feature attribution method for generative language models.
+arXiv preprint arXiv:2402.00794.
+Zhao, Zihan, Yu Wang, and Yanfeng Wang. 2023. Knowledge-aware bayesian co-attention for multimodal emotion
+recognition. In Icassp 2023-2023 ieee international conference on acoustics, speech and signal processing (icassp), 1–5. IEEE.
+Ziemski, Michał, Marcin Junczys-Dowmunt, and Bruno Pouliquen. 2016. The United Nations parallel corpus v1.0. In
+Proceedings of the tenth international conference on language resources and evaluation (LREC‘16), edited by Nicoletta Calzolari,
+Khalid Choukri, Thierry Declerck, Sara Goggi, Marko Grobelnik, Bente Maegaard, Joseph Mariani, et al., 3530–3534.
+Portorož, Slovenia: European Language Resources Association (ELRA), May. https://aclanthology.org/L16-1561/.
+
+Cambridge Medium
+33
+(a) Mean KL (de-en, fr-en, ar-en).
+(b) Mean Kendall τ@3 (de-en, fr-en, ar-en).
+(c) Mean Overlap@3 (de-en, fr-en, ar-en).
+Figure 9. Regression plots of the Marian-MT attributions with gold (human) target sentence.
+
+34
+Aria Nourbakhsh et al.
+(a) Mean KL (de-en, fr-en, ar-en).
+(b) Mean Kendall τ@3 (de-en, fr-en, ar-en).
+(c) Mean Overlap@3 (de-en, fr-en, ar-en).
+Figure 10. Regression plots of the mBART attributions with gold (human) target sentence.
+
+Cambridge Medium
+35
+(a) Mean KL (de-en, fr-en, ar-en).
+(b) Mean Kendall τ@3 (de-en, fr-en, ar-en).
+(c) Mean Overlap@3 (de-en, fr-en, ar-en).
+Figure 11. Regression plot of the Marian-MT attributions with generated target sentences.
+
+36
+Aria Nourbakhsh et al.
+Table 14. BLEU and chrF scores for de-en Marian-MT 4 head attribution injection. Scores followed by ∆over the
+baseline.
+BLEU scores for de-en (Baseline: 25.82)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+32.7+6.8
+32.4+6.6
+35.7+9.9
+33.7+7.8
+27.8+2.0
+32.9+7.1
+40.0+14.1
+41.8+16.0
+µ
+29.9+4.0
+29.6+3.8
+33.5+7.7
+32.1+6.3
+26.2+0.4
+30.5+4.7
+36.1+10.2
+40.5+14.7
+⊙
+34.4+8.5
+34.7+8.9
+38.3+12.5
+36.0+10.2
+29.9+4.0
+34.6+8.8
+47.2+21.4
+44.8+18.9
+R
+32.4+6.6
+32.3+6.5
+35.9+10.1
+33.8+8.0
+27.9+2.1
+32.9+7.1
+40.2+14.4
+41.7+15.8
+chrF scores for de-en (Baseline: 49.27)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+53.6+4.4
+53.4+4.2
+55.8+6.6
+54.3+5.1
+50.3+1.0
+53.8+4.5
+58.3+9.1
+60.0+10.7
+µ
+51.5+2.3
+51.3+2.0
+54.1+4.8
+53.1+3.8
+49.1-0.2
+52.0+2.8
+55.5+6.2
+58.9+9.6
+⊙
+54.9+5.6
+55.1+5.8
+57.7+8.4
+56.0+6.7
+51.7+2.4
+55.0+5.7
+63.6+14.4
+62.0+12.7
+R
+53.5+4.2
+53.4+4.1
+56.0+6.7
+54.4+5.1
+50.4+1.1
+53.8+4.6
+58.5+9.2
+59.9+10.6
+Table 15. BLEU and chrF scores for fr-en Marian-MT 4 head attribution injection. Scores followed by ∆over the
+baseline.
+BLEU scores for fr-en (Baseline: 27.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+34.9+7.9
+34.6+7.6
+38.5+11.5
+37.5+10.5
+31.2+4.2
+35.1+8.1
+44.3+17.3
+47.5+20.5
+µ
+32.1+5.1
+33.1+6.1
+34.9+7.9
+34.1+7.1
+28.5+1.5
+32.8+5.8
+39.9+12.9
+44.9+17.9
+⊙
+38.2+11.2
+37.9+10.9
+42.3+15.3
+40.8+13.8
+34.1+7.1
+38.4+11.4
+56.1+29.1
+53.7+26.7
+R
+35.3+8.3
+35.4+8.4
+38.9+11.9
+37.8+10.8
+31.1+4.1
+35.7+8.7
+43.5+16.5
+46.8+19.8
+chrF scores for fr-en (Baseline: 53.01)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+57.2+4.1
+58.6+5.6
+59.7+6.7
+58.8+5.8
+54.8+1.8
+57.4+4.4
+62.9+9.9
+65.3+12.3
+µ
+55.4+2.4
+55.9+2.9
+57.2+4.2
+56.6+3.6
+53.1+0.1
+55.7+2.7
+59.8+6.7
+63.4+10.4
+⊙
+59.4+6.4
+60.8+7.8
+62.1+9.1
+61.0+7.9
+56.6+3.6
+59.4+6.4
+70.8+17.8
+68.9+15.9
+R
+57.4+4.4
+57.5+4.5
+59.9+6.9
+59.0+6.0
+54.8+1.8
+57.7+4.7
+62.3+9.3
+65.0+11.9
+Table 16. BLEU and chrF scores for ar-en Marian-MT 4 head attribution injection. Scores followed by ∆over the
+baseline.
+BLEU scores for ar-en (Baseline: 40.68)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+51.9+11.1
+51.6+10.8
+54.9+14.1
+51.8+11.0
+46.1+5.3
+52.7+11.9
+60.1+19.3
+63.0+22.2
+µ
+47.5+6.7
+47.3+6.5
+50.3+9.5
+47.0+6.2
+43.8+3.0
+47.8+7.0
+54.6+13.8
+59.8+19.0
+⊙
+54.9+14.1
+55.0+14.2
+58.1+17.3
+54.9+14.0
+49.0+8.2
+55.1+14.3
+66.9+26.1
+68.1+27.3
+R
+51.9+11.1
+51.5+10.7
+55.1+14.3
+51.8+11.0
+46.2+5.4
+52.3+11.5
+60.7+19.9
+63.3+22.5
+chrF scores for ar-en (Baseline: 66.07)
+Op.
+I×G
+Saliency
+LG×A
+IG
+GSHAP
+DeepLIFT
+Attention
+ValueZeroing
++
+71.4+5.3
+71.2+5.1
+73.2+7.1
+71.3+5.3
+68.1+2.0
+71.8+5.8
+75.8+9.7
+77.8+11.7
+µ
+68.9+2.8
+68.8+2.7
+70.4+4.4
+68.6+2.6
+66.9+0.9
+69.1+3.0
+72.6+6.5
+75.8+9.7
+⊙
+73.0+6.9
+73.1+7.0
+74.9+8.8
+72.9+6.9
+69.7+3.6
+73.1+7.0
+79.9+13.9
+80.7+14.7
+R
+71.4+5.3
+71.2+5.1
+73.3+7.2
+71.3+5.2
+68.1+2.0
+71.6+5.5
+76.2+10.1
+77.9+11.8
+
+Cambridge Medium
+37
+Table 17. Sample translations and metrics for Marian-MT and mBART under different attribution/XAI variants for a
+sample de-en.
+Model
+Text
+BLEU
+chrF
+Marian-MT
+Source:
+Ich dachte, dass es damit beendet wäre.
+–
+–
+Reference:
+I thought that would be the end of it.
+–
+–
+Baseline:
+I thought it was finished.
+9.91
+29.19
+I×G
+I thought it would have been finished with it.
+12.55
+43.76
+Saliency
+I thought it would have been finished with it.
+12.55
+43.76
+LG×A
+I thought that it had been finished with it.
+19.64
+47.02
+IG
+I thought it would have been over with it.
+12.55
+43.29
+GSHAP
+I thought it would be finished with it.
+14.78
+47.72
+DeepLIFT
+I thought it would have been finished with it.
+12.55
+43.76
+Attention
+I thought that would have an end to it.
+32.47
+61.15
+ValueZeroing
+I thought this might be the end of it.
+58.14
+65.49
+mBART
+Reference:
+I thought that would be the end of it.
+–
+–
+I×G
+I thought it’d be done to it.
+12.86
+33.19
+Saliency
+I thought it’d be done to it.
+12.86
+33.19
+LG×A
+I thought it’d be done with it.
+12.86
+33.28
+IG
+I thought it’d be done to it.
+12.86
+33.19
+GSHAP
+I thought it was the only way it was.
+10.55
+29.46
+DeepLIFT
+I thought it would end to it for it.
+13.13
+41.71
+Attention
+I thought it would be the end of it.
+70.71
+80.71
+ValueZeroing
+I thought it would be the end over it.
+35.49
+68.34
+Marian-MT (Generated)
+Reference:
+I thought it was over.
+–
+–
+I×G
+I thought it would be.
+32.47
+57.06
+Saliency
+I thought it was over.
+100
+100
+LG×A
+I thought it was over.
+100
+100
+IG
+I thought it would end.
+32.47
+56.33
+GSHAP
+I thought it would be.
+32.47
+57.06
+DeepLIFT
+I thought it would be.
+32.47
+57.06
+Attention
+I thought it was over.
+100
+100
+ValueZeroing
+I thought it was over.
+100
+100

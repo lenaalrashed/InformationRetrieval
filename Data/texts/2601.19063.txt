@@ -1,0 +1,1784 @@
+Optimizing Conversational Quality in Spoken Dialogue Systems with
+Reinforcement Learning from AI Feedback
+Siddhant Arora1, Jinchuan Tian1, Jiatong Shi1, Hayato Futami2,
+Yosuke Kashiwagi2, Emiru Tsunoo2, Shinji Watanabe1
+1 Carnegie Mellon University, USA
+2 Sony Group Corporation, Japan
+{siddhana}@cs.cmu.edu
+Abstract
+Reinforcement learning from human or AI
+feedback (RLHF/RLAIF) for speech-in/speech-
+out dialogue systems (SDS) remains under-
+explored, with prior work largely limited to
+single semantic rewards applied at the utter-
+ance level. Such setups overlook the multi-
+dimensional and multi-modal nature of con-
+versational quality, which encompasses seman-
+tic coherence, audio naturalness, speaker con-
+sistency, emotion alignment, and turn-taking
+behavior. Moreover, they are fundamentally
+mismatched with duplex spoken dialogue sys-
+tems that generate responses incrementally,
+where agents must make decisions based on
+partial utterances. We address these limitations
+with the first multi-reward RLAIF framework
+for SDS, combining semantic, audio-quality,
+and emotion-consistency rewards. To align
+utterance-level preferences with incremental,
+blockwise decoding in duplex models, we ap-
+ply turn-level preference sampling and aggre-
+gate per-block log-probabilities within a single
+DPO objective. We present the first systematic
+study of preference learning for improving SDS
+quality in both multi-turn Chain-of-Thought
+and blockwise duplex models, and release a
+multi-reward DPO dataset to support repro-
+ducible research. Experiments show that single-
+reward RLAIF selectively improves its targeted
+metric, while joint multi-reward training yields
+consistent gains across semantic quality and
+audio naturalness. These results highlight the
+importance of holistic, multi-reward alignment
+for practical conversational SDS.
+1
+Introduction
+Spoken dialogue systems (SDS) are rapidly evolv-
+ing from turn-based voice assistants (Face, 2024;
+Xie and Wu, 2024) toward real-time, full-duplex
+conversational agents (Nguyen et al., 2023; Meng
+et al., 2024; Zhang et al., 2024d; Défossez et al.,
+2024) capable of listening and speaking simulta-
+neously.
+Advances in end-to-end architectures,
+speech foundation models (KimiTeam et al., 2025;
+Tian et al., 2025a; Arora et al., 2025a), and duplex
+decoding (Veluri et al., 2024; Zhang et al., 2024c)
+have enabled more natural interactions, reduced
+latency, and improved conversational flow. Yet,
+despite these modeling breakthroughs, achieving
+human-preferred conversational behavior, seman-
+tic coherence, natural prosody, emotionally aligned
+delivery, and responsive turn-taking, remains an
+open challenge (Lin et al., 2025a). As systems be-
+come more sophisticated, small errors in timing,
+prosody, or semantic drift can accumulate across
+turns, directly degrading user experience.
+These challenges highlight a growing alignment
+gap between advances in duplex modeling and the
+ability to optimize SDS for human-preferred con-
+versational behavior. While there have been efforts
+to apply reinforcement learning from human or AI
+feedback (RLHF / RLAIF) as a post-training mech-
+anism in text-based dialogue models and cascaded
+systems (Su et al., 2016; Serban et al., 2018), sys-
+tematic investigations of preference learning for
+end-to-end (E2E) spoken dialogue systems remain
+scarce. To address this gap, recent work (Chen
+et al., 2024a; Zhang et al., 2024a; Cao et al., 2025)
+has begun applying RLHF / RLAIF to speech-
+based systems, but each explores only a narrow
+slice of the alignment space. One such work (Wu
+et al., 2025) shows that large-scale semantic pref-
+erence learning can improve factuality, safety, and
+coherence in a deployed duplex SDS by transcrib-
+ing real user–agent dialogues and using an LLM
+judge to generate preference data. Align-SLM (Lin
+et al., 2025b) demonstrates that LLM-based se-
+mantic evaluation can effectively guide preference
+optimization in speech-to-speech language models,
+producing more coherent and less repetitive con-
+tinuations. ORISE (Chen et al., 2025) focuses on
+temporal alignment, using online RL with heuristic,
+audio-driven rewards to improve turn-taking behav-
+ior and responsiveness without requiring labeled
+1
+arXiv:2601.19063v1 [cs.CL] 27 Jan 2026
+
+UTMOS
+User 
+Input 
+Speech (
+(
+Text 
+Response 1
+Y2zk+gJpBwM=">AB8nicbVBNS8NAEJ3Ur1q/qh69LBbBU0mKqMdSLx4r2A9IQtlsN+nSzSbsb
+oQS+jO8eFDEq7/Gm/GTZuDtj4YeLw3w8y8IOVMadv+tiobm1vbO9Xd2t7+weFR/fikr5JMEtoj
+CU/kMCKciZoTzPN6TCVFMcBp4Ngelf4gycqFUvEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQX
+QOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtK
+U0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVzJtJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZ
+aYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5
+hT+wPr8AeEwkFc=</latexit>(
+(
+Text 
+Response 2
+Chain-
+of-
+Thought 
+Spoken 
+Dialogue 
+System
+(
+Speech 
+Response 1
+Speech 
+Response2
+Candidate 
+Text 
+Responses 
+(
+Candidate 
+Speech 
+Responses 
+vEo56l1I9xJFjICNZGcr0OiyKJvBzVRvWG3bQXQOvEKUkDSnRH9S9vnJAspkITjpVyHTvVfo6lZoTec3LFE0xmeKIuoYKHFPl54uT5+jCKGMUJtKU0Gih/p7IcazULA5MZ4z1RK16hfif52Y6vPVz
+JtJMU0GWi8KMI52g4n80ZpISzWeGYCKZuRWRCZaYaJNSEYKz+vI6beaznWz9XDVaHfKOKpwBudwCQ7cQBvuoQs9IJDAM7zCm6WtF+vd+li2Vqxy5hT+wPr8AeEwkFc=</latexit>(
+Semantic 
+Reward 
+LLM 
+Evaluator
+Intelligibility 
+Whisper 
+WER
+Audio Quality 
+Union of All 
+Single 
+Reward 
+Preference 
+Pairs
+Direct Preference 
+Optimization
+(
+Emo2vec
+Emotion 
+Figure 1: Overview of the proposed dataset-level Multi-Reward RLAIF framework. Unlike prior work that optimizes
+single rewards (typically semantic quality), we construct four independent preference datasets targeting semantic
+coherence, audio naturalness, intelligibility, and emotion consistency. These datasets are jointly sampled during
+DPO training. The framework supports both turn-by-turn CoT and blockwise duplex SDS by aggregating per-block
+log-probabilities under utterance-level preferences (S. 4.2)
+data. Together, these works illustrate the promise
+of RLHF for SDS.
+However, these approaches still fall short of
+what real-time SDS demand.
+First, all exist-
+ing methods optimize a single reward dimension,
+typically semantic quality or turn-taking, even
+though conversational quality is inherently multi-
+objective, jointly shaped by semantics, audio natu-
+ralness, speaker style consistency, emotional tone,
+and responsiveness. Second, most current RLHF
+pipelines assume full-utterance feedback, which is
+incompatible with duplex SDS where the model
+must commit to partial utterances and make in-
+flight decisions before sentence boundaries are de-
+tected. Third, while audio-based preference learn-
+ing has recently gained traction in text-to-speech
+(TTS) systems (Chen et al., 2024a; Tian et al.,
+2025b), it remains largely unexplored in the context
+of SDS. Existing SDS-focused RLHF approaches
+primarily optimize semantic or timing-related ob-
+jectives and do not incorporate audio-level rewards,
+such as MOS-based quality estimators or emotion
+similarity with human reference responses, within
+a unified dialogue-level learning framework. As
+a result, the potential of audio-centric rewards to
+jointly improve conversational quality in SDS has
+yet to be systematically studied.
+To overcome these limitations,
+1
+we pro-
+pose the first multi-reward RLAIF framework for
+speech-in/speech-out SDS, designed to jointly opti-
+mize semantic quality, audio naturalness (UTMOS)
+and intelligibility and emotion fidelity within a sin-
+gle preference-learning pipeline. 2 We address the
+mismatch between incremental decoding in duplex
+SDS and sentence-level rewards by introducing a
+streaming preference learning formulation that ap-
+plies utterance-level feedback to partial, blockwise
+generation, enabling RLAIF to shape in-flight de-
+cisions in duplex streaming models (Arora et al.,
+2025c). Applied to multi-turn Chain-of-Thought
+SDS models and duplex architectures, our frame-
+work delivers consistent improvements across se-
+mantic and acoustic metrics. This work establishes
+a unified foundation for holistic alignment of SDS,
+moving beyond semantic-only optimization toward
+agents that sound better and interact more naturally.
+3 Finally, we will publicly release the first large-
+scale multi-reward preference learning dataset for
+SDS, together with all training and inference code,
+enabling reproducible RLAIF research for speech-
+in/speech-out conversational agents.
+2
+Problem Formulation
+As modelled in prior works (Arora et al., 2025c),
+SDS take a d-dimensional continuous feature
+stream X = (xt ∈Rd | t = 1, . . . , T) as input au-
+dio from the user and generate a synchronized spo-
+ken response Y sds = (ysds
+t
+∈Rd | t = 1, . . . , T),
+where T is the total duration of the conversation,
+including multiple turns. The objective of an SDS
+2
+
+is to generate speech outputs that are coherent,
+natural, and contextually appropriate, typically
+modeled by estimating the conditional distribution
+P(Y sds|X, Xspk), where Xspk represents a speaker
+or style prompt controlling vocal characteristics
+(e.g., timbre, prosody, or emotion)
+3
+Spoken dialogue systems
+3.1
+Turn by turn SDS
+Traditional SDS (Glass, 1999) are commonly de-
+signed around a turn-based interaction paradigm,
+in which the system alternates between listening
+and speaking. Under this formulation, the con-
+tinuous input–output streams are partitioned into
+a sequence of turns, i.e. Y sds = {Y sds
+k
+| k =
+1, . . . , K} and X = {Xk | k = 1, . . . , K} where
+K denotes the total number of turns. Given this
+turn-based interaction, the system models the over-
+all speech output distribution using the causality-
+based conditional independence (C.I.) assumption:
+P(Y sds|X, Xspk) =
+Y
+k
+P(Y sds
+k |Y sds
+1:k−1, X1:k, Xspk)
+(1)
+Thus, the objective of a turn-by-turn SDS is to
+predict, at each turn, the response that maximizes
+this turn-level conditional probability.
+Prior work (Arora et al., 2025d) has explored
+incorporating structured intermediate representa-
+tions, such as ASR transcripts Sasr
+k and textual re-
+sponses Sres
+k , within an E2E SDS framework, yield-
+ing Chain-of-Thought (CoT) E2E SDS models.
+Further details on the mathematical formulation
+of the CoT SDS proposed in (Arora et al., 2025d)
+are in S. A.1. We adopt this CoT formulation as
+the turn-by-turn SDS backbone in our experiments.
+3.2
+Duplex SDS
+A growing body of work has explored duplex, or
+simultaneous speaking-while-listening, spoken di-
+alogue systems, motivated by the need to support
+more natural, low-latency interactions that better re-
+semble human conversational behavior (Masumura
+et al., 2018; Roddy et al., 2018; Skantze, 2017;
+Meena et al., 2014; Ekstedt and Skantze, 2020).
+One common strategy for building duplex SDS
+is the time-multiplexing approach, which alternates
+between processing fixed-duration segments of user
+input, and generating spoken output for the subse-
+quent segment (Veluri et al., 2024). Building on
+earlier turn-by-turn CoT formulations for E2E SDS,
+recent work, namely SCoT, has investigated how
+structured intermediate reasoning can be integrated
+into blockwise duplex systems (Arora et al., 2025c).
+Further details on the mathematical formulation of
+SCoT (Arora et al., 2025c) can be found in S. A.2.
+In this work, we build on SCoT-style duplex models
+and focus on aligning blockwise generation with
+utterance-level preference learning.
+4
+RLAIF Post-training Framework
+Having introduced both turn-based and duplex SDS
+architectures, we now describe how these models
+are aligned with human-preferred conversational
+behavior through preference optimization. The spe-
+cific reward functions employed in this work are
+detailed later in Section 5.
+4.1
+Preference Optimization for
+Turn-by-Turn SDS
+While the CoT-based SDS formulation (Arora et al.,
+2025d) provides a structured autoregressive model
+for predicting turn-level responses, it does not guar-
+antee that the generated speech aligns with human
+conversational preferences. To address this limita-
+tion, we adopt reinforcement learning from AI feed-
+back (RLAIF) paradigm (Bai et al., 2022; Lee et al.,
+2023) to simulate preference signals, and apply
+Direct Preference Optimization (DPO) (Rafailov
+et al., 2023) as a post-training objective. This en-
+ables alignment of the turn-level SDS policy with
+multi-reward preference signals spanning semantic,
+acoustic, and stylistic dimensions (see Section 5).
+Turn-Level Preference Pairs.
+For each user turn
+k, we generate a set of n candidate spoken re-
+sponses
+Yk = {Y sds
+k,1 , . . . , Y sds
+k,n}.
+Using multi-reward scoring, we select one or more
+preferred–dispreferred response pairs from this can-
+didate set, forming preference pairs
+(Y +
+k , Y −
+k ) ∈Yk × Yk,
+Y +
+k ≻Y −
+k ,
+where Y +
+k and Y −
+k denote the positive and negative
+responses according to the reward criteria.
+DPO Loss for Turn-Level SDS.
+Given a pref-
+erence pair (Y +
+k , Y −
+k ) at turn k with turn history
+H(k) =
+ X1:k, Y sds
+1:k−1, Xspk
+, the Direct Prefer-
+ence Optimization (DPO) loss is defined as
+L(k)
+DPO = −log σ
+
+β
+
+∆θ(k) −∆ref(k)
+
+,
+(2)
+3
+
+where
+∆θ(k) = log πθ
+
+Y +
+k | H(k)
+−
+log πθ
+
+Y −
+k | H(k)
+,
+(3)
+and ∆ref(k) is defined analogously using the frozen
+reference policy πref. Here, πθ denotes the learn-
+able SDS policy being optimized, while πref is a
+fixed copy of the same model before preference
+learning (i.e., the supervised fine-tuned SDS check-
+point). The reference policy serves as an anchor
+that stabilizes optimization by preventing large de-
+viations from the original behavior, following stan-
+dard DPO practice. The function σ(·) denotes the
+logistic sigmoid, and β controls the sharpness of
+the preference margin.
+4.2
+Preference Optimization for Duplex SDS
+Although preference labels are assigned only at
+the utterance level, duplex SDS models like SCoT
+generate partial speech segments in a blockwise
+manner. To ensure that utterance-level DPO train-
+ing remains compatible with blockwise generation,
+we decompose each candidate spoken response into
+fixed-size blocks and compute its log-probability
+by aggregating blockwise contributions.
+Blockwise Representation.
+Given a turn-level
+response Y sds
+k , we partition it into blocks of size
+Nblock, i.e. Y sds
+k
+= {Y sds
+k,b | b = 1, . . . }. This
+mirrors the block sequence used in duplex SDS for
+the user speech X as discussed in S. A.2.
+Blockwise Factorization of the Utterance Prob-
+ability.
+To simplify notation, we define the turn
+history up to block b as
+H(k)
+b
+= H(k) ∪
+ Xk,1:b−1, Y sds
+k,1:b−1
+
+which augments the turn history H(k) with all user
+input and system output blocks generated prior
+to block b within the current turn.
+Under the
+same causality-based conditional independence as-
+sumption used in time-multiplexed SDS such as
+SCoT (Arora et al., 2025c), the posterior over the
+full response factorizes block-by-block as:
+log πθ(Y sds
+k
+| X1:k, Y sds
+1:k−1) =
+X
+b
+log πθ
+
+Y sds
+k,b | H(k)
+b
+
+,
+(4)
+This formulation enables us to use preference pairs
+(Y +
+k , Y −
+k ) are constructed at the utterance level, as
+in turn-by-turn SDS (S. 4.1), and no reward labels
+are assigned to individual blocks. During training,
+the utterance-level preference is applied by substi-
+tuting the aggregated log-probabilities in Eq. 4 into
+the DPO objective (Eq. 3). This strategy avoids
+the need to define reward signals at the partial-
+utterance level, an aspect that is non-trivial for most
+conversational and perceptual metrics, while still
+ensuring that every block contributes to optimizing
+the preferred response.
+5
+Reward Functions
+In this work, we adopt a dataset-level formulation
+of multi-reward DPO. Rather than defining a single
+preference pair using multiple reward constraints
+simultaneously, we construct independent prefer-
+ence datasets, each targeting a specific dimension
+of conversational quality (semantic coherence, au-
+dio quality, intelligibility, emotion consistency).
+These datasets are then jointly used during DPO
+post-training, enabling the SDS policy to be opti-
+mized across complementary objectives within a
+unified framework.
+5.1
+Semantic Quality Reward
+To assess the semantic quality of generated spoken
+responses, we adopt the LLM-based semantic eval-
+uation framework introduced in Align-SLM (Lin
+et al., 2025b) and adapt it to the SDS setting. For
+each user turn, the CoT SDS samples multiple can-
+didate intermediate text responses ˆSres
+k
+(Eq. (15) in
+Appendix A.1 for more details), which are scored
+by Qwen2.5-72B-Instruct (Qwen et al., 2025) as
+the LLM judge to construct DPO data (See A.5
+for LLM prompt). The judge rates each candidate
+on coherence, relevance and grounding with dia-
+logue context, producing a scalar semantic score
+between 0 and 10. In parallel, we follow prior
+work (Lin et al., 2025b) and also compute an Au-
+toBLEU (Lakhotia et al., 2021) score for each can-
+didate, which serves as an automated filter: high
+AutoBLEU values indicate repetitive phrasing or
+low-diversity text that lacks meaningful semantic
+content. Candidates with an LLM coherence score
+above a positive threshold τpos and AutoBLEU be-
+low a repetition threshold δlow are labeled as pos-
+itive samples. Conversely, candidates with LLM
+scores below a negative threshold τneg or Auto-
+BLEU exceeding δhigh are labeled as negative sam-
+ples. This procedure yields high-quality semantic
+preference pairs for DPO training.
+4
+
+The semantic judge operates on text responses
+and therefore produces a preference pair ˆSres,+
+k
+≻
+ˆSres,−
+k
+at each turn. To apply DPO (Eq. (2)) using
+this signal, we relate the turn-level speech policy
+πθ(Y sds
+k
+| X1:k, Y sds
+1:k−1) to the CoT factorization
+(S. A.1) in which the text response ˆSres
+k
+is an ex-
+plicit intermediate variable.
+Using the chain rule and Viterbi-style approxi-
+mation, we can write the likelihood of a turn-level
+spoken response as
+log πθ(Yk | H(k)) ≈log Pθ( ˆSres
+k
+| H(k))+
+log Pθ(Yk | H(k), ˆSres
+k ).
+(5)
+Since the semantic preference signal depends
+only on the judged text response, we modify Eq. 3
+and apply DPO using only the text-policy term:
+∆sem
+θ
+(k) = log Pθ( ˆSres,+
+k
+| H(k))−
+log Pθ( ˆSres,−
+k
+| H(k)),
+(6)
+(and analogously for πref), which is then substituted
+into Eq. (2). Intuitively, this treats semantic DPO as
+directly increasing the likelihood of the preferred
+text response1.
+5.2
+Audio Quality and Intelligibility Rewards
+Beyond semantic alignment, high-quality spoken
+dialogue systems must also produce responses that
+are acoustically natural and intelligible. To this end,
+we construct preference learning signals targeting
+audio quality and intelligibility, while carefully
+controlling for semantic content.
+Audio Quality.
+To optimize acoustic naturalness,
+we use an automatic speech quality estimator q(·)
+(UTMOS (Saeki et al., 2022)) as a proxy for per-
+ceived audio quality. For each dialogue turn k,
+we generate a set of candidate spoken responses
+Yk as in S. 4.1. Let q(Y sds
+k,i ) denote the predicted
+quality score for a synthesized utterance Y sds
+k,i . We
+construct preference pairs by selecting
+Y +
+k = arg max
+Y sds
+k,i∈Yk
+q(Y sds
+k,i ), Y −
+k = arg min
+Y sds
+k,i∈Yk
+q(Y sds
+k,i ),
+(7)
+1We tried other ablations, including (i) applying DPO
+jointly to text and speech responses and (ii) augmenting DPO
+with an additional supervised fine-tuning (SFT) loss on speech
+outputs. Across these settings, we found that a simple text-
+only DPO formulation consistently achieved the strongest and
+most stable improvements, while more complex variants did
+not provide additional gains.
+Intelligibility.
+Let w(Y sds
+k,i ) denote the WER be-
+tween the hypothesis of synthesized speech Y sds
+k,i
+generated by pre-trained ASR system and the
+model-predicted text response Sres
+k . Among candi-
+dates satisfying w(Y sds
+k,i ) ≤τwer, we select
+Y +
+k = arg min
+Y sds
+k,i∈Yk
+w(Y sds
+k,i ).
+(8)
+and draw negative samples from candidates with
+Y −
+k ∼{Y sds
+k,i ∈Yk | w(Y sds
+k,i ) ≥w(Y +
+k ) + δwer}.
+(9)
+where δwer is a hyperparameter. This margin-based
+construction avoids ambiguous comparisons and
+focuses on clearly degraded intelligibility.
+For both audio quality and intelligibility rewards,
+we enforce that the text response Sres
+k
+is identical
+for the positive and negative samples within each
+DPO pair. Accordingly, the DPO objective for
+audio-based rewards can be written as
+∆audio
+θ
+(k) = log πθ
+ Y +
+k | X1:k, Y sds
+1:k−1, Sres
+k
+
+−
+log πθ
+ Y −
+k | X1:k, Y sds
+1:k−1, Sres
+k
+
+,
+(10)
+As a result, the preference signal isolates the qual-
+ity of the generated speech output alone, allowing
+DPO to directly improve acoustic naturalness and
+intelligibility without altering the underlying se-
+mantic content.
+5.3
+Emotion-Consistency Reward
+In addition to semantic quality and acoustic natu-
+ralness, effective spoken dialogue systems should
+convey emotions consistent with human intent. To
+encourage emotionally aligned responses, we con-
+struct preference pairs based on emotion similarity
+between synthesized speech and human reference
+speech. Emotion representations are extracted us-
+ing a pretrained encoder, and a scalar similarity
+score e(Y sds
+k,i ) is computed for each candidate. We
+then select preference pairs as
+Y +
+k = arg max
+Y sds
+k,i∈Yk
+e(Y sds
+k,i ), Y −
+k = arg min
+Y sds
+k,i∈Yk
+e(Y sds
+k,i ),
+(11)
+subject to the constraint that the difference between
+the maximum and minimum emotion similarity ex-
+ceeds a threshold δemo, ensuring that the preference
+signal reflects a meaningful emotional contrast. As
+with audio quality and intelligibility rewards, we
+enforce that the underlying text response Sres
+k
+is
+identical for both Y +
+k and Y −
+k .
+5
+
+Table 1: Scale of the constructed preference learning
+dataset used for multi-reward DPO training.
+Reward Type
+# DPO Pairs
+Semantic Quality
+51.1K
+Audio Quality
+32.0K
+Intelligibility
+61.0K
+Emotion
+21.6K
+Total
+165.7K
+6
+Experiments
+6.1
+DPO Data Preparation.
+To construct high-quality preference data for DPO
+training, we begin by applying multi-turn CoT
+SDS model (Arora et al., 2025d) to generate di-
+verse response candidates for real conversational
+contexts. We use widely adopted human–human
+dialogue corpora, focusing on the Switchboard
+dataset (Godfrey et al., 1992), which contains ap-
+proximately 300 hours of spontaneous telephone
+conversations. The constructed multi-reward DPO
+dataset comprises 165.7K high-quality preference
+pairs, with detailed statistics summarized in Ta-
+ble 1. For semantic preference pairs construction
+(see S. 5.1), the CoT model generates n = 10 can-
+didate text responses per dialogue turn using top-k
+sampling, ensuring sufficient lexical and semantic
+diversity. For acoustic and emotion rewards (see
+S. 5.2 and S. 5.3), we generate n = 10 spoken
+realizations for each candidate text response using
+top-k sampling. Emotion-consistency preference
+pairs are constructed using emotion representations
+extracted by Emo2Vec (Ma et al., 2024) from both
+synthesized speech and the corresponding ground-
+truth human speech. Additional details are pro-
+vided in S. A.3.
+6.2
+Evaluation Data and Metrics
+We evaluate all baslines and proposed models
+on the Eval2000 dataset similar to (Arora et al.,
+2025c,d). Semantic quality is evaluated by tran-
+scribing synthesized speech Y sds using Whis-
+per large (Radford et al., 2023).
+We report
+ROUGE (Lin, 2004) and METEOR (Banerjee and
+Lavie, 2005) scores against human reference re-
+sponses, along with perplexity (Jelinek et al., 1977)
+computed using GPT-2 (Radford et al., 2019). To
+better capture conversational relevance beyond n-
+gram overlap, we additionally evaluate responses
+using Qwen2.5-7B-Instruct as an LLM judge, fol-
+lowing recent evaluation protocols (Zhang et al.,
+2024c) (Prompt in S. A.5). We also report Auto-
+BLEU, as a proxy for repetition and degeneration.
+For RLAIF-trained models only, we further report
+a win rate relative to the no-RLAIF baseline. Given
+a set of evaluated samples, the win rate is defined
+WinRate = #(s > sbase) + 0.5 × #(s = sbase)
+N
+,
+(12)
+where s denotes the evaluation score for a given
+sample, sbase is the corresponding score from the
+no-RLAIF baseline, and N is the total number of
+evaluated samples. This metric reflects the propor-
+tion of responses that outperform (or tie with) the
+baseline under the same evaluation criterion. We
+utilize the VERSA toolkit (Shi et al., 2025), measur-
+ing intelligibility through Whisper hypotheses and
+evaluating audio quality using UTMOS. We evalu-
+ate speaking-style consistency within entire conver-
+sations using Emo2Vec (Ma et al., 2024). We rank
+all SDSs based on their emotional alignment and
+compute the average rank (“Emotion Rank” (Arora
+et al., 2025d)) across all utterances.
+6.3
+Models
+Following prior work (Arora et al., 2025d), we
+first report results on a single-turn E2E (“Direct
+E2E”) spoken dialogue system. We further bench-
+mark our approach against Moshi (Défossez et al.,
+2024), a strong 7B dual-channel duplex SDS base-
+line2. In addition, we evaluate a multi-turn Chain-
+of-Thought E2E model (Multi-turn CoT E2E) in-
+troduced in prior work (Arora et al., 2025c), which
+serves as a strong reasoning-aware baseline. We
+then extend our framework to the duplex set-
+ting and compare against the blockwise duplex
+SCoT-Response model from (Arora et al., 2025c).
+For both the multi-turn CoT and duplex SCoT-
+Response models, we apply RLAIF post-training
+using our proposed preference-learning framework.
+We conduct RLAIF post-training under multi-
+ple configurations to disentangle the effects of dif-
+ferent reward signals. In RLAIF (Single-Reward)
+settings, models are trained using DPO pairs de-
+rived from a single reward signal, namely semantic
+quality, audio quality, intelligibility or emotion con-
+sistency, with the objective of selectively improv-
+ing the corresponding metric. In contrast, we con-
+sider two RLAIF (Joint-Reward) configurations: (i)
+(Joint-Reward-v1) a joint semantic–audio setting
+that combines semantic, audio quality, and intel-
+2kyutai/moshiko-pytorch-bf16
+6
+
+Table 2: Semantic Quality Evaluation of RLAIF-Post-Trained Turn-by-Turn SDS. * Statistical significant difference
+based on Wilcoxon signed rank and Paired Bootstrap Resampling tests with p-value<0.01. Values in bracket indicate
+the percentage of LLM judge responses receiving low scores (< 5). Win rate is defined only for RLAIF models and
+measures the proportion of samples that outperform the corresponding no-RLAIF base model.
+Model
+ROUGE-L (↑)
+Perplexity (↓)
+AutoBLEU (↓)
+LLM judge (↑)
+Win Rate (↑)
+Direct E2E (Arora et al., 2025d)
+8.4
+302.2
+51.5
+5.50 (24.2%)
+✗
+Moshi (Défossez et al., 2024)
+8.1
+136.5
+57.8
+5.71 (21.0%)
+✗
+Multi turn CoT E2E (Arora et al., 2025c)
+12.1
+21.2
+68.3
+6.18 (10.2%)
+✗
++ RLAIF (Single-Reward)
+11.9
+19.9
+56.5
+6.33* ( 7.1%)
+55.4
++ RLAIF (Joint-Reward-v1)
+11.8
+19.6
+61.3
+6.29* ( 8.5%)
+52.6
++ RLAIF (Joint-Reward-v2)
+11.9
+19.9
+59.9
+6.33* ( 7.5%)
+54.4
+ligibility preference data, and (ii) (Joint-Reward-
+v2) a joint semantic–audio–emotion setting that
+additionally incorporates speaking-style (emotion-
+consistency) preferences. This design allows for a
+systematic evaluation of how individual and com-
+bined preference signals contribute to overall sys-
+tem performance. Additional implementation and
+training details are provided in the Appendix A.4.
+7
+Results
+7.1
+RLAIF with Semantic Quality Reward
+Table 2 reports semantic-quality evaluation for turn-
+by-turn SDS, including general E2E baselines and
+the strong duplex SDS baseline Moshi. Among
+non-RLHF systems, the Multi-turn CoT E2E model
+substantially outperforms both the standard E2E
+and Moshi baselines in terms of semantic metrics,
+establishing a strong foundation for preference-
+based post-training.
+Building on this baseline, RLAIF (Single-
+Reward) post-training with semantic preference
+data yields a statistically significant improvement
+in LLM-judge scores over the Multi-turn CoT E2E
+model (6.18 →6.33, p < 0.01 under both Wilcoxon
+signed-rank and paired bootstrap resampling tests),
+with a corresponding win rate of 55.4%. Impor-
+tantly, beyond average score improvements, RLAIF
+induces a meaningful distributional shift: the pro-
+portion of low-quality responses (LLM-judge < 5)
+is reduced from 10.2% to 7.1%, corresponding to
+a 28.5% relative reduction in poor responses. This
+behavior is consistent with prior RLAIF findings,
+where improvements are often driven by suppress-
+ing degenerate or incoherent generations rather
+than uniformly increasing mean scores.
+RLAIF post-training also improves auxiliary in-
+dicators of response quality. In particular, seman-
+tic RLAIF substantially reduces repetition, as re-
+flected by a large drop in AutoBLEU (68.3 →
+56.5), and yields more coherent responses as evi-
+denced by lower perplexity (21.2 →19.9). When
+extending to multi-objective optimization, RLAIF
+(Joint-Reward-v1), which combines semantic, au-
+dio quality, and intelligibility preferences, main-
+tains strong LLM-judge performance (6.29). In-
+corporating additional emotion-consistency pref-
+erences in RLAIF (Joint-Reward-v2) further im-
+proves LLM-judge scores (6.33) and reduces the
+fraction of low-scoring responses (7.5%), demon-
+strating that jointly leveraging various preferences
+leads to consistent overall gains without degrading
+semantic quality.
+Together, these results show that RLAIF post-
+training effectively improves conversational qual-
+ity in end-to-end SDS, primarily by reducing low-
+quality and repetitive responses while preserving
+semantic coherence. Based on qualitative inspec-
+tion of model outputs, RLAIF post-training consis-
+tently improves direct question answering, reduces
+topic drift, and suppresses repetitive or degenerate
+response patterns, aligning well with the quantita-
+tive gains observed in LLM-judge scores and Au-
+toBLEU. At the same time, we observe occasional
+failure cases where RLAIF-trained models produce
+responses that are overly safe or generic, and thus
+do not sufficiently advance the conversation. We
+provide representative qualitative examples in T. 6
+and 7 in Appendix.
+7.2
+RLAIF with Acoustic Quality Reward
+Table 3 reports audio quality and intelligibility
+evaluation across general E2E SDS baselines, the
+strong duplex baseline Moshi, and RLAIF-trained
+variants.
+Among non-RLAIF systems, Moshi
+achieves the highest absolute UTMOS scores,
+largely attributable to its use of high-quality as-
+sistant voice prompts. In contrast, our models are
+conditioned on lower-fidelity Switchboard speaker
+prompts, resulting in lower UTMOS scores.
+Building on the Multi-turn CoT E2E base-
+line, RLAIF (Single-Reward) post-training demon-
+strates
+targeted
+and
+effective
+improvements.
+7
+
+Table 3: Audio quality evaluation. ✗: WER is not
+reported for Direct E2E models since they do not output
+explicit intermediate text response.
+Model
+UTMOS (↑)
+WER (↓)
+Direct E2E (Arora et al., 2025d)
+2.03
+✗
+Moshi (Défossez et al., 2024)
+3.34
+✗
+Multi turn CoT E2E (Arora et al., 2025c)
+2.16
+6.1
++ RLAIF (Single-Reward)
+3.06
+3.3
++ RLAIF (Joint-Reward-v1)
+2.85
+1.0
++ RLAIF (Joint-Reward-v2)
+2.85
+1.7
+Table 4: Speaking style consistency evaluation.
+Model
+Emotion Rank (↓)
+Direct E2E (Arora et al., 2025d)
+2.81
+Moshi (Défossez et al., 2024)
+4.92
+Multi turn CoT E2E (Arora et al., 2025c)
+2.29
++ RLAIF (Single-Reward)
+1.98
++ RLAIF (Joint-Reward-v2)
+3.00
+Training with audio-quality preferences substan-
+tially improves perceived speech naturalness, in-
+creasing UTMOS from 2.16 to 3.06.
+Sim-
+ilarly,
+RLAIF (Single-Reward) training with
+intelligibility-focused preferences yields a marked
+reduction in word error rate, improving turn-level
+intelligibility from 6.1 to 3.3. Here, WER is com-
+puted between the ASR transcript of the synthe-
+sized speech, obtained using Whisper, and the
+model-predicted text response Sres
+k
+used during
+CoT decoding (S. 5.2). These results confirm that
+audio-centric DPO signals selectively and reliably
+improve their intended dimensions.
+When multiple preference datasets are jointly
+leveraged using RLAIF (Joint-Reward) training,
+the model achieves simultaneous gains in both au-
+dio quality and intelligibility. In particular, RLAIF
+(Joint-Reward-v1), which combines semantic, au-
+dio quality, and intelligibility preferences, attains
+a UTMOS of 2.85 while further reducing WER
+to 1.0, representing the best intelligibility perfor-
+mance among RLAIF-trained models. Incorporat-
+ing additional emotion-consistency preferences in
+RLAIF (Joint-Reward-v2) preserves audio quality
+but results in a slightly higher WER, indicating
+a mild trade-off between expressive consistency
+and intelligibility. Together, these findings validate
+the effectiveness of audio-quality and intelligibility
+preference data and highlight the benefit of unified
+multi-reward RLAIF for improving speech natural-
+ness and intelligibility.
+7.3
+RLAIF with Emotion Quality Reward
+Table 4 reports speaking-style consistency evalu-
+ated via emotion rank, where lower values indi-
+cate closer alignment with human reference speech.
+Table 5: Semantic quality evaluation for duplex model.
+Model
+ROUGE-L (↑)
+Perplexity (↓)
+LLM judge (↑)
+SCoT-Response
+19.8
+42.3
+5.95
++ RLAIF
+23.1
+25.0
+6.00
+Among non-RLAIF baselines, the Multi-turn CoT
+E2E model performs best (2.29), outperforming
+both E2E and Moshi. RLAIF (Single-Reward)
+post-training with emotion-consistency preferences
+further improves alignment, reducing the emotion
+rank to 1.98, demonstrating the effectiveness of
+emotion-aware preference learning.
+In contrast, RLAIF (Joint-Reward-v2) yields a
+higher emotion rank (3.00), indicating competi-
+tion between reward signals. In particular, strong
+semantic rewards from LLM-based judges can en-
+courage safer or more generic responses (T. 7),
+which may reduce emotional expressiveness. This
+highlights an inherent trade-off in multi-objective
+RLAIF settings and motivates future work on better
+balancing various rewards in SDS.
+7.4
+RLAIF for Duplex Models
+Table 5 reports semantic-quality evaluation for the
+duplex SDS. Compared to the SCoT-Response
+baseline, RLAIF post-training consistently im-
+proves semantic performance, yielding higher
+ROUGE-L (19.8 →23.1), lower perplexity (42.3
+→25.0), and improved LLM-judge scores (5.95
+→6.00). These results indicate that the proposed
+RLAIF framework generalizes beyond turn-by-turn
+settings and remains effective for blockwise duplex
+spoken dialogue models.
+8
+Conclusion
+We presented the first multi-reward RLAIF frame-
+work for E2E SDS, addressing key limitations of
+prior work that focuses on single, utterance-level
+semantic rewards. Our approach jointly optimizes
+semantic coherence, audio quality, intelligibility,
+and emotion consistency on turn-by-turn Chain-of-
+Thought SDS. By applying utterance-level prefer-
+ences over blockwise decoding, we enable pref-
+erence optimization on blockwise duplex models
+without requiring partial-utterance reward defini-
+tions. Experimental results demonstrate that single-
+reward RLAIF selectively improves its targeted
+dimension, validating the specificity of our con-
+structed preference data, while joint multi-reward
+training yields consistent gains across semantic
+and acoustic metrics. Finally, we release the first
+large-scale multi-reward DPO dataset for spoken
+dialogue systems to support reproducible research.
+8
+
+9
+Limitations
+While our results demonstrate the effectiveness of
+multi-reward RLAIF for spoken dialogue systems,
+several limitations remain. First, preference data
+construction relies on automatic evaluators, which
+may introduce bias or noise relative to human judg-
+ments. Incorporating human-in-the-loop prefer-
+ences is an important direction for future work.
+Second, our multi-reward formulation combines re-
+ward signals via dataset-level concatenation rather
+than explicitly modeling trade-offs or interactions
+between objectives, which may limit optimal bal-
+ancing in some conversational contexts. Finally,
+our experiments focus on English conversational
+datasets; extending the framework to multilingual
+settings and more diverse conversational domains
+remains an open challenge.
+10
+Ethics Impact
+We adhere to the ACL Ethics Policy.
+Our ex-
+periments are based on open-source datasets with
+no violation of privacy, and we will make all our
+code and models publicly available. Parts of this
+manuscript were edited for clarity and language
+using an AI-based writing assistant. The authors
+take full responsibility for the content.
+References
+Siddhant Arora, Kai-Wei Chang, Chung-Ming Chien,
+Yifan Peng, Haibin Wu, Yossi Adi, Emmanuel
+Dupoux, Hung-Yi Lee, Karen Livescu, and Shinji
+Watanabe. 2025a. On the landscape of spoken lan-
+guage models: A comprehensive survey. Preprint,
+arXiv:2504.08528.
+Siddhant Arora, Siddharth Dalmia, Pavel Denisov, Xu-
+ankai Chang, Yushi Ueda, Yifan Peng, Yuekai Zhang,
+Sujay Kumar, Karthik Ganesan, Brian Yan, and 1 oth-
+ers. 2022. ESPnet-SLU: Advancing spoken language
+understanding through espnet. In ICASSP, pages
+7167–7171. IEEE.
+Siddhant Arora, Yifan Peng, Jiatong Shi, Jinchuan
+Tian, William Chen, Shikhar Bharadwaj, Hayato Fu-
+tami, Yosuke Kashiwagi, Emiru Tsunoo, Shuichiro
+Shimizu, and 1 others. 2025b. Espnet-sds: Unified
+toolkit and demo for spoken dialogue systems. In
+NAACL 2025, pages 248–259.
+Siddhant Arora, Jinchuan Tian, Hayato Futami, Jiatong
+Shi, Yosuke Kashiwagi, Emiru Tsunoo, and Shinji
+Watanabe. 2025c.
+Chain-of-thought reasoning in
+streaming full-duplex end-to-end spoken dialogue
+systems. arXiv preprint arXiv:2510.02066.
+Siddhant Arora, Jinchuan Tian, Hayato Futami, Jee
+weon Jung, Jiatong Shi, Yosuke Kashiwagi, Emiru
+Tsunoo, and Shinji Watanabe. 2025d.
+Chain-of-
+Thought Training for Open E2E Spoken Dialogue
+Systems. In Interspeech 2025, pages 4833–4837.
+Yuntao Bai, Saurabh Kadavath, Sandipan Kundu,
+Amanda Askell, Jackson Kernion, Andy Jones,
+Anna Chen, Zackary Goldstein, Sam McCandlish,
+Chris Olah, and 1 others. 2022. Constitutional ai:
+Harmlessness from ai feedback.
+arXiv preprint
+arXiv:2212.08073.
+Satanjeev Banerjee and Alon Lavie. 2005. Meteor: An
+automatic metric for mt evaluation with improved
+correlation with human judgments. In ACL workshop
+on intrinsic and extrinsic evaluation measures for
+machine translation and/or summarization, pages
+65–72.
+Yifei Cao, Changhao Jiang, Jiabao Zhuang, Jiajun Sun,
+Ming Zhang, Zhiheng Xi, Hui Li, Shihan Dou, Yuran
+Wang, Yunke Zhang, Tao Ji, Tao Gui, Qi Zhang, and
+Xuanjing Huang. 2025. From scores to preferences:
+Redefining mos benchmarking for speech quality re-
+ward modeling. arXiv preprint arXiv:2510.00743.
+Chen Chen, Ke Hu, Chao-Han Huck Yang, Ankita
+Pasad, Edresson Casanova, Weiqing Wang, Szu-Wei
+Fu, Jason Li, Zhehuai Chen, Jagadeesh Balam, and
+Boris Ginsburg. 2025. Reinforcement learning en-
+hanced full-duplex spoken dialogue language models
+for conversational interactions. In Second Confer-
+ence on Language Modeling.
+Chen Chen, Yuchen Hu, Wen Wu, Helin Wang,
+Eng Siong Chng, and Chao Zhang. 2024a. Enhanc-
+ing zero-shot text-to-speech synthesis with human
+feedback. Preprint, arXiv:2406.00654.
+William Chen, Wangyou Zhang, Yifan Peng, Xinjian
+Li, Jinchuan Tian, Jiatong Shi, Xuankai Chang,
+Soumi Maiti, Karen Livescu, and Shinji Watanabe.
+2024b. Towards robust speech representation learn-
+ing for thousands of languages.
+arXiv preprint
+arXiv:2407.00837.
+Jade Copet and 1 others. 2024. Simple and controllable
+music generation. Advances in Neural Information
+Processing Systems, 36.
+Alexandre Défossez, Laurent Mazaré, Manu Orsini,
+Amélie Royer, Patrick Pérez, Hervé Jégou, Edouard
+Grave, and Neil Zeghidour. 2024. Moshi: a speech-
+text foundation model for real-time dialogue. Tech-
+nical report, Kyutai.
+Erik Ekstedt and Gabriel Skantze. 2020.
+TurnGPT:
+a transformer-based language model for predicting
+turn-taking in spoken dialog. In EMNLP 2020, Find-
+ings of ACL. Association for Computational Linguis-
+tics.
+Hugging Face. 2024.
+Speech-to-speech translation
+toolkit. Accessed: 2024-12-10.
+9
+
+James Glass. 1999. Challenges for spoken dialogue
+systems. In Proceedings of the 1999 IEEE ASRU
+Workshop, volume 696. MIT Laboratory for Com-
+puter Science Cambridge.
+J.J. Godfrey, E.C. Holliman, and J. McDaniel. 1992.
+Switchboard: telephone speech corpus for research
+and development.
+In [Proceedings] ICASSP-92:
+1992 IEEE International Conference on Acoustics,
+Speech, and Signal Processing, volume 1, pages 517–
+520 vol.1.
+Rongjie Huang, Mingze Li, Dongchao Yang, Jia-
+tong Shi, Xuankai Chang, Zhenhui Ye, Yuning Wu,
+Zhiqing Hong, Jiawei Huang, Jinglin Liu, and 1 oth-
+ers. 2024. AudioGPT: Understanding and generating
+speech, music, sound, and talking head. In Proceed-
+ings of the AAAI.
+Fred Jelinek, Robert L Mercer, Lalit R Bahl, and
+James K Baker. 1977. Perplexity—a measure of the
+difficulty of speech recognition tasks. The Journal of
+the Acoustical Society of America, 62(S1):S63–S63.
+KimiTeam, Ding Ding, Zeqian Ju, Yichong Leng,
+Songxiang Liu, Tong Liu, Zeyu Shang, Kai Shen,
+Wei Song, Xu Tan, Heyi Tang, Zhengtao Wang, Chu
+Wei, Yifei Xin, Xinran Xu, Jianwei Yu, Yutao Zhang,
+Xinyu Zhou, Y. Charles, and 21 others. 2025. Kimi-
+audio technical report. Preprint, arXiv:2504.18425.
+Kushal Lakhotia, Eugene Kharitonov, Wei-Ning Hsu,
+Yossi Adi, Adam Polyak, Benjamin Bolte, Tu-Anh
+Nguyen, Jade Copet, Alexei Baevski, Abdelrahman
+Mohamed, and 1 others. 2021. On generative spo-
+ken language modeling from raw audio. Transac-
+tions of the Association for Computational Linguis-
+tics, 9:1336–1354.
+Harrison Lee, Samrat Phatale, Hassan Mansoor, Thomas
+Mesnard, Johan Ferret, Kellie Lu, Colton Bishop,
+Ethan Hall, Victor Carbune, Abhinav Rastogi, and
+1 others. 2023.
+Rlaif vs. rlhf: Scaling reinforce-
+ment learning from human feedback with ai feedback.
+arXiv preprint arXiv:2309.00267.
+Chin-Yew Lin. 2004. Rouge: A package for automatic
+evaluation of summaries.
+In Text summarization
+branches out, pages 74–81.
+Guan-Ting Lin, Shih-Yun Shan Kuan, Jiatong Shi, Kai-
+Wei Chang, Siddhant Arora, Shinji Watanabe, and
+Hung-yi Lee. 2025a. Full-duplex-bench-v2: A multi-
+turn evaluation framework for duplex dialogue sys-
+tems with an automated examiner. arXiv preprint
+arXiv:2510.07838.
+Guan-Ting Lin,
+Prashanth Gurunath Shivakumar,
+Aditya Gourav, Yile Gu, Ankur Gandhe, Hung-yi
+Lee, and Ivan Bulyko. 2025b. Align-SLM: Textless
+spoken language models with reinforcement learning
+from AI feedback. In Proceedings of the 63rd An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 20395–
+20411, Vienna, Austria. Association for Computa-
+tional Linguistics.
+Ziyang Ma, Zhisheng Zheng, Jiaxin Ye, Jinchao Li,
+Zhifu Gao, Shiliang Zhang, and Xie Chen. 2024.
+emotion2vec: Self-supervised pre-training for speech
+emotion representation. Proc. ACL 2024 Findings.
+Ryo Masumura, Tomohiro Tanaka, Atsushi Ando, Ryo
+Ishii, Ryuichiro Higashinaka, and Yushi Aono. 2018.
+Neural dialogue context online end-of-turn detection.
+In SIGdial, pages 224–228. Association for Compu-
+tational Linguistics.
+Raveesh
+Meena,
+Gabriel
+Skantze,
+and
+Joakim
+Gustafson. 2014.
+Data-driven models for timing
+feedback responses in a map task dialogue system.
+Computer speech & language, 28(4):903–922.
+Ziqiao Meng, Qichao Wang, Wenqian Cui, Yifei Zhang,
+Bingzhe Wu, Irwin King, Liang Chen, and Peilin
+Zhao. 2024. Parrot: Autoregressive spoken dialogue
+language modeling with decoder-only transformers.
+In NeurIPS Workshop AI-Driven Speech, Music, and
+Sound Generation.
+Tu Anh Nguyen, Eugene Kharitonov, Jade Copet, Yossi
+Adi, Wei-Ning Hsu, Ali Elkahky, Paden Tomasello,
+Robin Algayres, Benoît Sagot, Abdelrahman Mo-
+hamed, and Emmanuel Dupoux. 2023. Generative
+spoken dialogue language modeling. Trans. Assoc.
+Comput. Linguistics, 11:250–266.
+Tu Anh Nguyen,
+Benjamin Muller,
+Bokai Yu,
+Marta R. Costa-jussa, Maha Elbayad, Sravya Pop-
+uri, Christophe Ropers, Paul-Ambroise Duquenne,
+Robin Algayres, Ruslan Mavlyutov, Itai Gat, Mary
+Williamson, Gabriel Synnaeve, Juan Pino, Benoît
+Sagot, and Emmanuel Dupoux. 2025. SpiRit-LM: In-
+terleaved spoken and written language model. Trans.
+ACL, 13:30–52.
+Qwen, :, An Yang, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan
+Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin
+Yang, Jiaxi Yang, Jingren Zhou, and 25 oth-
+ers. 2025.
+Qwen2.5 technical report.
+Preprint,
+arXiv:2412.15115.
+Alec Radford, Jong Wook Kim, Tao Xu, Greg Brock-
+man, Christine McLeavey, and Ilya Sutskever. 2023.
+Robust speech recognition via large-scale weak su-
+pervision. In Proc. ICML.
+Alec Radford, Jeff Wu, Rewon Child, David Luan,
+Dario Amodei, and Ilya Sutskever. 2019. Language
+models are unsupervised multitask learners. OpenAI.
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Christo-
+pher D. Manning, Stefano Ermon, and Chelsea Finn.
+2023. Direct preference optimization: Your language
+model is secretly a reward model. arXiv preprint
+arXiv:2305.18290.
+Matthew Roddy, Gabriel Skantze, and Naomi Harte1.
+2018. Investigating speech features for continuous
+turn-taking prediction using LSTMs. In Interspeech.
+10
+
+Takaaki Saeki, Detai Xin, Wataru Nakata, Tomoki
+Koriyama, Shinnosuke Takamichi, and Hiroshi
+Saruwatari. 2022. UTMOS: UTokyo-SaruLab sys-
+tem for voiceMOS challenge 2022. In Interspeech,
+pages 4521–4525.
+Iulian V. Serban, Chinnadhurai Sankar, Mathieu Ger-
+main, Saizheng Zhang, Zhouhan Lin, Sandeep Sub-
+ramanian, Taesup Kim, Michael Pieper, Sarath Chan-
+dar, Nan Rosemary Ke, Sai Rajeswar, Alexandre
+de Brebisson, Jose M. R. Sotelo, Dendi Suhubdy,
+Vincent Michalski, Alexandre Nguyen, Joelle Pineau,
+and Yoshua Bengio. 2018. A deep reinforcement
+learning chatbot (short version).
+arXiv preprint
+arXiv:1801.06700.
+Jiatong Shi, Hye-jin Shim, Jinchuan Tian, Siddhant
+Arora, Haibin Wu, Darius Petermann, Jia Qi Yip, You
+Zhang, Yuxun Tang, Wangyou Zhang, Dareen Sa-
+far Alharthi, Yichen Huang, Koichi Saito, Jionghao
+Han, Yiwen Zhao, Chris Donahue, and Shinji Watan-
+abe. 2025. VERSA: A versatile evaluation toolkit
+for speech, audio, and music. In "NAACL 2025",
+Albuquerque, New Mexico. Association for Compu-
+tational Linguistics.
+Jiatong Shi, Jinchuan Tian, Yihan Wu, Jee-weon Jung,
+Jia Qi Yip, Yoshiki Masuyama, William Chen, Yun-
+ing Wu, Yuxun Tang, Massa Baali, and 1 others. 2024.
+ESPnet-Codec: Comprehensive training and evalu-
+ation of neural codecs for audio, music, and speech.
+arXiv preprint arXiv:2409.15897.
+Gabriel Skantze. 2017. Towards a general, continuous
+model of turn-taking in spoken dialogue using LSTM
+recurrent neural networks. In Proc. SIGdial Meeting
+Disc. and Dial.
+Pei-Hao Su, Milica Gaši´c, Nikola Mrkši´c, Lina M.
+Rojas-Barahona, Stefan Ultes, David Vandyke,
+Tsung-Hsien Wen, and Steve Young. 2016. On-line
+active reward learning for policy optimisation in spo-
+ken dialogue systems. In Proceedings of the 54th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 2431–
+2441, Berlin, Germany. Association for Computa-
+tional Linguistics.
+Jinchuan Tian, Jiatong Shi, William Chen, Siddhant
+Arora, Yoshiki Masuyama, Takashi Maekaku, Yihan
+Wu, Junyi Peng, Shikhar Bharadwaj, Yiwen Zhao,
+Samuele Cornell, Yifan Peng, Xiang Yue, Chao-
+Han Huck Yang, Graham Neubig, and Shinji Watan-
+abe. 2025a. Espnet-speechlm: An open speech lan-
+guage model toolkit. Preprint, arXiv:2502.15218.
+Jinchuan Tian, Chunlei Zhang, Jiatong Shi, Hao Zhang,
+Jianwei Yu, Shinji Watanabe, and Dong Yu. 2025b.
+Preference alignment improves language model-
+based tts. In Proceedings of the IEEE International
+Conference on Acoustics, Speech and Signal Process-
+ing (ICASSP). IEEE.
+Bandhav Veluri, Benjamin N Peloquin, Bokai Yu,
+Hongyu Gong, and Shyamnath Gollakota. 2024.
+Beyond turn-based interfaces: Synchronous LLMs
+as full-duplex dialogue agents.
+arXiv preprint
+arXiv:2409.15594.
+Shinji Watanabe and 1 others. 2018. ESPnet: End-to-
+end speech processing toolkit. In Proceedings of
+Interspeech, pages 2207–2211.
+Anne Wu, Laurent Mazaré, Neil Zeghidour, and Alexan-
+dre Défossez. 2025.
+Aligning spoken dialogue
+models from user interactions.
+arXiv preprint
+arXiv:2506.21463.
+Zhifei Xie and Changqiao Wu. 2024. Mini-omni: Lan-
+guage models can hear, talk while thinking in stream-
+ing. Preprint, arXiv:2408.16725.
+Dong Zhang, Shimin Li, Xin Zhang, Jun Zhan,
+Pengyu Wang, Yaqian Zhou, and Xipeng Qiu. 2023.
+SpeechGPT: Empowering large language models
+with intrinsic cross-modal conversational abilities.
+arXiv preprint arXiv:2305.11000.
+Dong Zhang, Zhaowei Li, Shimin Li, Xin Zhang,
+Pengyu Wang, Yaqian Zhou, and Xipeng Qiu. 2024a.
+Speechalign: Aligning speech generation to human
+preferences. arXiv preprint arXiv:2404.05600.
+Dong Zhang, Xin Zhang, Jun Zhan, Shimin Li, Yaqian
+Zhou, and Xipeng Qiu. 2024b. Speechgpt-gen: Scal-
+ing chain-of-information speech generation. arXiv
+preprint arXiv:2401.13527.
+Qinglin Zhang, Luyao Cheng, Chong Deng, Qian Chen,
+Wen Wang, Siqi Zheng, Jiaqing Liu, Hai Yu, Chao-
+hong Tan, Zhihao Du, and 1 others. 2024c. Omniflat-
+ten: An end-to-end GPT model for seamless voice
+conversation. arXiv preprint arXiv:2410.17799.
+Xinrong Zhang, Yingfa Chen, Shengding Hu, Xu Han,
+Zihang Xu, Yuanwei Xu, Weilin Zhao, Maosong Sun,
+and Zhiyuan Liu. 2024d. Beyond the turn-based
+game: Enabling real-time conversations with duplex
+models. In Proc. EMNLP.
+A
+Appendix
+A.1
+Mathematical Formulation of
+Chain-of-Thought Turn by turn SDS
+More recent E2E approaches replace cascaded
+architectures (Glass, 1999; Huang et al., 2024)
+with unified speech–language models (SLMs) that
+directly generate spoken responses autoregres-
+sively (Zhang et al., 2023, 2024b; Nguyen et al.,
+2025). Although these models mitigate error prop-
+agation, they often lack explicit intermediate rea-
+soning structure, which can limit coherence and
+increase data requirements (Arora et al., 2025d;
+Défossez et al., 2024).
+To address this, prior
+work (Arora et al., 2025d) has explored incorporat-
+ing structured intermediate representations, such
+as ASR transcripts Sasr
+k
+and textual responses Sres
+k ,
+11
+
+within an end-to-end framework, yielding Chain-
+of-Thought (CoT) SDS models. Using the Viterbi
+approximation and C.I. assumption, we can modify
+Eq. (1) to get:
+P(Y sds|X, Xspk)
+≈
+Y
+k
+P(Y sds
+k |Y sds
+1:k−1, X1:k, ˆSres
+1:k, ˆSasr
+1:k, Xspk)
+(13)
+where
+ˆSasr
+k
+= arg max
+Sasr
+k
+P(Sasr
+k |Y sds
+1:k−1, X1:k,
+ˆSres
+1:k−1, ˆSasr
+1:k−1,
+Xspk)
+(14)
+and
+ˆSres
+k
+= arg max
+Sres
+k
+P(Sres
+k |Y sds
+1:k−1, X1:k,
+ˆSres
+1:k−1, ˆSasr
+1:k,
+Xspk)
+(15)
+At each turn, the CoT model follows a structured
+decoding process: where it first infers a transcrip-
+tion Sasr
+k , then a textual response ˆSres
+k , and finally
+synthesizes speech Y sds
+k
+conditioned on these inter-
+mediate variables.
+A.2
+Mathematical Formulation of
+Chain-of-Thought Duplex SDS
+In the time-multiplexing setup (Veluri et al., 2024),
+the input speech X is divided into a sequence of B
+blocks, X = {Xb | b = 1, . . . , B}. Similarly, the
+output speech Y sds is represented as a sequence of
+B blocks, Y sds = {Y sds
+b
+| b = 1, . . . , B}. Rather
+than generating responses only at turn boundaries
+or frame-by-frame, the model then generates output
+block-by-block in a streaming fashion, estimating
+the posterior using the causality-based C.I. as:
+P(Y sds|X, Xspk) =
+Y
+b
+P(Y sds
+b+1|Y sds
+1:b ,
+X1:b,
+Xb+1:B, Xspk).
+(16)
+Building on earlier turn-by-turn Chain-of-
+Thought (CoT) formulations for E2E SDS, recent
+work, namely SCoT, has investigated how struc-
+tured intermediate reasoning can be integrated into
+blockwise duplex systems (Arora et al., 2025c).
+The key idea is to introduce intermediate repre-
+sentations, such as ASR transcripts and textual
+responses, that are temporally aligned with the
+speech signal. Let the corresponding aligned tran-
+script and system response for the bth block (See
+S. 3.2) be Aasr
+b
+and Ares
+b
+respectively. Incorporating
+these alignments, the blockwise dialogue policy
+(Eq. 16) can be augmented to condition on par-
+tial reasoning states (similar to (Eqs. (13)-(15)) as
+shown :
+P(Y sds|X, Xspk) ≈
+Y
+b
+P(Y sds
+b+1|Y sds
+1:b , X1:b,
+ˆAasr
+1:b, ˆAres
+1:b+1, Xspk).
+(17)
+The intermediate text response is predicted as:
+ˆAres
+b+1 = arg max P(Ares
+b+1|Y sds
+1:b , X1:b,
+ˆAasr
+1:b, ˆAres
+1:b)
+(18)
+and the aligned ASR transcript for each block is:
+ˆAasr
+b
+= arg max P(Aasr
+b |Y sds
+1:b , X1:b,
+ˆAasr
+1:b−1, ˆAres
+1:b).
+(19)
+At each block, SCoT performs a structured three-
+stage decoding process, similar to S. 3.1.
+A.3
+DPO Data Preparation.
+Semantic Reward:
+For each dialogue turn, the
+CoT model produces 10 candidate text responses
+using top-k sampling (k = 10), ensuring sufficient
+lexical and semantic diversity. We analyze the em-
+pirical distribution of the LLM judge scores across
+all candidates using histograms (Figures 2 and 3
+in Appendix), which reveal natural separation be-
+tween coherent and incoherent responses. Based
+on this distribution, we define positive samples as
+those with an LLM score greater than τpos = 6
+and AutoBLEU less than δlow = 30, indicating se-
+mantically meaningful and non-repetitive outputs.
+Conversely, negative samples are those with an
+LLM score below τneg = 5 or AutoBLEU exceed-
+ing δhigh = 30, capturing incoherent, off-topic, or
+repetitive candidates.
+Acoustic and Emotion Reward:
+For each can-
+didate text response described above, we generate
+multiple spoken realizations using top-k sampling
+(k = 10), resulting in a set of candidate speech re-
+sponses per turn. To construct intelligibility-based
+preference pairs, we retain samples satisfying an
+upper intelligibility constraint τwer = 0.25, and se-
+lect negative examples whose WER exceeds that
+of the positive sample by a margin δwer = 0.05.
+In parallel, we construct audio-quality preference
+12
+
+Figure 2: Distribution of LLM judge score over candi-
+date responses
+Figure 3: Distribution of AutoBLEU score over candi-
+date responses
+pairs using UTMOS scores. For emotion reward
+pairs, we use Emo2Vec (Ma et al., 2024) to extract
+emotion representations from both the generated
+speech outputs and the corresponding ground-truth
+human speech. For preference construction, the
+candidate with the maximum emotion similarity
+is selected as the positive sample, while the candi-
+date with the minimum similarity is selected as the
+negative sample, subject to a minimum margin of
+δemo = 2% between the two scores.
+A.4
+Experiment Setup
+Our models are implemented in PyTorch, with
+all experiments conducted using the ESPnet
+toolkit (Watanabe et al., 2018; Arora et al., 2022,
+2025b).
+We use the pre-trained SpeechLM
+from (Tian et al., 2025a), which is initialized from
+the SmolLM2 1.7B text LLM. We adopt the delay-
+interleaving architecture (Copet et al., 2024) for
+multi-stream language modeling.
+The SpeechLM is pre-trained for 500k updates
+using a warm-up–decay learning rate schedule,
+with each batch containing approximately 3,840
+seconds of audio and 1.1M text tokens. Training
+is performed on a large multimodal corpus com-
+prising 213k hours of speech audio and 292B text
+tokens. For audio tokenization, we use ESPnet-
+Codec (Shi et al., 2024)3 for codec tokenization
+and XEUS (Chen et al., 2024b)4 for SSL tokeniza-
+tion. Specifically, codec and SSL tokens are con-
+catenated frame-by-frame.
+For decoding, ASR outputs are generated using
+greedy search followed by hallucination detection
+and removal, as in (Arora et al., 2025d). Text re-
+sponse generation uses top-k sampling (k = 30,
+temperature = 0.8), with the same post-processing
+procedure (Arora et al., 2025d). For speech re-
+sponse generation in our CoT models, we again
+use top-k sampling (consistent with the text setting)
+and apply an additional intelligibility-based post-
+processing step following (Arora et al., 2025d).
+Specifically, we generate ten candidate speech sam-
+ples and transcribe each using Whisper (Radford
+et al., 2023). We compute the WER of each tran-
+scription against the model’s own predicted text
+response, ˆSres
+k (Eq. (15)) for turn-by-turn systems
+and ˆAres
+b+1 (Eq. 18) for duplex systems, as the ref-
+erence, and select the candidate with the lowest
+WER.
+During inference in blockwise duplex systems,
+we additionally constrain the ASR transcript and
+text response to a maximum of 25 words and limit
+the speech output to the block duration (i.e., 2
+seconds), following SCoT (Arora et al., 2025c).
+To ensure fair comparison between turn-by-turn
+and duplex systems, we aggregate speech outputs
+across blocks within each turn and compute quality
+metrics on the combined output. Finally, for the
+baseline Moshi system, we provide each turn-level
+utterance as input and append 20 seconds of silence
+to ensure response generation is triggered.
+All models are trained using 4 NVIDIA H200
+GPUs. Further, we split DPO data shown in Ta-
+ble 1, into 99:1 ratio for training / validation while
+training our preference learning models. Model hy-
+perparameters are shown in Table 8. All results are
+3https://huggingface.co/ftshijt/espnet_codec_
+dac_large_v1.4_360epoch
+4https://huggingface.co/espnet/xeus , a K-means
+tokenizer trained on the last-layer representations with 5k
+clusters
+13
+
+Table 6: Qualitative examples where RLAIF post-training improves response quality. Compared to the baseline,
+RLAIF-generated responses better address the user’s question, reduce topic drift, and avoid repetitive or incoherent
+continuations.
+Dialogue Context
+Reference Answer
+w/o RLHF
+RLHF
+Example 1
+User:
+Do you have
+class on Friday?
+Well, I have an exam eight thirty
+to ten thirty. Mike is taking the
+whole day off. Mike wanted to
+leave at like nine o’clock in the
+morning, but...
+No, we’re going to have lunch in
+the afternoon, but we had to do
+something with our hair because
+we got a lot of hair.
+No, we don’t have class on Fri-
+day. We have class on Saturday,
+so I’m going to go to the wed-
+ding.
+Example 2
+User: We are starting
+the transition. I told the
+students what the new
+plan was...
+What do you mean, oh, about
+you are leaving?
+Yeah, I know what you mean.
+Yeah, I know, I know. I’m just
+trying to figure out what to do.
+Example 3
+User: I have been there
+for two weeks already.
+Oh, my gosh! So, who?
+Oh, okay. I mean, you start it on
+the fourth day if you want.
+Oh, well, I’m glad you’re doing
+well.
+Table 7: Qualitative examples where RLAIF post-training produces overly generic or safe responses that fail to
+advance the conversation, despite being coherent.
+Dialogue Context
+Reference Answer
+w/o RLHF
+RLHF
+Example 1
+User: The problem I
+had when I went into
+teaching...
+What grade were you teaching?
+Yeah, I think that’s good, too. I
+think that that should be, that’s
+the ideal teacher...
+Yeah, I think that’s true.
+Example 2
+User:
+That is what
+my sister is like.
+I
+want a meatball sand-
+wich from Wawa. Let
+us walk up. I am like.
+Is your sister doing that thing
+you know, hosing down the
+backyard?
+I think I would have to go with
+my sister. I don’t go to work
+with my brother...
+Yeah, I know, I know.
+reported from a single training run. We will pub-
+licly release data processing, training and inference
+details.
+14
+
+Table 8: RLHF Post-training Parameters. Hyperparameters found based on performance on validation set.
+Parameter
+Value
+gradient_accumulation_steps
+1
+epochs
+2
+gradient_clipping
+100.0
+bf16 enabled
+true
+optimizer type
+Adam
+optimizer lr
+0.0000006
+optimizer betas
+[0.9, 0.95]
+optimizer eps
+1e-8
+optimizer weight_decay
+3e-7
+optimizer adam_w_mode
+true
+scheduler type
+"WarmupCosineLR"
+scheduler warmup_type
+linear
+scheduler total_num_steps
+9000
+scheduler warmup_num_steps
+100
+scheduler warmup_min_lr
+0
+scheduler warmup_max_lr
+0.00001
+15
+
+A.5
+LLM Prompt
+Prompt Used for LLM-Based Evaluation and DPO Data Construction
+Please rate the response from the voice dialogue system based on the human reference response
+and input user utterance and following criteria (1-10 points), and provide a brief evaluation:
+1. Relevance: Is the response relevant to the query? Is the content related?
+2. Accuracy: Does the response correctly address the user's query and provide accurate information?
+3. Completeness: Does the response comprehensively cover all aspects of the query?
+4. Conversational Nature: Is the response easy to understand, concise, clear, and fluent?
+Output in JSON format:
+{
+"Strengths": "Positive aspects of the response",
+"Weaknesses": "Negative aspects of the response",
+"Overall Evaluation": "Overall assessment of the response",
+"Total Score (out of 10, directly provide the score)": ""
+}
+<Dialogue Context>
+Reference: <Reference Response>
+Agent: <SDS Response>
+16

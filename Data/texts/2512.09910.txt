@@ -1,0 +1,1344 @@
+Journal of Artificial Intelligence Research 1 (2025) -
+Submitted 12/25; published -
+Efficient Continual Learning in Neural Machine Translation:
+A Low-Rank Adaptation Approach
+Salvador Carri´on
+salcarpo@prhlt.upv.es
+Pattern Recognition and Human Language Technology, Universitat Polit`ecnica de Val`encia
+Francisco Casacuberta
+fcn@prhlt.upv.es
+Valencian Graduate School and Research Network of Artificial Intelligence, Universitat Polit`ecnica
+de Val`encia
+Abstract
+Continual learning in Neural Machine Translation (NMT) faces the dual challenges of
+catastrophic forgetting and the high computational cost of retraining. This study estab-
+lishes Low-Rank Adaptation (LoRA) as a parameter-efficient framework to address these
+challenges in dedicated NMT architectures. We first demonstrate that LoRA-based fine-
+tuning adapts NMT models to new languages and domains with performance on par with
+full-parameter techniques, while utilizing only a fraction of the parameter space. Second, we
+propose an interactive adaptation method using a calibrated linear combination of LoRA
+modules. This approach functions as a gate-free mixture of experts, enabling real-time,
+user-controllable adjustments to domain and style without retraining. Finally, to mitigate
+catastrophic forgetting, we introduce a novel gradient-based regularization strategy specifi-
+cally designed for low-rank decomposition matrices. Unlike methods that regularize the full
+parameter set, our approach weights the penalty on the low-rank updates using historical
+gradient information. Experimental results indicate that this strategy efficiently preserves
+prior domain knowledge while facilitating the acquisition of new tasks, offering a scalable
+paradigm for interactive and continual NMT.
+1. Introduction
+Neural Machine Translation (NMT) has made significant progress in recent years, achieving
+near-human accuracy for high-resource languages (Sutskever et al., 2014; Wu et al., 2016;
+Vaswani et al., 2017). However, one of the main challenges in the field is the continual learn-
+ing problem, which states that a model should be able to learn from a stream of continuously
+incoming data while retaining the previously acquired relevant knowledge (Thompson et al.,
+2019; McCloskey & Cohen, 1989). This challenge is particularly interesting in the Machine
+Translation domain, where the linguistic landscape is constantly evolving with new lan-
+guages, terminologies, and stylistic nuances (Cao et al., 2021).
+The continual learning problem in NMT is not just an academic concern; it has signifi-
+cant real-world applications to maintain the relevance of existing machine learning models
+in dynamic and ever-evolving environments, such as post-editing and interactive translation
+environments, where knowledge after corrections must be quickly incorporated into these
+systems (De Lange et al., 2022). As the speed of our world increases and our communica-
+tions become more globalized, we expect NMT models to be able to adapt to new dialects,
+©2025 The Authors. Published by AI Access Foundation under Creative Commons Attribution License CC BY 4.0.
+arXiv:2512.09910v1 [cs.CL] 10 Dec 2025
+
+Carri´on, & Casacuberta
+jargon, and evolving languages in a continuous and seamless manner. The ability to do so
+efficiently and accurately is crucial for businesses, governments, and individuals who rely
+on accurate translations.
+The difficulty in tackling the continual learning problem in NMT comes from the ten-
+dency of neural networks to forget previously learned relevant information upon learning
+a new one, a phenomenon known as catastrophic forgetting (Thompson et al., 2019; Mc-
+Closkey & Cohen, 1989). This is often a result of the stability-plasticity dilemma, where
+increasing a model’s plasticity to learn new tasks inevitably compromises its stability on
+previous ones (Carpenter & Grossberg, 1987). Naive approaches to continual learning, such
+as periodic retraining on a mix of old and new data, are not feasible due to the expen-
+sive computational costs associated, and the impracticality of storing all the previous data,
+which is not always available (Shin et al., 2017; Carri´on & Casacuberta, 2022). Further-
+more, methods that attempt to isolate new knowledge in separate full-network parameters
+can lead to an inefficient allocation of resources and bloated model architectures (Rusu
+et al., 2016).
+Past solutions have often focused on either expanding the model capacity to accom-
+modate new information or on regularizing the learning process to mitigate the forget-
+ting (Wang et al., 2024). However, these solutions typically require a significant increase
+in the number of parameters, computational resources, and energy consumption. While
+methods like Elastic Weight Consolidation (EWC) (Kirkpatrick et al., 2016) have been
+successful in general neural networks, applying them efficiently to the dedicated encoder-
+decoder architectures of NMT without incurring massive storage overheads remains a chal-
+lenge. Additionally, they often involve complex mechanisms to balance the retention of old
+knowledge and the acquisition of new information, which can be difficult to calibrate and
+may still result in performance degradation on previously learned tasks.
+In this work, we propose a unified solution that specifically targets the dedicated NMT
+architecture (non-LLM) using Low-Rank Adaptation (LoRA). The primary objectives of
+this paper are twofold: first, to rigorously evaluate the efficacy and boundaries of LoRA
+for multi-domain and multi-lingual NMT adaptation; and second, to propose a method to
+mitigate catastrophic forgetting within this low-rank framework. While LoRA has been
+explored in general continual learning (e.g., CoLoR, InfLoRA) (Ali et al., 2025; Liang & Li,
+2024), our approach differs by introducing a gradient-based regularization term specifically
+applied to the decomposition matrices within the NMT Transformer context, rather than
+applying general regularization to the full parameter set or using replay buffers.
+This dual-faceted solution offers an efficient task-switching strategy that allows us to
+change the language and domain expertise of a given NMT model on the fly, enables interac-
+tive model adaptation to new contexts, and, through the regularization of task-independent
+low-rank matrices, we can incorporate new knowledge efficiently, while we mitigate the
+effects of the catastrophic forgetting phenomenon in NMT.
+The key contributions of our approach are as follows:
+• Efficient task-switching in NMT: By introducing LoRA into the NMT archi-
+tecture of our models, we were able to efficiently switch the language and domain
+expertise of our models.
+This was done using a fraction of the parameters, lead-
+2
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+ing to significant savings in computational resources, and a performance on par with
+full-parameter strategies.
+• Interactive domain adaptation: By employing a simplified Mixture of LoRA Ex-
+perts with user-controllable scaling factors, we were able to adapt our NMT models
+to different domains and styles interactively, in a plug-and-play manner, and without
+the need for fine-tuning.
+• Low-rank and gradient-based regularization to efficiently tackle the Catas-
+trophic Forgetting problem: By implementing a low-rank and gradient-based
+regularization strategy specifically designed to address the catastrophic forgetting
+problem, we were able to incorporate new knowledge into our low-rank matrices while
+preserving most of the knowledge from the previous tasks (i.e.
+domains and new
+language-pairs).
+One of the limitations of our approach is the trade-off between the rank of adapta-
+tion and efficiency. While a higher rank leads to better performance, it also reduces the
+parameter-efficiency with regard to full-parameter fine-tuning approaches. In addition to
+this, the calibration of multiple low-rank matrices requires careful consideration to prevent
+any single-domain dominance and ensure a balanced performance across multiple domains.
+Finally, while our regularization strategy may lead to slightly reduced performance on new
+tasks compared to a non-regularized approach, it proves its consistency in mitigating the
+catastrophic forgetting efficiently on previous tasks. Despite this, the proposed low-rank ap-
+proach provides a solid foundation towards more adaptable, efficient, and robust continual
+learning NMT systems.
+2. Related work
+Continual learning has been an area of active research due to its potential to enable machine
+models to incrementally acquire, fine-tune, and transfer knowledge across tasks and domains
+without the need for periodic retraining (De Lange et al., 2022). However, the specific
+applications for NMT tasks have not been so widely studied (Biesialska et al., 2020).
+Previous works in continual learning for NMT (Thompson et al., 2019; Carri´on &
+Casacuberta, 2022; Luong & Manning, 2015) have primarily focused on strategies like
+rehearsal, regularization, and expansion, where models are either continuously trained on
+a mix of new and old data, regularized with regard to previous parameters, or expanded
+with new parameters for each task. Still, these methods often suffer from issues like the
+catastrophic forgetting phenomenon (McCloskey & Cohen, 1989; Mcclelland et al., 1995;
+Ratcliff, 1990) and inefficiency in parameter utilization (Houlsby et al., 2019; Allen-Zhu
+et al., 2018; Frankle & Carbin, 2018). Similarly, other authors have proposed methods
+based on reinforcement learning (Thu et al., 2023) or interactive online learning (Peris &
+Casacuberta, 2019) approaches to tackle this problem. However, these solutions usually
+lack the efficiency needed to incorporate new knowledge dynamically without forgetting
+past information.
+Our research introduces a novel application of the Low-Rank Adaptation method (LoRA)
+(Hu et al., 2021), to mitigate the aforementioned issues within the context of NMT. This
+3
+
+Carri´on, & Casacuberta
+approach has been proven to be effective in maintaining high performance, while modify-
+ing only a minimal subset of model parameters, thus offering a solution to the parameter
+inefficiency problem.
+The effectiveness of parameter-efficient fine-tuning (PEFT) methods has been increas-
+ingly recognized in the field. Approaches such as Adapter modules (Houlsby et al., 2019),
+AdaLoRA (Zhang et al., 2023a), Prefix Tuning (Li & Liang, 2021), P-Tuning (Liu et al.,
+2021), or fine-tuning with sparse updates (Kurtic et al., 2023) have shown that it is possible
+to achieve a high performance while only adjusting a small subset of the model’s param-
+eters. More recently, optimizations such as DoRA (Liu et al., 2024) and LoRA+ (Hayou
+et al., 2024) have further improved the convergence rates and expressive power of low-rank
+adapters, validating the continued relevance of this research direction. Recently, methods
+like CoLoR and InfLora have explored LoRA in continual learning settings (Ali et al., 2025;
+Liang & Li, 2024). While CoLoR focuses on continual few-shot learning for generative tasks
+and InfLora targets the specific mechanics of SVD updates, our work focuses specifically on
+the application to dedicated NMT architectures. Unlike standard EWC which regularizes
+the full parameter set (Kirkpatrick et al., 2016), or adapter-based methods that introduce
+additional layers, our method introduces a regularization term specifically for the X and Y
+decomposition matrices. This allows for lighter-weight storage and task-switching compared
+to storing full Fisher Information Matrices for the entire network.
+The continual domain adaptation problem in NMT has been investigated to a lesser
+extent, and the usage of multiple low-rank matrices for domain adaptation is a relatively new
+and unexplored terrain (De Lange et al., 2022; Biesialska et al., 2020; Hu et al., 2021). For
+instance, some authors showed that linear mixtures are better for combining domain-specific
+probabilities (Carpuat et al., 2014).
+Other methods for combining aspects of different
+domains have been explored from multiple perspectives (Tars & Fishel, 2018; Shi, 2023),
+but without specifically leveraging the efficiency of low-rank approaches. While multi-LoRA
+composition and scalable adapter serving have been explored in computer vision (Zhong
+et al., 2024) and Large Language Models (Sheng et al., 2024), our approach extends these
+concepts to NMT by applying a linear combination of LoRAs without gating networks,
+enabling real-time user-driven style control.
+The regularization of low-rank matrices in the context of continual learning represents
+a promising direction to efficiently tackle the catastrophic forgetting problem. While regu-
+larization techniques such as L2, Learning without Forgetting (LwF) (Li & Hoiem, 2016),
+and Elastic Weight Consolidation (EWC) (Kirkpatrick et al., 2016) have been well-studied
+in continual learning, among many others (Rusu et al., 2016; Draelos et al., 2016; Kemker
+& Kanan, 2017), their application to low-rank matrices in NMT is new (Iyer et al., 2023;
+Cao et al., 2021; Wang et al., 2024). These regularization techniques usually work by penal-
+izing changes on parameters that are important for past tasks, so applying these strategies
+directly into low-rank matrices presents a unique opportunity to prevent the catastrophic
+forgetting phenomenon more efficiently, with handy task-switching capabilities at no cost.
+In contrast, our work is among the first to explore this intersection, focusing on the ability
+of low-rank and gradient-based regularization to preserve linguistic knowledge over time in
+NMT models (Iyer et al., 2023; Wang et al., 2024).
+Therefore, while there are various strategies for continual learning in NMT (Iyer et al.,
+2023; Cao et al., 2021), this work differentiates itself by focusing on the novel application of
+4
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+low-rank matrices, which allows efficient task-switching strategies, dynamic and interactive
+domain adaptations, and the ability to incorporate new knowledge into the models by
+addressing the catastrophic forgetting problem through a specifically designed regularization
+strategy. This work presents itself as a more nuanced and computationally efficient approach
+to the continual learning problem in NMT than what has previously been explored in the
+literature.
+3. Methodology
+The continual learning problem in Neural Machine Translation (NMT) can be framed as
+an optimization problem in which the goal is to minimize a loss function L over a sequence
+of tasks T1, T2, . . . , TN (such as different languages, domains, and styles), while preserving
+most of the performance from previously learned tasks.
+Formally, this concept can be
+represented as:
+arg min
+θ
+N
+X
+n=1
+L(Tn, fθn)
+(1)
+where fθn denotes the NMT model parameterized by θn after learning task Tn.
+The primary challenge lies in updating θn for each new task Tn in such a manner that
+any increase in loss for earlier learned tasks is minimal.
+To do so, we address this issue by leveraging strategies centered around: 1) Parameter
+regularization, which is particularly effective in heavily over-parameterized neural networks
+where redundant parameters are identifiable; 2) Dynamic architectures, which expand the
+parameters of a base model to accommodate new tasks; 3) Rehearsal strategies, which
+combine previous information along with new data to mitigate the catastrophic forgetting
+effects, until the network is saturated.
+As each strategy tries to mitigate the catastrophic forgetting problem from a distinct
+angle, but without accounting for other issues such as data availability, model saturation,
+and model efficiency, we propose a unified solution: Gradient-based regularization for low-
+rank matrices. This dual-faceted approach includes:
+• Parameter-Efficient Fine-Tuning (PEFT) for addressing parameter-efficient fine-tuning
+issues and network saturation problems.
+• Regularization method to mitigate the catastrophic forgetting problem.
+The PEFT method aims to reduce the computational cost and parameter count needed
+for task-specific fine-tuning while decoupling task-specific parameters from the base model.
+In this work, we focus our attention on the Low-Rank Adaptation (LoRA) method (Hu
+et al., 2021), which instead of inefficiently storing all the weights of the network after
+fine-tuning, freezes part of it and learns the low-rank matrices needed to approximate the
+expected high-dimensional weight matrices of the fine-tuned neural network in a much more
+efficient way. In other words, in a traditional fine-tuning approach we would typically start
+with a weight matrix W and after the fine-tuning process, we would end up with a weight
+matrix W ′. Therefore, this means that the changes in this matrix W could be represented
+5
+
+Carri´on, & Casacuberta
+by a second matrix ∆W so that the final matrix W ′ could be computed like this:
+W ′ = W + ∆W
+(2)
+With this in mind, LoRA proposes a matrix factorization approach to approximate this
+weight matrix ∆W ∈Rp×q by two lower-rank matrices X and Y , such that ∆W ≈XY ⊤.
+As a result, the LoRA-based update is formulated as:
+W ′ = W + XY ⊤;
+W ′
+i,j = Wi,j +
+r
+X
+k=1
+xikyjk
+(3)
+where X ∈Rp×r and Y ∈Rq×r are the low-rank matrices, with r ≪min(p, q) being the
+rank of the adaptation, and i, j, k represents the element in the i-th or jth row and k-th
+column of the matrix.
+This decomposition reduces the parameter space from pq to r(p + q), significantly re-
+ducing the computational complexity. Hence, this facilitates efficient fine-tuning and task-
+switching capabilities in NMT models, enabling efficient model adaptation to different lan-
+guages and domains by integrating these task-specific low-rank components XY ⊤into the
+base model. Therefore, for task-specific adaptations, the model weights are updated as
+follows:
+W ′
+Tn = W + (XY ⊤)Tn
+(4)
+Once these matrices are trained independently for various tasks (e.g. domains or styles),
+we can perform interactive model adaptations through a calibrated linear combination of
+multiple LoRA matrices1, akin to a simplified Mixture of LoRA Experts (MoLE) but with-
+out a gating network, aiming to enhance the usability and to be able to interactively bias
+the model’s knowledge along desired dimensions without the need for fine-tuning. Unlike
+traditional MoEs that rely on networks to weigh contributions, we allow domain-specific co-
+efficients and a user scaling factor (α) for fine-grained control. Consequently, the adaptation
+is defined as follows:
+W ′
+MoLE = W +
+N
+X
+n=1
+αnλnXnY ⊤
+n
+(5)
+where N is the number of tasks (i.e. domains or styles), λn are domain-specific coefficients,
+αn is a user-adjustable scaling factor, and Xn, Yn are the respective LoRA matrices, all
+of them for their corresponding task Tn. This calibration ensures a balanced performance
+across domains, preventing any single domain from compromising the performance of the
+rest. In our experiments, the coefficients λ are set heuristically to achieve the desired blend
+of domains.
+Finally, to address the problem of catastrophic forgetting and to be able to incorporate
+new knowledge into our low-rank matrices, we considered that a pre-trained model fθ could
+be viewed as a point in a hyperdimensional space, defined by its matrices and vectors, which
+1. During our testing we had to calibrate (reweight) the individual contributions of each LoRA with a
+domain-specific coefficient as not all domains had the same impact in the final model’s performance.
+6
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+are the result of the training data distribution in which it has been trained on. Consequently,
+we hypothesized that since a task defines a region in that space, two similar tasks should
+have an overlapping area at some point (See Figure 1). Therefore, the problem of mitigating
+the catastrophic forgetting phenomenon becomes finding a way to move our model into the
+subspace region shared by both tasks.
+Assuming such an overlap exists between tasks A and B, we can attempt to adjust
+the model weights to move them into this shared region.
+Conversely, if tasks are non-
+overlapping, we rely on the ∆W transformation inherent to LoRA to map one model state
+to another.
+However, given the fact that in our problem definition, we only have access to the weights
+of the previous models and the data for the new task, we cannot simply merge these datasets
+to find this region, so we decided to take linear algebra approach by penalizing deviations
+in direction and magnitude with regard to the previous model.
+Formalizing the previous concept, given a model fθ trained on domain DA, resulting
+in a model fA2, we aim to adapt this model to a new domain DB while minimizing the
+performance degradation on the original domain DA, obtaining a new model fA,B.
+Consequently, if we represent these two models, conceptualized as points in a hyperdi-
+mensional space by a set of vectors, WA and WA,B, we could transform one into the other
+by simply calculating the vector that represents the difference between WA and WA,B, and
+applying it to WA. However, since we don’t know where this WA,B point will be located,
+instead, we added a penalty term to our objective function to control the magnitude (dis-
+tance) with which to prevent the new weights (WA,B) from drifting too far from the previous
+ones (WA). Specifically, we decided to use the norm of their difference as our distance func-
+tion, and then, we raised it to a tunable power, ∥WA,B −WA∥γ, to have greater control
+over the regularization effects. Similarly, the direction in which WA,B should be moving to
+become closer to WB, is defined by the domain DB (dataset). However, if we go blindly
+in this direction, from one point to another, we can easily escape the overlapping region
+that would allow us to have a WA,B model (See Figure 1). To prevent this, we adjusted
+(re-weighted) the new weight updates by factoring in the importance of weights from the
+previous task, similar to pruning strategies (Franchi et al., 2019; Zhang et al., 2023b). We
+calculated this importance using the cumulative gradient of the previous model, fA, after
+its training, computed as follows:
+Gθ = 1
+M
+M
+X
+i=1
+∇L(fθ, xi, yi)
+(6)
+where Gθ is the accumulated gradient for the training data (or a representative subset),
+∇L(fθ, xi, yi) represents the gradient of the loss function L with respect to the NMT model,
+fθ, parameterized by θ (where θ refers to the full model parameters), for a single training
+example (xi, yi). M represents the total number of datapoints (sentences) in the previous
+task’s dataset used to compute this importance metric.
+2. fA, fB, fA,B are used instead of fθA, fθB, fθA,B to simplify the notation.
+7
+
+Carri´on, & Casacuberta
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+Hypothetical model space
+Model A
+Model B
+Task A
+Subspace
+Task B
+Subspace
+Figure 1: Theorized model space: If we consider a model as a point in a hyperdimen-
+sional space resulting from the data distribution on which it was trained, we can
+expect that another model trained on a different data distribution, but similar,
+could end up in the shared region defined by these subspaces. Therefore, to mit-
+igate the catastrophic forgetting phenomenon we need to find a way to move the
+model into that overlapping region with the available information. (The arrows
+indicate the potential path for the fA,B model; in green the arrow that passes
+across the overlapping area, and in black the arrow that skips this area).
+From all these components, we introduced a gradient-based regularization specifically
+designed for our low-rank matrices, altering the typical loss function as follows:
+L′
+K = L(XK, YK) + λreg
+K−1
+X
+n=1
+h
+GX,n
+(X −Xn)
+γ + GY,n
+(Y −Yn)
+γi
+(7)
+where L is the primary task loss, Xn and Yn are the low-rank matrices learned for task
+Tn, λreg is a regularization coefficient, γ is an exponential coefficient, and GX,n and GY,n
+represent the cumulative gradients for task Tn specifically with respect to parameters X
+and Y .3 The coefficients λreg and γ were set via a grid search on a hold-out validation
+3. It is worth to point out that, if we purposefully ignore the gradient, we may end up with an L1 or L2
+regularization for the low-rank matrices, depending if we set λ equal to 1 or 2.
+8
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+set to optimize the harmonic mean between stability (old task) and plasticity (new task),
+as detailed in the experimental section. Consequently, the optimization problem for the
+low-rank matrices is defined as follows:
+(Xn, Yn) = arg min
+X,Y
+L′
+n(X, Y )
+(8)
+where the objective is to find the optimal low-rank matrices, Xn and Yn, that minimize the
+modified loss function L′
+n(X, Y ).4
+Hence, through this holistic approach, we have introduced an efficient and nuanced
+solution for adapting NMT models to new tasks (languages, domains, and styles) either
+by employing a parameter-efficient task-switching strategy, interactively adapting their do-
+main expertise, and finally, by incorporating new knowledge into these low-rank matrices
+using a specifically designed method to mitigate the effects of the catastrophic forgetting
+phenomenon in this scenario.
+4. Experimentation and Results
+4.1 Experimental Setup
+This section elaborates on the experimental setup for our study on tackling the continual
+learning problem in neural machine translation (NMT) using low-rank adaptation (LoRA)
+techniques. We outline the datasets used, evaluation metrics, and implementation details,
+providing a comprehensive view of the experimental environment.
+4.1.1 Dataset Description
+The datasets selected for this work are diverse in nature, encompassing multiple languages,
+domains, and stylistic variances (See Table 1).
+Table 1: Datasets: To control for potential domain overexposure bias and accelerate our
+experimentation, we employed reduced dataset versions (approximately 100,000
+sentences per dataset, 30,000 for Multi30k). Details are provided in Subsection 4.2.
+Dataset Type
+Dataset Name
+Domains
+Language Pairs
+Multi-Language
+Europarl
+EU proceedings
+English-[Spanish, French,
+German, Czech]
+Domain-Specific
+SciELO
+Scientific-Health
+English-Spanish
+SciELO
+Scientific-Biological
+English-Spanish
+JRC-Acquis
+Legal
+English-Spanish
+Stylistic Variance
+Multi30k-Formality
+Neutral, Formal, Informal
+English-Spanish
+Getting into the details of these datasets, we describe them as follows:
+4. Given the fact that there are multiple low-rank matrices per model, our (X, Y ) notation is a simplification
+that comprehends all of them.
+9
+
+Carri´on, & Casacuberta
+• Multi-Language Datasets: Used to study the limits of our approach, taking into
+account that the less similar two given languages are, the more aggressive the effects
+of catastrophic forgetting are expected to be.
+• Domain-Specific Datasets: The purpose of these datasets was to study the inter-
+domain dependencies for a given language in relation to the continual domain problem.
+• Stylistic Variance Datasets: A synthetically generated set of datasets to study
+the effects of style in an isolated manner, to avoid language-specific or domain-related
+noise. While synthetic data may not perfectly reflect real-world linguistic noise, this
+setup was necessary to isolate the effect of the decoder’s adaptation.
+By keeping
+the source sentences identical while varying only the target formality, we ensure that
+performance differences are attributable to the LoRA adaptation rather than encoding
+discrepancies.
+4.1.2 Evaluation Metrics
+The performance of our approach was evaluated primarily using the BLEU metric from
+the sacreBLEU toolkit (Post, 2018), which is the reference BLEU implementation for the
+WMT conference (ACL, 2016). In addition to this, we also used the character n-gram F-
+score (chrF++) (Popovi´c, 2015) and the Translation Error Rate (TER) (Snover et al., 2006),
+also included in the sacreBLEU toolkit. However, no major differences were found between
+these metrics during the evaluation.
+We acknowledge that relying solely on automated
+metrics such as BLEU provides an incomplete picture of the model’s fluency and adequacy
+compared to human evaluation. However, for the purpose of this comparative study across
+a large number of runs and domains, automated metrics provide a consistent standard for
+relative improvement.
+4.1.3 Implementation Details
+For the implementation of our NMT models, the following setup was used:
+• Model Architecture and Training Environment:
+– Base Architecture: Transformer architecture (Vaswani et al., 2017) was used
+as the foundation for our NMT models. These models were constructed with
+approximately 10 million parameters. Each model featured 3 layers, 8 attention
+heads, an embedding dimension of 256, and a feedforward layer dimension of 512.
+– Computational Resources: Training was conducted on a system equipped
+with an RTX 4090 GPU (24GB VRAM), supported by a 13th Gen Intel(R)
+Core(TM) i7-13700K CPU, and complemented with 64GB of RAM. The oper-
+ating system was an Ubuntu 22.04 LTS with CUDA Version 12.0.
+• Training Process and Parameters:
+– Training Tool: AutoNMT (Carri´on & Casacuberta, 2023), a tool that stream-
+lines the research of seq-to-seq models, by automating the preprocessing, training,
+and evaluation of NMT models. Internally, AutoNMT utilizes PyTorch 2.0.
+10
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+– Hyperparameters: We employed cross-entropy loss (without label smoothing)
+and AdamW as the default optimizer. Our training batches consisted of 128-
+1024 sentences, depending on the model requirements.
+The maximum token
+length was established between 150-400, varying depending on the dataset. The
+clip-norm was fixed at 1.0. The domain specific coefficients λn and user scaling
+factor αn for the mixture experiments were determined heuristically, while the
+regularization coefficients were determined via grid search.
+– Training Duration: Models were trained for a maximum of 50-200 epochs,
+with an early stopping implemented (patience set at 10-15 epochs) to prevent
+overfitting.
+4.2 Results
+In this section, we present our experimental findings. We structure the results to first estab-
+lish the baseline effectiveness of LoRA for NMT (Section 4.2.1), then explore its compos-
+ability for interactive adaptation, and finally demonstrate the proposed method to mitigate
+catastrophic forgetting. To provide a comprehensive analysis, we employed several metrics,
+including chrF++ (Popovi´c, 2015) and TER (Snover et al., 2006). However, for brevity
+reasons and because there were no differences in our findings, this section focuses mainly
+on reporting the BLEU (Post, 2018) score results.
+4.2.1 Effectiveness of Low-Rank Adaptation (LoRA) for
+Parameter-Efficient NMT fine-tuning
+This subsection delves into the effectiveness of Low-Rank Adaptation (LoRA) for fine-tuning
+NMT models in a parameter-efficient manner. To do so, we decided to explore two different
+scenarios: 1) Domain-Specific model adaptation and, 2) Efficient language-switching.
+For our first experiment, we decided to train a generic machine translation model on a
+variety of domains by sampling a balanced mixture of sentences from our English-Spanish
+datasets. This controlled mixed-domain dataset reduced potential biases from overexposure
+to any single domain and provided a distinct baseline. Next, we fine-tuned this model using
+a low-rank fine-tuning strategy for a wide range of ranks (1 to 256), going from 17,472
+to 2,236,416 parameters, in order to study the performance improvements in relation to
+the number of parameters used during the training (See Figure 2). In addition to this, we
+trained one additional model per domain using the traditional full-parameter fine-tuning
+approach to serve as a comparison of the number of parameters that this approach needs
+with regard to a low-rank approach. Finally, we added the baseline results of our pre-trained
+model (no fine-tuning) for each domain as the starting point.
+As we can see from Figure 2, which shows the linear (left) and logarithmic (right)
+performance improvements with regard to the number of parameters used during fine-
+tuning, we observed that as we increase the number of parameters during fine-tuning, we
+get a logarithmic increase in the performance of our model, regardless of the domain. That
+is, the smaller LoRA ranks gave us exponential improvements in performance (right figure)
+and marginal parameter growth, while the larger ranks gave us linear improvements of
+improvements but a critical exponential growth of these parameters.
+11
+
+Carri´on, & Casacuberta
+LoRA Rank
+BLEU
+Parameters
+10
+20
+30
+40
+50
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+Base
+1
+2
+4
+8
+16
+32
+64
+128
+256
+Full FT
+Health
+Biological
+Legal
+Europarl
+Parameters
+Parameters
+BLEU
+Parameters
+10
+20
+30
+40
+50
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+0M
+3M
+5M
+8M
+10M
+Health
+Biological
+Legal
+Europarl
+Parameters
+Figure 2: Comparative analysis of the model performance w.r.t the LoRA-rank
+and the number of parameters used: This figure shows the performance
+improvements (BLEU scores) achieved through a low-rank fine-tuning strategy
+across various domains (i.e. Health, Biological, Legal, and Europarl). As we can
+see, the LoRA fine-tuning strategy defines a regime of logarithmic performance
+improvements so that we can use a minimal fraction of parameters to achieve
+a performance similar to a traditional full-parameter fine-tuning. Note: M =
+millions.
+Similarly, in Table 2 we can see the individual performance improvements per domain as
+well as the average improvement as a function of the LoRA-rank and the parameters used.
+Again, we use the full-parameter fine-tuning model as a reference. From these results, we
+can observe that even with 1-5% of the parameters, we can achieve on average between 30 to
+50% of the fine-tuning performance, and even with a negligible 0.17% of the parameters, we
+were able to achieve up to a 16.20% of the fine-tuning performance (See Table 2). Likewise,
+with a rank of 64, we achieve a 65.19% of the full-parameters performance, but using just
+11.06% of its parameters.5
+To further explore the effectiveness of low-rank adaptation strategies for parameter-
+efficient fine-tuning, we decided to repeat the previous experiment but this time fine-tuning
+only the decoder. However, due to the lack of computational resources with which to train a
+large NMT model capable of generating high-quality encodings that were truly independent
+of the target sentences with which the source sentences were paired, we decided to generate
+a synthetic dataset in which the source sentences were always the same (thus, minimizing
+the encoding noise), while the target sentences were available at different levels of formality.
+To do this, we first trained an NMT model from scratch on the Multi30K dataset,
+which we consider to have a neutral level of formality. Then, we fine-tuned the decoder
+of this pre-trained model, for a wide range of LoRA ranks, on the Multi30k-Formal and
+Multi30k-Informal datasets. Again, we fine-tuned the full-parameter model as a reference.
+As a result, all the datasets share the same source sentences in this experiment, and all the
+5. Rank 1: 3.04/18.76; Rank 64: 12.23/18.76
+12
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+Table 2: Relative performance improvements per domain: Smaller LoRA ranks al-
+lowed us to achieve performance improvements close to their full-parameter coun-
+terparts at a fraction of their parameters. Note: K = thousands, M = millions.
+Domain boost w.r.t. base model
+LoRA-Rank
+Params used
+Health
+Biological
+Legal
+Europarl
+Average
+1
+17.4K (0.17%)
+2.82%
+4.44%
+1.50%
+3.39%
+3.04% ± 1.23%
+2
+34.9K (0.35%)
+3.17%
+4.87%
+2.49%
+4.04%
+3.64% ± 1.04%
+4
+69.8K (0.69%)
+3.48%
+5.08%
+3.27%
+4.99%
+4.20% ± 0.96%
+8
+139.7K (1.38%)
+6.59%
+7.53%
+3.54%
+6.85%
+6.13% ± 1.77%
+16
+279.5K (2.77%)
+9.60%
+9.09%
+3.50%
+8.93%
+7.78% ± 2.87%
+32
+559.1K (5.53%)
+12.25%
+12.55%
+5.13%
+9.80%
+9.93% ± 3.43%
+64
+1.1M (11.06%)
+14.22%
+16.33%
+7.09%
+11.27%
+12.23% ± 4.00%
+128
+2.2M (22.13%)
+15.47%
+18.69%
+8.78%
+13.04%
+14.00% ± 4.18%
+FT
+10.1M (100.00%)
+22.40%
+24.24%
+11.15%
+17.25%
+18.76% ± 5.88%
+models share the same encoder, we were able to isolate and study the effects of the low-rank
+fine-tuning method just on the decoder.
+These results can be seen in Table 3, where the target domain always outperforms all
+other domains even when only 8,736 parameters (rank 1) were used during training. This
+is especially important because it means that by simply storing 17KB 6 in 16-bit precision,
+we can add new capabilities on the fly for an NMT model that weights 40MB, thus saving
+a considerable amount of storage.
+Table 3: BLEU results from the Multi30k-Formality dataset (Neutral, Informal, and Formal
+domains).
+Neutral→Informal
+Neutral→Formal
+Rank
+Parameters
+Neutral
+Informal
+Formal
+Neutral
+Informal
+Formal
+1
+8,736
+49.98
+50.66
+50.05
+50.29
+50.32
+50.31
+2
+17,472
+50.15
+50.77
+50.44
+50.38
+50.38
+50.43
+4
+34,944
+49.97
+50.70
+50.17
+50.39
+50.53
+50.76
+8
+69,888
+50.16
+50.97
+50.44
+50.67
+50.84
+51.09
+16
+139,776
+50.14
+51.01
+50.37
+50.80
+50.95
+51.31
+32
+279,552
+50.42
+51.27
+50.71
+50.84
+51.14
+51.33
+64
+559,104
+50.66
+51.36
+50.80
+51.35
+51.59
+51.73
+FT
+10,176,576
+51.24
+51.60
+51.40
+50.72
+51.47
+51.94
+After this experiment, we decided to test whether low-rank fine-tuning strategies could
+be used to switch the language of a given pre-trained model using a minimal amount of
+6. 8,736 parameters x 16 bits
+13
+
+Carri´on, & Casacuberta
+parameters. To do so, we designed two experiments: The first one, consisted of training
+an NMT model using a minimal amount of data from several languages, as a warmup,
+with the goal of helping the model to discriminate between different languages more easily
+and be able to later boost the performance in that language using our low-rank strategy
+(See Figure 3). Then, for the second experiment, we tried to learn a different set of new
+languages completely from scratch, with the goal of studying if the previous technique was
+only valid for boosting a known language or indeed, it could be used to add new languages
+to a pre-trained model efficiently (See Figure 4).
+In Figure 3 we can see the results from the first experiment, where we first pre-trained
+a base multilingual model using 25k sentences on four language-pairs (English-Spanish,
+English-French, English-German, English-Czech), and then, we boosted the knowledge ex-
+pertise for each individual language using our proposed low-rank strategy.
+From these
+results, we can observe that as it happened in the previous domain experiment (See Fig-
+ure 2), we can effectively increase the performance on a given language up to 80-90% of the
+performance of the full-parameter approach but using just a 10% of its parameters. Again,
+this function follows a logarithmic trend, so when enough parameters are used, it matches
+the performance of a traditional full-parameter fine-tuning approach.
+LoRA Rank
+BLEU
+Parameters
+10
+20
+30
+40
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+Base
+4
+16
+64
+256
+Full FT
+en-es
+en-fr
+en-de
+en-cs
+Parameters
+Parameters
+BLEU
+Parameters
+10
+20
+30
+40
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+0M
+3M
+5M
+8M
+10M
+en-es
+en-fr
+en-de
+en-cs
+Parameters
+Figure 3: Efficient performance boosting for multilingual NMT models: This fig-
+ure demonstrates the effectiveness of low-rank adaptations in improving the per-
+formance of a multilingual NMT model trained on limited data (25k sentences
+per language). The BLEU score improvements for each language pair show sig-
+nificant gains with minimal parameters, following a logarithmic trend until the
+performance matches the full-parameter fine-tuning approach. (M = millions).
+Next, we decided to move this experiment one step further and test whether we could
+incorporate new languages, completely unseen during pre-training, into our previous mul-
+tilingual NMT model in a parameter-efficient manner. To do so, we trained a wide range
+of low-rank matrices for two new language-pairs (English-Italian and English-Portuguese),
+and even though it could be argued that we could have used a more different set of lan-
+guages, such as Russian or Chinese, we were limited to Romanic and Germanic languages
+due to our vocabulary choice (tokenizer) in this work, as it had been only trained on those
+14
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+languages. Nevertheless, given the wide range of languages and domains used during our
+experimentation, we expect these results to generalize to other languages as well.
+Accordingly, in Figure 4 we can observe the consistency of this approach, where the
+new languages are successfully learned in a parameter-efficient manner, following a loga-
+rithmic trend as we increase the number of parameters used in our low-rank approach until
+the results match the ones from the full-parameter fine-tuning. In addition to this, the
+parameter-performance trends from learning these new languages are consistent with the
+trends from the language-boosting experiment (See Figure 3), although it is clear that due
+to the complexity of learning a new language, higher ranks are needed when compared to
+learning a new domain from scratch. Nonetheless, it can be clearly seen in the right Figure 4
+that, with a rank of 64, we got a 72.94% of the performance of the full-parameter fine-tuning
+approach for the English-Portuguese pair, but using just 11.06% of its parameters. Similarly,
+these stats are consistent with the English-Italian pair.
+LoRA Rank
+BLEU
+Parameters
+10
+20
+30
+40
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+Base
+4
+16
+64
+256
+Full FT
+en-it [New]
+en-pt [New]
+Parameters
+Parameters
+BLEU
+Parameters
+10
+20
+30
+40
+0M
+2M
+4M
+6M
+8M
+10M
+12M
+0M
+3M
+5M
+8M
+10M
+en-it [New]
+en-pt [New]
+Parameters
+Figure 4: Incorporating new unseen languages into a pre-trained multilingual
+NMT model: This figure illustrates the effectiveness of extending a multilin-
+gual NMT model to include new language-pairs (en-it and en-pt), completely from
+scratch, in a parameter-efficient manner, thus, demonstrating consistent perfor-
+mance improvements with an increased parameter utilization. (M = millions).
+One of the limitations of this approach is that, since we are learning the low-rank com-
+ponents that factorize the weight matrices of the desired fine-tuned model, the adaptation
+process may be less effective in capturing complex nonlinear dependencies compared to the
+full-parameter fine-tuning approach, potentially leading to suboptimal performance in tasks
+that require intricate feature interactions or when we have to deal with highly variable data
+distributions. This implies LoRA struggles to efficiently learn the additional complexity
+introduced by novel language data compared to simple domain adaptation, highlighting
+a boundary in its effectiveness. In addition to this, the additional complexity of recon-
+structing the target matrix usually implies longer training times as can be seen in Figure 5.
+Therefore, a cost-benefit analysis is recommended: LoRA is superior for storage efficiency
+but may not be efficient if training speed is the primary constraint.
+15
+
+Carri´on, & Casacuberta
+Figure 5: Comparative analysis of training times for low-rank and full-parameter
+fine-tuning approaches: The low-rank approach is characterized by its longer
+training times (solid lines) when compared to a full-parameter approach (dashed
+lines) due to the complexity of capturing complex nonlinear dependencies through
+a matrix factorization process. In this case, the low-rank approach used 44.26%
+(rank 256) of the full-parameter model so higher loss and training times are
+expected.
+4.2.2 Interactive Domain Adaptation in NMT
+Having established the effectiveness and boundaries of single-task LoRA adaptation, we
+decided to explore the possibility of interactively improving the performance of a given
+NMT model on a set of different domains.
+To do this, we first pre-trained an NMT model on multiple datasets from different
+domains in order to obtain a generic translation model. Next, instead of simply training
+each new LoRA on a different domain to improve the performance of this generic model
+on that domain, we decided to pre-train a base LoRA on a wide variety of domains. The
+reason behind this approach was to obtain a generic LoRA that we could later use as a
+starting point for fine-tuning it on a variety of specialized domains, facilitating a smoother
+domain transition.
+As it can be seen in Figure 6, this strategy allowed us to use a linear combination of
+domain-specific LoRAs to interactively improve the performance, on the fly, on a given
+domain about the base model.
+In the left chart of Figure 6, we observe the baseline performance of the base model
+(dashed line) alongside the performance-area per domain achieved after applying our LoRA
+strategy. Similarly, the right chart of Figure 6 extends this analysis by showing how the
+increase in parameter-resolution for each LoRA, from rank 8 to 64, significantly boosts
+the performance in each domain. Namely, this performance is incremented logarithmically
+about the number of parameters as seen in the previous section (See Section 4.2.1). There-
+16
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+Health
+Biological
+Legal
+Europarl
+10
+20
+30
+40
+Base
+LoRA64
+Health
+Biological
+Legal
+Europarl
+0%
+3%
+6%
+9%
+12%
+LoRA8
+LoRA16
+LoRA32
+LoRA64
+Figure 6: Comparative analysis of interactive domains improvements: The left
+figure contains the absolute BLEU scores for our base model (dashed line) as
+well as the area of performance improvement (blue area) achievable by varying
+the interpolation coefficients across four domains (health, biological, legal, and
+Europarl). The area represents the range of performance outcomes achievable by
+sweeping the scaling factor α. The right figure details the relative performance
+gains (%) after applying this LoRA strategy at different ranks (8, 16, 32, 64),
+showing a similar logarithmic trend in terms of performance and parameters as
+the previous experiments.
+fore, the enhancements attributed to this LoRA approach also serve as a guide for the
+selection of an appropriate rank in finding a good balance between the performance gains
+and the expected computational efficiency.
+Furthermore, we noticed that more often than not, this linear combination of domain-
+specific LoRAs acted as a sort of model ensemble that improved the performance across all
+domains, to the point of even surpassing the performance of some domain-specific LoRAs.
+However, it is also important to point out a few of the limitations that we encountered
+with this approach. The first limitation deals with the fact that some LoRAs contributed
+more strongly than others to a given domain, and despite scaling and normalizing each
+contribution per domain, this interaction between LoRAs seemed less and less linear and
+predictive as the distance between domains increased. Another limitation of this approach is
+that it does not attempt to overcome the effects of the catastrophic forgetting phenomenon
+so when we increase performance for a given set of domains, sometimes we end up worsening
+performance in other domains. This was especially noticeable when the domains were very
+different.
+17
+
+Carri´on, & Casacuberta
+4.2.3 Gradient-based regularization for low-rank matrices
+To deal with the aforementioned issues of forgetting during sequential adaptation, we now
+introduce our proposed gradient-based regularization strategy. The goal is to incorporate
+new knowledge into these low-rank matrices efficiently while mitigating catastrophic forget-
+ting.
+To achieve this, we designed a novel regularization strategy, as detailed in Section 3,
+which regularizes the low-rank matrices of the new model using the norm of the difference
+between the old and new weights, raised to a tunable power to provide finer control over
+the regularization process, and then, multiplying this term by the cumulative gradient of
+the previous task to re-weight the updates according to their importance for the previous
+task.
+Accordingly, we studied this approach from two different scenarios: The first scenario
+consisted of mitigating the catastrophic forgetting problem upon learning a new domain
+(health →legal) while keeping the language-pair fixed (See Figure 7). And for the second
+and more challenging scenario, we attempted to add a new language-pair (English-French)
+without forgetting the original language-pair (English-Spanish), again, without having any
+past data available during training time (See Figure 8).
+As a result, in Figure 7 we can see the performance of an NMT model being evaluated
+for two different domains (new and old) during the learning of the new domain. We report
+BLEU scores on the validation set during training to better capture the learning dynamics.
+Since both validation and test sets were randomly sampled from the same distribution,
+results were consistent across both. To begin with, the base model was initially trained ex-
+clusively on the health domain, and then, we fine-tuned it on the legal domain (with no past
+data available), using our gradient-based regularization for low-rank matrices to mitigate
+the catastrophic forgetting problem, along with no-regularization and the L2 regularization
+to serve as a comparison.
+As it can be seen in Figure 7, left (forgetting) and right (learning), there is a clear
+trade-off between the ability to learn a new domain and the resistance to forget known
+information. Generally speaking, our strategy (solid green line) can be quite resilient to
+the catastrophic forgetting effects during the learning of the new legal domain (from the
+health domain). However, it also exhibits an additional difficulty in learning the new task
+due to the added complexity of having to reconfigure the existing parameters from the
+previous task while learning this new task. Similarly, the L2 regularization (dashed blue
+line) shows less control over catastrophic forgetting in favor of a more efficient learning
+on the new task, establishing itself as an intermediate solution between our strategy and
+the non-regularized one (dashed red line), which as expected, stands out for its maximum
+efficiency in learning the new task while showing a complete disregard in preserving the
+knowledge from the previous task. Nonetheless, given that our approach presents more
+tunable aspects by means of the aforementioned hyperparameters, we expect it to be able
+to improve its learning rate by tweaking them a bit, without impacting its abilities to
+mitigate the catastrophic forgetting phenomenon.
+Next, we decided to explore a more challenging scenario, where instead of adding new
+domains, we added new language-pairs to our low-rank matrices for efficient task-switching
+scenarios(See Figure 8). This time, we started from a pre-trained model on an English-
+18
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+run_id=1
+run_id=2,3
+run_id=6 run_id=4,5
+run_id=7
+Reference BLEU (Health)
+run_id=1
+run_id=2,3
+run_id=6
+run_id=7
+run_id=4,5
+Reference BLEU (Legal)
+Figure 7: CF regularization strategies in new domain scenarios: The left figure
+shows the forgetting of the previous domain (health), while the right figure shows
+the learning of the new domain (legal). Our gradient-based regularization strategy
+(solid green line) was the strategy that was able to retain the past knowledge more
+consistently of all of them, despite losing a few performance points while learning
+the new domain, when compared to the no-regularization strategy. Then, the L2
+regularization strategy acts as a middle ground between our approach and the
+no-regularized version. We conducted multiple runs for our method to analyze
+the sensitivity to the regularization coefficient γ. (run id’s values are used to
+match training runs between both plots)
+Spanish dataset, with the goal of adding a second language-pair, English-French, via low-
+rank matrices as an extreme scenario.
+This task proved to be particularly difficult for all strategies (See Figure 8), given the fact
+that none of the tested strategies was able to successfully incorporate a second language-pair
+from scratch via low-rank matrices while retaining most of the past information (previous
+language-pair). We argue that the difficulty in making these two language-pairs coexist
+into our low-rank matrices (on top of a monolingual NMT model) could be related to a
+network saturation problem, since by not having enough parameters in which to store the
+new and the previous language-pair, we could be creating an artificial limitation. However,
+it is worth pointing out that our strategy turned out to be the only one that didn’t produce
+an instant collapse of the previous language-pair (English-Spanish) during the very first
+iterations of the learning the new language-pair (See right figure 8, run id=6), and instead,
+both the forgetting and the learning curve, turned out to be quite smooth and with a steady
+slope. Nonetheless, this is a very challenging task that will be studied more deeply in future
+work.
+From these results, we demonstrate that we can effectively incorporate new knowledge
+into these low-rank matrices for an efficient task-switching strategy. However, there is no
+free lunch, since when using restrictions, we were not able to make the performance on new
+tasks (i.e., language or domain) as good as when no other restrictions were used during its
+learning. Finally, it is worth pointing out that, as expected, it seems to be significantly
+19
+
+Carri´on, & Casacuberta
+run_id=1
+run_id=2
+run_id=4
+run_id=5
+run_id=6
+run_id=3
+BLEU
+run_id=1
+run_id=2
+run_id=4
+run_id=5
+run_id=3
+run_id=6
+BLEU
+Figure 8: CF regularization strategies in new language-pair scenarios: The left
+figure shows the forgetting of the previous language-pair (English-Spanish), while
+the right figure shows the learning of the new language-pair (English-French).
+Here, although no approach could be considered a success due to the complexity
+of the task, our gradient-based regularization (solid green line) proved to be the
+only one able to retain enough past knowledge while learning the new task (See
+run id=6), a thing which we couldn’t achieve with the other approaches due to
+their instant collapse of the previous knowledge during the very first iterations of
+training.
+easier to incorporate new knowledge into these low-rank matrices when we are dealing with
+different domains or styles than when we are trying to add new language-pairs completely
+from scratch due to the additional complexity.
+5. Conclusion and Future Work
+In this paper, we have introduced a holistic approach to address the continual learning prob-
+lem in Neural Machine Translation (NMT), focusing on the use of Low-Rank Adaptation
+(LoRA) strategies to provide an efficient and effective solution to this problem. Our work
+contributes to the field of NMT by introducing a new paradigm that combines the strengths
+of low-rank matrices, interactive domain adaptation, and a gradient-based regularization
+approach to mitigate the catastrophic forgetting problem in this context.
+Our research highlights the efficiency of task-switching strategies for NMT models us-
+ing low-rank adaptation methods. This approach allows models to switch languages and
+domains highly efficiently, using far fewer parameters than traditional full-parameter fine-
+tuning strategies, which not only maximizes the computational resources but also maintains
+a performance-level comparable to more resource-intensive methods.
+In addition to this, we have used a sort of Mixture of LoRA Experts in the form of a
+calibrated linear combination of domain-specific low-rank matrices, with which to make dy-
+namic adjustments to the model’s domain, style, and knowledge expertise, using a minimal
+amount of parameters.
+20
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+Finally, we have introduced a gradient-based regularization strategy, specifically de-
+signed for this low-rank approach to mitigate the effects of the catastrophic forgetting
+phenomenon while new information is being incorporated into these low-rank matrices.
+However, our approach does come with its limitations. The balance between the rank
+of the matrices and the model’s efficiency remains a critical consideration, as higher ranks,
+while improving the performance of our models, also reduce their parameter efficiency.
+Similarly, the calibration of multiple low-rank matrices requires careful consideration to
+avoid single-domain dominance and problems related to the catastrophic forgetting effects,
+and while our regularization strategy is effective in mitigating some of these problems, it also
+compromises performance on new tasks to some extent. We also note that our experiments
+relied on BLEU scores for broad comparability; future work should incorporate manual
+evaluation to better assess fluency and adequacy in fine-grained scenarios.
+In summary, our work explores a new paradigm in the field of NMT for efficient, con-
+tinual, and interactive machine translation, based on leveraging the efficiency of low-rank
+adaptation methods, to perform efficient task-switching strategies, and a gradient-based
+regularization method to incorporate new knowledge into our models without forgetting
+previous knowledge caused by the stability-plasticity dilemma.
+Acknowledgments
+Work supported by the Horizon 2020 - European Commission (H2020) under the SELENE
+project (grant agreement no 871467), the project LLEER, and the project Deep Learning for
+adaptive and multimodal interaction in pattern recognition (DeepPattern) (grant agreement
+PROMETEO/2019/121). We gratefully acknowledge the support of NVIDIA Corporation
+with the donation of a GPU used for part of this research.
+References
+ACL (2016). First conference: Machine translation (wmt16)..
+Ali, M., Rossi, L., & Bertozzi, M. (2025).
+Color-gan: Continual few-shot learning with
+low-rank adaptation in generative adversarial networks..
+Allen-Zhu, Z., Li, Y., & Liang, Y. (2018). Learning and generalization in overparameterized
+neural networks, going beyond two layers. CoRR, abs/1811.04918.
+Biesialska, M., Biesialska, K., & Costa-juss`a, M. R. (2020). Continual lifelong learning in
+natural language processing: A survey. CoRR, abs/2012.09823.
+Cao, Y., Wei, H.-R., Chen, B., & Wan, X. (2021). Continual learning for neural machine
+translation. In Toutanova, K., Rumshisky, A., Zettlemoyer, L., Hakkani-Tur, D., Belt-
+agy, I., Bethard, S., Cotterell, R., Chakraborty, T., & Zhou, Y. (Eds.), Proceedings of
+the 2021 Conference of the North American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies, pp. 3964–3974.
+Carpenter, G. A., & Grossberg, S. (1987).
+A massively parallel architecture for a self-
+organizing neural pattern recognition machine. Computer Vision, Graphics, and Im-
+age Processing, 37(1), 54–115.
+21
+
+Carri´on, & Casacuberta
+Carpuat, M., Goutte, C., & Foster, G. F. (2014). Linear mixture models for robust machine
+translation. In WMT@ACL.
+Carri´on, S., & Casacuberta, F. (2022). Few-shot regularization to tackle catastrophic for-
+getting in multilingual machine translation. In Duh, K., & Guzm´an, F. (Eds.), Pro-
+ceedings of the 15th biennial conference of the Association for Machine Translation in
+the Americas (Volume 1: Research Track), pp. 188–199.
+Carri´on, S., & Casacuberta, F. (2023). Autonmt: A framework to streamline the research
+of seq2seq models. ArXiv, abs/2302.04981.
+De Lange, M., Aljundi, R., Masana, M., Parisot, S., Jia, X., Leonardis, A., Slabaugh, G., &
+Tuytelaars, T. (2022). A continual learning survey: Defying forgetting in classification
+tasks. IEEE Transactions on Pattern Analysis and Machine Intelligence, 44(7), 3366–
+3385.
+Draelos, T. J., Miner, N. E., Lamb, C. C., Vineyard, C. M., Carlson, K. D., James, C. D.,
+& Aimone, J. B. (2016). Neurogenesis deep learning. CoRR, abs/1612.03770.
+Franchi, G., Bursuc, A., Aldea, E., Dubuisson, S., & Bloch, I. (2019). TRADI: tracking
+deep neural network weight distributions. CoRR, abs/1912.11316.
+Frankle, J., & Carbin, M. (2018). The lottery ticket hypothesis: Training pruned neural
+networks. CoRR, abs/1803.03635.
+Hayou, S., Ghosh, N., & Yu, B. (2024).
+Lora+: Efficient low rank adaptation of large
+models. ArXiv, abs/2402.12354.
+Houlsby, N., Giurgiu, A., Jastrzebski, S., Morrone, B., de Laroussilhe, Q., Gesmundo, A.,
+Attariyan, M., & Gelly, S. (2019).
+Parameter-efficient transfer learning for NLP.
+CoRR, abs/1902.00751.
+Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., & Chen, W. (2021). Lora:
+Low-rank adaptation of large language models. CoRR, abs/2106.09685.
+Iyer, V., Chen, P., & Birch, A. (2023). Towards effective disambiguation for machine trans-
+lation with large language models. In Koehn, P., Haddow, B., Kocmi, T., & Monz, C.
+(Eds.), Proceedings of the Eighth Conference on Machine Translation, pp. 482–495,
+Singapore. Association for Computational Linguistics.
+Kemker, R., & Kanan, C. (2017). Fearnet: Brain-inspired model for incremental learning.
+CoRR, abs/1711.10563.
+Kirkpatrick, J., Pascanu, R., Rabinowitz, N. C., Veness, J., Desjardins, G., Rusu, A. A.,
+Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., Hassabis, D., Clopath, C.,
+Kumaran, D., & Hadsell, R. (2016). Overcoming catastrophic forgetting in neural
+networks. CoRR, abs/1612.00796.
+Kurtic, E., Kuznedelev, D., Frantar, E., Goin, M., & Alistarh, D. (2023). Sparse fine-tuning
+for inference acceleration of large language models. ArXiv, abs/2310.06927.
+Li, X. L., & Liang, P. (2021). Prefix-tuning: Optimizing continuous prompts for generation.
+CoRR, abs/2101.00190.
+Li, Z., & Hoiem, D. (2016). Learning without forgetting. CoRR, abs/1606.09282.
+22
+
+Efficient Continual Learning: A Low-Rank Adaptation Approach
+Liang, Y.-S., & Li, W.-J. (2024). Inflora: Interference-free low-rank adaptation for contin-
+ual learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pp. 23638–23647.
+Liu, S.-Y., Wang, C.-Y., Yin, H., Molchanov, P., Wang, Y.-C. F., Cheng, K.-T., & Chen, M.-
+H. (2024). Dora: Weight-decomposed low-rank adaptation. In Forty-first International
+Conference on Machine Learning.
+Liu, X., Zheng, Y., Du, Z., Ding, M., Qian, Y., Yang, Z., & Tang, J. (2021). GPT under-
+stands, too. CoRR, abs/2103.10385.
+Luong, M.-T., & Manning, C. (2015).
+Stanford neural machine translation systems for
+spoken language domains. In Federico, M., St¨uker, S., & Niehues, J. (Eds.), Proceed-
+ings of the 12th International Workshop on Spoken Language Translation: Evaluation
+Campaign, pp. 76–79.
+Mcclelland, J., Mcnaughton, B., & O’Reilly, R. (1995).
+Why there are complementary
+learning systems in the hippocampus and neocortex: Insights from the successes and
+failures of connectionist models of learning and memory. Psychological review, 102,
+419–57.
+McCloskey, M., & Cohen, N. J. (1989). Catastrophic interference in connectionist networks:
+The sequential learning problem.. Vol. 24 of Psychology of Learning and Motivation,
+pp. 109–165.
+Peris, A., & Casacuberta, F. (2019).
+Online learning for effort reduction in interactive
+neural machine translation. Computer Speech & Language, 58, 98–126.
+Popovi´c, M. (2015).
+chrF: character n-gram F-score for automatic MT evaluation.
+In
+Proceedings of the Tenth WMT, pp. 392–395.
+Post, M. (2018). A call for clarity in reporting BLEU scores. In Proceedings of the Third
+Conference on Machine Translation: Research Papers, pp. 186–191.
+Ratcliff, R. (1990). Connectionist models of recognition memory: constraints imposed by
+learning and forgetting functions.. Psychological review, 97 2, 285–308.
+Rusu, A. A., Rabinowitz, N. C., Desjardins, G., Soyer, H., Kirkpatrick, J., Kavukcuoglu,
+K., Pascanu, R., & Hadsell, R. (2016).
+Progressive neural networks.
+CoRR,
+abs/1606.04671.
+Sheng, Y., Cao, S., Li, D., Hooper, C., Lee, N., Yang, S., Chou, C., Zhu, B., Zheng, L.,
+Keutzer, K., Gonzalez, J. E., & Stoica, I. (2024). Slora: Scalable serving of thousands
+of lora adapters. In Gibbons, P., Pekhimenko, G., & Sa, C. D. (Eds.), Proceedings of
+Machine Learning and Systems, Vol. 6, pp. 296–311.
+Shi, P. (2023). An effective ensemble model related to incremental learning in neural machine
+translation. In Tanveer, M., Agarwal, S., Ozawa, S., Ekbal, A., & Jatowt, A. (Eds.),
+Neural Information Processing, pp. 112–127.
+Shin, H., Lee, J. K., Kim, J., & Kim, J. (2017). Continual learning with deep generative
+replay. CoRR, abs/1705.08690.
+23
+
+Carri´on, & Casacuberta
+Snover, M., Dorr, B., Schwartz, R., Micciulla, L., & Makhoul, J. (2006). A study of transla-
+tion edit rate with targeted human annotation. In Proceedings of the 7th Conference
+of the AMTA: Technical Papers, pp. 223–231.
+Sutskever, I., Vinyals, O., & Le, Q. V. (2014). Sequence to sequence learning with neural
+networks. In Ghahramani, Z., Welling, M., Cortes, C., Lawrence, N., & Weinberger,
+K. Q. (Eds.), NIPS, Vol. 27.
+Tars, S., & Fishel, M. (2018).
+Multi-domain neural machine translation.
+CoRR,
+abs/1805.02282.
+Thompson, B., Gwinnup, J., Khayrallah, H., Duh, K., & Koehn, P. (2019). Overcoming
+catastrophic forgetting during domain adaptation of neural machine translation. In
+Burstein, J., Doran, C., & Solorio, T. (Eds.), Proceedings of the 2019 Conference of the
+North American Chapter of the Association for Computational Linguistics: Human
+Language Technologies, Volume 1 (Long and Short Papers), pp. 2062–2068.
+Thu, Y. K., Myint Oo, T., & Supnithi, T. (2023). Rl-nmt: Reinforcement learning fine-
+tuning for improved neural machine translation of burmese dialects.. MMAsia ’23
+Workshops.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., &
+Polosukhin, I. (2017). Attention is all you need. In Proceedings of the 31st NeurIPS,
+NIPS’17, p. 6000–6010.
+Wang, L., Zhang, X., Su, H., & Zhu, J. (2024). A comprehensive survey of continual learning:
+Theory, method and application. IEEE transactions on pattern analysis and machine
+intelligence, 46(8), 5362–5383.
+Wu, Y., Schuster, M., Chen, Z., Le, Q. V., Norouzi, M., Macherey, W., Krikun, M., Cao,
+Y., Gao, Q., Macherey, K., Klingner, J., Shah, A., Johnson, M., Liu, X., Kaiser, L.,
+Gouws, S., Kato, Y., Kudo, T., Kazawa, H., Stevens, K., Kurian, G., Patil, N., Wang,
+W., Young, C., Smith, J., Riesa, J., Rudnick, A., Vinyals, O., Corrado, G., Hughes,
+M., & Dean, J. (2016). Google’s neural machine translation system: Bridging the gap
+between human and machine translation. CoRR, abs/1609.08144.
+Zhang, Q., Chen, M., Bukharin, A., He, P., Cheng, Y., Chen, W., & Zhao, T. (2023a). Adap-
+tive budget allocation for parameter-efficient fine-tuning. ArXiv, abs/2303.10512.
+Zhang, Z., Tao, R., & Zhang, J. (2023b). Neural network pruning by gradient descent.
+arXiv preprint arXiv:2311.12526, abs/2311.12526.
+Zhong, M., Shen, Y., Wang, S., Lu, Y., Jiao, Y., Ouyang, S., Yu, D., Han, J., & Chen, W.
+(2024). Multi-lora composition for image generation. ArXiv, abs/2402.16843.
+24

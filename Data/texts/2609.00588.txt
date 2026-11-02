@@ -1,0 +1,4655 @@
+Quit While You’re Ahead: QUIT for Efficient Candidate Generation in
+Machine Translation Reranking
+Guangyu Chen*1, Boxuan Lyu 吕博轩*1,
+Hidetaka Kamigaito2, Kotaro Funakoshi1, and Manabu Okumura1
+1Institute of Science Tokyo, 2Nara Institute of Science and Technology
+{co_gy,lyu,funakoshi,oku}@lr.first.iir.isct.ac.jp
+kamigaito.h@is.naist.jp
+Abstract
+Reranking methods, such as Minimum Bayes
+Risk (MBR) decoding and Quality Estimation
+(QE) reranking, have been widely used in mod-
+ern neural machine translation (NMT) to se-
+lect an output from a set of candidate hypothe-
+ses. However, the performance gains come
+at the cost of high inference latency. Exist-
+ing acceleration methods target MBR decod-
+ing and reduce only the reranking computa-
+tion, leaving QE reranking unaddressed and
+candidate generation—which can be the larger
+computational bottleneck—largely untouched.
+In this work, we propose QUIT (Quantifying
+Uncertainty for Incremental Termination), a
+novel early-stopping strategy for the entire
+generation–reranking pipeline.
+QUIT treats
+candidate generation as a sequential decision-
+making process under uncertainty. It incremen-
+tally generates and reranks candidates, stopping
+when the best reranking score stabilizes. Com-
+prehensive experiments with three NMT mod-
+els across 19 language pairs show that QUIT
+achieves end-to-end speedups of 1.47–2.66×
+for MBR decoding and 3.43–4.12× for QE
+reranking while preserving automatic metric
+scores.
+1
+Introduction
+Reranking is increasingly common in modern neu-
+ral machine translation (NMT): a reranker selects
+the final output from a set of hypotheses generated
+by an NMT model. Reranking offers two advan-
+tages: (1) it uses external criteria rather than rely-
+ing solely on model probability, which has been
+shown to correlate poorly with translation quality
+(Eikema and Aziz, 2020; Freitag et al., 2022) and
+(2) it flexibly adapts output selection to different
+inference-time objectives without requiring model
+retraining (Saunders et al., 2022). In recent WMT
+General Translation Shared Tasks, nearly all top-
+performing systems have used reranking during
+*Equal contribution.
+inference or for training-data construction (Kocmi
+et al., 2024, 2025). The predominant approaches
+are Minimum Bayes Risk (MBR) decoding (Kumar
+and Byrne, 2004; Tromble et al., 2008; Eikema and
+Aziz, 2020, 2022; Freitag et al., 2022; Fernandes
+et al., 2022) and Quality Estimation (QE) reranking
+(Fernandes et al., 2022), along with their variants.
+Despite its effectiveness, the reranking pipeline
+is computationally expensive, as it requires gener-
+ating many hypotheses and repeatedly invoking the
+reranker. Although several methods have recently
+been proposed to accelerate MBR decoding (Cheng
+and Vlachos, 2023; Vamvas and Sennrich, 2024;
+Deguchi et al., 2024), they are specific to MBR
+and optimize only the reranking stage, without re-
+ducing the need for large candidate sets. To the
+best of our knowledge, no acceleration method has
+been developed for QE reranking. Moreover, as
+large language model (LLM)-based NMT systems
+become more common, candidate generation can
+be substantially more costly than reranking. There-
+fore, reducing the number of generated candidates
+while maintaining the final translation quality—as
+measured against references—holds great promise
+for substantial end-to-end acceleration.
+Viewing the reranking pipeline as an incremen-
+tal generation–reranking process, an intuitive idea
+is to terminate generation early when the risk is
+minimal, that is, when producing additional candi-
+dates is unlikely to yield further quality improve-
+ments. This early-stopping risk can be charac-
+terized as the absolute difference in quality be-
+tween the reranker’s current output and its out-
+put from the full candidate set. However, in an
+incremental setting, the output quality of the full
+candidate set is inaccessible. We thus utilize un-
+certainty, quantified as the degree of quality con-
+vergence throughout the incremental process, as
+a proxy for this risk. Furthermore, because true
+translation quality can only be measured against
+references (which are unavailable at test time), we
+1
+arXiv:2609.00588v4 [cs.CL] 29 Sep 2026
+
+Conventional reranking
+　Generation cost: Nmax candidates
+　QE scoring: Nmax estimator calls
+　MBR scoring: Nmax2 utility calls
+Higher
+latency
+QUIT (ours)
+Track QE / MBR score
+　Generation cost: kT candidates
+　QE scoring: kT estimator calls
+　MBR scoring: (kT)2 utility calls
+kT ≪ Nmax
+Generate a fixed set
+of N Candidates
+Lower
+end2end
+latency
+Source
+Rerank all
+candidates
+Source
+Generate candidates
+incrementally
+Select from 
+kT candidates
+skipped scoring
+calculated
+generated T batches
+skipped generation
+avoid
+avoid
+Figure 1: Overview of conventional reranking and QUIT. Conventional reranking generates the full candidate set
+and scores every candidate, whereas QUIT generates candidates incrementally, tracks the best reranking score,
+and stops once that score stabilizes. It thereby avoids generating and scoring additional candidates and reduces
+end-to-end latency.
+leverage the score assigned by the reranker itself
+as a practical surrogate. We operationalize this
+framework into QUIT (Quantifying Uncertainty for
+Incremental Termination), an uncertainty-guided
+early-stopping strategy for the entire generation–
+reranking pipeline. Concretely, QUIT generates
+candidates incrementally (e.g., eight at a time) and
+tracks their reranking scores. It uses the recent
+variation of the best reranking score as a practi-
+cal proxy for this uncertainty and stops when that
+variation is at or below a prespecified convergence
+threshold. This strategy therefore reduces both
+candidate-generation and reranking costs.
+Across three NMT models and the WMT24
+(Kocmi et al., 2024) and WMT25 test sets, span-
+ning 19 language pairs, QUIT achieves end-to-end
+speedups of 1.47–2.66× for MBR decoding and
+3.43–4.12× for QE reranking while remaining sta-
+tistically equivalent to the unaccelerated baseline
+for most automatic metric scores. These results
+demonstrate that adaptive candidate generation is
+key to reducing end-to-end reranking latency.
+2
+NMT Reranking
+Reranking selects a translation according to the
+preferences of an external reranker, rather than
+solely according to the probabilities estimated by
+the NMT model. An NMT system with reranking
+consists of two stages. First, the NMT model gen-
+erates multiple candidates, for example, through
+beam search or sampling. Second, the reranker
+scores these candidates, and the system returns the
+one with the best reranking score. Decoupling se-
+lection from generation allows the output selection
+to target criteria that may align better with transla-
+tion quality than model probability.
+Formally, given a source sentence s, an NMT
+model with parameters θ defines a distribution
+Pθ(· | s) over the hypothesis space H. A gen-
+eration method constructs a candidate set C =
+{h1, . . . , hN} ⊂H of size N. Let r(h; s, C) de-
+note the score that an external reranker assigns to
+candidate h ∈C, where a higher score indicates a
+stronger preference. The system selects:
+ˆyr = argmax
+h∈C
+r(h; s, C).
+(1)
+The resulting performance depends on both the
+coverage of C and the accuracy of r. Increasing
+N makes a high-quality translation more likely to
+appear in C, but also raises the cost of both stages.
+2.1
+Minimum Bayes Risk Decoding
+MBR decoding is a reranking method with a long
+history in statistical machine translation (Kumar
+and Byrne, 2004; Tromble et al., 2008). It uses
+hypotheses sampled from the model as “pseudo-
+references”, called support hypotheses, and scores
+each candidate by its average utility against them.
+The candidate with the lowest estimated Bayes
+risk—or, equivalently, the highest expected utility—
+is returned as the final translation.
+Formally, MBR instantiates the generic score r
+in Equation 1 as an expected-utility score rMBR.
+Let S = {h(m)
+s
+}M
+m=1 denote a set of M indepen-
+dently sampled support hypotheses, where h(m)
+s
+∼
+2
+
+Pθ(· | s). Let u(h, hs) denote the utility of candi-
+date h when support hypothesis hs ∈S serves as
+a pseudo-reference. The Monte Carlo MBR score
+and the corresponding selected output are:
+rMBR(h; S) = 1
+|S|
+X
+hs∈S
+u(h, hs),
+(2)
+ˆyMBR = argmax
+h∈C
+rMBR(h; S).
+(3)
+This uniform average is the standard Monte Carlo
+approximation to the expectation under the model
+distribution. In standard MBR decoding, the candi-
+date and support sets are often identical, i.e., C = S.
+Neural evaluation metrics can serve as u, allowing
+selection to target translation quality more directly
+than model probability does. This benefit, however,
+comes at a substantial computational cost: scor-
+ing all candidate–support pairs requires |C| × |S|
+utility evaluations and becomes quadratic in the
+candidate-set size when C = S.
+2.2
+Quality Estimation Reranking
+QE reranking dispenses with support hypotheses
+entirely. Instead, a QE model predicts translation
+quality directly from the source sentence and a
+candidate, without access to a human reference
+translation.
+Formally, QE instantiates r as a reference-free
+score rQE. This score represents the predicted qual-
+ity of candidate h given the source sentence s and,
+unlike the MBR score, does not depend on the other
+candidates in C. The QE-selected output is:
+ˆyQE = argmax
+h∈C
+rQE(h; s).
+(4)
+QE reranking scores each candidate independently
+given the source sentence and therefore requires
+|C| evaluations of QE-model.
+Nevertheless, both QE reranking and MBR de-
+coding methods conventionally generate the full
+candidate set before selecting a translation. They
+therefore use the full candidate budget even when a
+smaller candidate set would suffice for output selec-
+tion.. QUIT addresses this limitation by adaptively
+determining when to stop expanding the candidate
+set for each source sentence.
+3
+Proposed Method: QUIT
+Conventional reranking uses the same fixed candi-
+date budget for every source sentence, even when
+additional candidates cease to improve translation
+quality. We propose QUIT to address this ineffi-
+ciency. Its goal is to stop when the quality of the
+selected output is close to that of the full-budget
+reranker’s output. Since this difference is actually
+unavailable during incremental generation, QUIT
+uses recent reranking score stability as an uncer-
+tainty signal for deciding when to stop.
+Formally, let Nmax denote the maximum candi-
+date budget. Candidates are generated in batches
+of k, so after generation step i, a total of ik candi-
+dates have been generated. Assuming that k divides
+Nmax, the candidate count grows as follows:
+0 < k < 2k < · · · < Nmax.
+(5)
+For i ∈{1, . . . , Nmax/k}, define the partial candi-
+date set after step i as:
+Ci = {h1, . . . , hik},
+|Ci| = ik.
+(6)
+For MBR, we use the current candidate set as the
+support set, i.e., Si = Ci, so both sets expand at
+each generation step. Let r be any reranking func-
+tion for which higher scores are better and ˆyi denote
+the translation selected after generation step i:
+ˆyi = argmax
+h∈Ci
+r(h; s, Ci).
+(7)
+We denote the best reranking score after step i:
+Ri(s) = max
+h∈Ci r(h; s, Ci).
+(8)
+Early-stopping Risk
+Let q(h, yref
+s ) evaluate can-
+didate h against a human reference translation yref
+s ,
+with higher scores indicating better translation qual-
+ity. We define the early-stopping risk at generation
+step i as:
+Li(s) =
+q(ˆyi, yref
+s ) −q(ˆyNmax/k, yref
+s )
+.
+(9)
+This nonnegative quantity measures the absolute
+quality difference between two outputs selected
+by the same reranker; a small value means that
+stopping preserves the full-budget output’s qual-
+ity. However, Li(s) cannot be computed during
+inference because both the human reference and
+the full-budget output are unavailable.
+Reranking-based Risk Proxy
+To approximate
+the early-stopping risk, we use the reranker’s own
+score. We define the corresponding risk proxy as:
+Lproxy
+i
+(s) =
+r(ˆyi; s, Ci) −r(ˆyNmax/k; s, CNmax/k)
+
+=
+Ri(s) −RNmax/k(s)
+.
+(10)
+3
+
+Algorithm 1: QUIT
+1 procedure QUIT(s, r, k, w, α, Nmax)
+▷Initialize the candidate set
+and score buffer
+2
+C ←∅
+3
+R ←[ ]
+4
+i ←0
+5
+while ik < Nmax do
+6
+i ←i + 1
+7
+Generate k new candidates and add
+them to C
+8
+ˆy ←argmax
+h∈C
+r(h; s, C)
+9
+R ←max
+h∈C r(h; s, C)
+10
+Append R to R
+11
+if |R| = w then
+12
+∆←max R −min R
+13
+if ∆≤α then
+14
+return ˆy
+15
+else
+▷Start a new
+non-overlapping
+window
+16
+R ←[ ]
+17
+return ˆy
+This replaces the reference-based quality difference
+with the corresponding reranking-score difference.
+During incremental inference, Lproxy
+i
+(s) remains
+unavailable because RNmax/k(s) is only observed
+at the full candidate budget.
+Within-window Uncertainty
+To obtain an ob-
+servable signal during inference, QUIT uses
+the recent variation of the reranking-score tra-
+jectory {Ri(s)}.
+We group the generation
+steps into non-overlapping windows of size
+w.
+The b-th window contains the step indices
+Bb
+=
+{i : (b −1)w < i ≤bw}, where b
+∈
+{1, . . . , ⌊Nmax/(kw)⌋}. We measure its within-
+window variation by the range:
+∆R
+b (s) = max
+j∈Bb Rj(s) −min
+j∈Bb Rj(s).
+(11)
+A large ∆R
+b (s) indicates that the best reranking
+score has improved substantially within the recent
+window, whereas a small value indicates local sta-
+bility, suggesting that further sampling may have
+limited benefit. Accordingly, ∆R
+b (s) serves as a
+local uncertainty signal that provides a partial in-
+dication of the early-stopping risk at the end of
+window b: Lbw(s).
+Given a convergence threshold α, QUIT stops at
+T = min
+
+bw : ∆R
+b (s) ≤α
+ 
+,
+(12)
+and returns ˆyT . If the condition is never satisfied,
+generation continues until the full candidate budget
+is reached. Algorithm 1 summarizes the procedure.
+4
+Experiments
+4.1
+Experimental Setup
+Datasets and NMT Models
+We used the com-
+plete test sets from the WMT24 (Kocmi et al.,
+2024) and WMT25 (Kocmi et al., 2025) General
+Translation Shared Tasks, which together cover 19
+language pairs. We evaluated three NMT mod-
+els across two categories.
+Qwen3 (Qwen3-8B)
+(Yang et al., 2025) is a general-purpose LLM with-
+out translation-specific fine-tuning, whereas Trans-
+lateGemma (translategemma-12b-it) (Finkel-
+stein et al., 2026) and Hy-MT2 (Hy-MT2-30B-A3B)
+(Zheng et al., 2026) are translation-specialized
+models. For each source sentence, we set the max-
+imum candidate budget to Nmax = 512 and used
+ancestral sampling with a temperature of 1.2.
+Acceleration Baselines
+For MBR, we compared
+our method against PruneMBR (Cheng and Vla-
+chos, 2023) and PMBR (Trabelsi et al., 2024),
+which reduce MBR decoding computation while
+retaining the full candidate budget. For PMBR, we
+set the ALS rank to r = 10 and the regularization
+coefficient to λ = 0.1, with a computation bud-
+get of 1/8. For PruneMBR, we used a confidence
+threshold of α = 0.99, n = 500 bootstrap samples,
+and a pseudo-reference sample-size schedule of
+[8, 16, 32, 64, 128, 256, 512].
+QUIT Hyperparameters
+We fixed the genera-
+tion batch size to k = 8 and the convergence
+threshold to α = 10−3, and evaluated window sizes
+w ∈{2, 4, 6, 8, 10, 12, 14, 16}. The main results
+report w ∈{4, 8, 16}.1
+Rerankers
+We considered two widely used
+reranking paradigms in NMT: MBR decoding and
+QE reranking. For MBR, we used COMET-22
+(wmt22-comet-da) (Rei et al., 2022a) as the pair-
+wise utility function, and additionally report results
+1Additional analyses of k and α are provided in Appen-
+dices A and B. The complete trends across window sizes are
+reported in Appendix C.
+4
+
+NMT Model
+Reranker Acceleration
+Speedup ↑Rerank. ↑ChrF++ ↑xCOMET ↑MetricX ↓GEMBA ↑
+Qwen3
+MBR
+Unaccelerated
+1.00
+.8357
+42.09
+.7520
+5.17
+-7.82
+PruneMBR
+1.05
+.8355††
+42.07††
+.7519††
+5.17††
+-7.81††
+PMBR
+1.03
+.8352††
+42.11††
+.7516††
+5.17††
+-7.81††
+QUIT (w = 4)
+3.44
+.8315†
+41.94††
+.7462†
+5.28†
+-8.03†
+QUIT (w = 8)
+1.74
+.8344††
+42.04††
+.7497††
+5.19††
+-7.87††
+QUIT (w = 16)
+1.16
+.8355††
+42.06††
+.7518††
+5.17††
+-7.82††
+QE
+Unaccelerated
+1.00
+.8223
+39.61
+.7585
+4.96
+-7.91
+QUIT (w = 4)
+8.16
+.8067
+40.72
+.7464
+5.25
+-8.10†
+QUIT (w = 8)
+3.64
+.8133
+40.46†
+.7524†
+5.13†
+-7.92††
+QUIT (w = 16)
+1.73
+.8185†
+40.21†
+.7572††
+5.01††
+-7.84††
+TranslateGemma
+MBR
+Unaccelerated
+1.00
+.8570
+44.90
+.8521
+3.15
+-3.14
+PruneMBR
+1.04
+.8570††
+44.88††
+.8520††
+3.15††
+-3.13††
+PMBR
+1.03
+.8566††
+44.91††
+.8518††
+3.15††
+-3.16††
+QUIT (w = 4)
+5.23
+.8557††
+44.88††
+.8502††
+3.18††
+-3.16††
+QUIT (w = 8)
+2.66
+.8566††
+44.88††
+.8509††
+3.16††
+-3.16††
+QUIT (w = 16)
+1.51
+.8569††
+44.87††
+.8513††
+3.15††
+-3.16††
+QE
+Unaccelerated
+1.00
+.8376
+43.59
+.8570
+3.14
+-3.12
+QUIT (w = 4)
+8.92
+.8295
+44.57
+.8534†
+3.17†
+-2.98†
+QUIT (w = 8)
+4.01
+.8327
+44.37†
+.8553††
+3.15††
+-3.01†
+QUIT (w = 16)
+1.88
+.8355†
+44.24†
+.8570††
+3.14††
+-3.00†
+Hy-MT2
+MBR
+Unaccelerated
+1.00
+.8731
+49.86
+.8867
+2.92
+-1.79
+PruneMBR
+1.02
+.8732††
+49.87††
+.8869††
+2.92††
+-1.80††
+PMBR
+1.02
+.8728††
+49.87††
+.8866††
+2.93††
+-1.79††
+QUIT (w = 4)
+5.42
+.8723††
+49.85††
+.8863††
+2.94††
+-1.78††
+QUIT (w = 8)
+2.66
+.8728††
+49.86††
+.8867††
+2.93††
+-1.79††
+QUIT (w = 16)
+1.50
+.8731††
+49.83††
+.8866††
+2.93††
+-1.80††
+QE
+Unaccelerated
+1.00
+.8366
+47.67
+.8801
+2.98
+-2.37
+QUIT (w = 4)
+9.17
+.8290
+48.77
+.8814††
+2.98††
+-2.03
+QUIT (w = 8)
+4.12
+.8317
+48.54†
+.8821††
+2.96††
+-2.06
+QUIT (w = 16)
+1.94
+.8342†
+48.19†
+.8816††
+2.96††
+-2.16†
+Table 1: Main results on WMT24 with a maximum candidate budget Nmax = 512. The reranking score (Rerank.)
+was computed using COMET-22 for MBR decoding and CometKiwi-22 for QE reranking. † marks scores that are
+statistically equivalent to the unaccelerated baseline within a prespecified margin of 0.05σ, and †† marks equivalence
+within a stricter margin of 0.02σ. Speedup was measured end-to-end relative to the baseline.
+using ChrF (Popovi´c, 2015) as an alternative util-
+ity in Appendix D. For QE reranking, we used
+CometKiwi-22 (wmt22-cometkiwi-da) (Rei et al.,
+2022b) as the QE model. More recent metric mod-
+els that can be used for reranking, such as Met-
+ricX(Juraska et al., 2024), are substantially larger
+and would be prohibitively expensive to evaluate
+at our experimental scale; we therefore excluded
+them.
+Quality Evaluation
+We evaluated translation
+quality using three complementary classes of au-
+tomatic metrics that correlate strongly with hu-
+man judgments.
+We used ChrF++ (Popovi´c,
+2017) as a surface-form metric;
+xCOMET
+(XCOMET-XXL) (Guerreiro et al., 2024) and MetricX
+(metricx-24-hybrid-xl-v2p6) (Juraska et al.,
+2024) as learned neural metrics; and GEMBA-
+MQM (hereafter GEMBA) (Kocmi and Feder-
+mann, 2023), instantiated with Gemma-4-31B
+(gemma-4-31B-it) (Gemma Team et al., 2026),
+as an LLM-based metric. Because GEMBA is
+methodologically distinct from the COMET-family
+rerankers, it provides an independent check and
+reduces the risk that the evaluator favors outputs
+optimized by a similar metric. We also report the
+COMET-22 and CometKiwi-22 reranking scores
+to measure how closely early stopping preserves
+each reranker’s preferences. To assess whether ac-
+celeration affects translation quality, we ran paired-
+bootstrap equivalence tests using two one-sided
+tests (TOST) (Schuirmann, 1987) with 10,000 re-
+samples against the unaccelerated baseline for ev-
+ery metric.
+For each metric, we defined σ as
+the baseline segment-level standard deviation and
+used equivalence margins of 0.05σ and 0.02σ, with
+0.02σ serving as the stricter margin.
+5
+
+NMT Model
+Reranker Acceleration
+Speedup ↑Rerank. ↑ChrF++ ↑xCOMET ↑MetricX ↓GEMBA ↑
+Qwen3
+MBR
+Unaccelerated
+1.00
+.7345
+34.06
+.3696
+10.86
+-18.11
+PruneMBR
+1.02
+.7344††
+34.04††
+.3692††
+10.86††
+-18.10††
+PMBR
+1.01
+.7339††
+34.07††
+.3689††
+10.88††
+-18.16††
+QUIT (w = 4)
+2.81
+.7280†
+33.89††
+.3621†
+11.07†
+-18.36†
+QUIT (w = 8)
+1.47
+.7322††
+33.98††
+.3671††
+10.95††
+-18.19††
+QUIT (w = 16)
+1.10
+.7340††
+34.04††
+.3689††
+10.88††
+-18.17††
+QE
+Unaccelerated
+1.00
+.7106
+30.32
+.3705
+10.10
+-18.24
+QUIT (w = 4)
+7.75
+.6818
+31.81
+.3532
+10.88
+-18.60
+QUIT (w = 8)
+3.43
+.6935
+31.28
+.3613†
+10.54
+-18.37†
+QUIT (w = 16)
+1.64
+.7036
+30.80†
+.3665†
+10.26†
+-18.22††
+TranslateGemma
+MBR
+Unaccelerated
+1.00
+.8129
+36.25
+.5731
+6.06
+-6.74
+PruneMBR
+1.01
+.8129††
+36.25††
+.5735††
+6.06††
+-6.71††
+PMBR
+1.01
+.8125††
+36.22††
+.5717††
+6.08††
+-6.85†
+QUIT (w = 4)
+4.76
+.8099†
+36.13††
+.5673†
+6.17†
+-6.94†
+QUIT (w = 8)
+2.61
+.8112††
+36.18††
+.5690†
+6.12†
+-6.87†
+QUIT (w = 16)
+1.51
+.8123††
+36.19††
+.5713††
+6.10††
+-6.79††
+QE
+Unaccelerated
+1.00
+.7721
+36.17
+.5670
+6.11
+-6.80
+QUIT (w = 4)
+8.09
+.7608
+36.15††
+.5601†
+6.23†
+-7.03†
+QUIT (w = 8)
+3.55
+.7657
+36.16††
+.5645††
+6.18†
+-6.86†
+QUIT (w = 16)
+1.69
+.7694†
+36.20††
+.5654††
+6.14††
+-6.81††
+Hy-MT2
+MBR
+Unaccelerated
+1.00
+.8298
+41.19
+.6281
+5.62
+-4.25
+PruneMBR
+1.01
+.8298††
+41.20††
+.6278††
+5.62††
+-4.19††
+PMBR
+1.01
+.8294††
+41.19††
+.6279††
+5.63††
+-4.23††
+QUIT (w = 4)
+4.46
+.8279††
+41.19††
+.6226†
+5.69†
+-4.38†
+QUIT (w = 8)
+2.36
+.8289††
+41.18††
+.6262††
+5.65††
+-4.25††
+QUIT (w = 16)
+1.40
+.8295††
+41.17††
+.6279††
+5.63††
+-4.22††
+QE
+Unaccelerated
+1.00
+.7786
+40.78
+.6219
+5.71
+-4.88
+QUIT (w = 4)
+8.12
+.7678
+40.89††
+.6151†
+5.81†
+-4.65†
+QUIT (w = 8)
+3.59
+.7725
+40.90††
+.6184†
+5.77†
+-4.74†
+QUIT (w = 16)
+1.70
+.7761†
+40.84††
+.6210††
+5.74††
+-4.83††
+Table 2: Main results on WMT25, following the conventions in Table 1.
+Efficiency Evaluation
+For efficiency, we report
+end-to-end speedup relative to the unaccelerated
+baseline. End-to-end time includes both candidate
+generation and reranking, with all measurements
+conducted under the same hardware configuration
+using two NVIDIA RTX A6000 GPUs.
+4.2
+Experimental Results
+Tables 1 and 2 summarize the main experimental
+results on the two test sets, reporting both trans-
+lation quality and end-to-end efficiency. Among
+the window sizes shown in the main tables, w = 8
+provided a good balance between quality and effi-
+ciency, yielding speedups of 1.47–2.66× for MBR
+decoding and 3.43–4.12× for QE reranking across
+the two datasets and three NMT models. For most
+quality metrics, the resulting scores were statisti-
+cally equivalent to those of the unaccelerated base-
+line, with several scores improving over the base-
+line. Some QE reranking scores did not pass the
+equivalence test. For QE, each candidate’s score
+is independent of the other candidates, so the best
+reranking score is nondecreasing with candidate-
+set size and inherently favors the full 512-candidate
+set. Increasing the window size to 16 generally re-
+duced speedup but brought reranking scores and
+external quality scores closer to those of the un-
+accelerated baseline. In contrast, PruneMBR and
+PMBR achieved an end-to-end speedup of at most
+1.05× because candidate generation remains un-
+changed.
+5
+Discussion
+5.1
+Does the Uncertainty Score Identify
+Early-stopping Risk?
+We examine whether QUIT’s uncertainty score
+∆R
+b (s) ranks the early-stopping risk Lbw(s), de-
+fined in Equation 9.
+Following the prediction-
+rejection ratio (PRR) framework (Vashurin et al.,
+2025), we treated each source–window pair as an
+instance, using Lbw(s) as the risk and ∆R
+b (s) as
+the uncertainty score. Rejecting instances in de-
+6
+
+Test set
+NMT model
+MBR
+QE
+xCOMET
+GEMBA
+xCOMET
+GEMBA
+WMT24
+Qwen3
+0.412
+0.397
+0.174
+0.152
+WMT24
+TranslateGemma
+0.384
+0.390
+0.191
+0.176
+WMT24
+Hy-MT2
+0.493
+0.560
+0.176
+0.153
+WMT25
+Qwen3
+0.252
+0.101
+0.172
+0.134
+WMT25
+TranslateGemma
+0.269
+0.322
+0.152
+0.142
+WMT25
+Hy-MT2
+0.307
+0.479
+0.168
+0.175
+Average
+0.353
+0.375
+0.172
+0.155
+Table 3: Pooled PRR with uncertainty ∆R
+b (s) and early-stopping risk Lbw(s) (Equation 9), w = 8. Higher PRR is
+better.
+scending order of uncertainty gives a curve of the
+mean early-stopping risk among retained instances.
+We computed PRR as follows:
+PRR = AUCrnd −AUCuns
+AUCrnd −AUCoracle
+,
+(13)
+where AUCuns is the area under the curve,
+AUCoracle uses the ranking by Lbw(s) itself, and
+AUCrnd uses random ranking. A value of 1 indi-
+cates oracle-equivalent early-stopping-risk ranking,
+whereas 0 indicates random ranking.
+Table 3 reports pooled PRR for w = 8 across
+WMT24 and WMT25, and all three NMT models.
+PRR is positive in all 24 settings. The signal is
+more informative on average for MBR than for QE,
+but remains well below oracle ranking for both.
+These results support ∆R
+b (s) as an informative, im-
+perfect indicator of early-stopping risk. 2
+5.2
+Where does QUIT Stop?
+Figure 2 shows that QE generally stops with rela-
+tively small candidate sets, whereas MBR stopping
+positions are more broadly distributed across the
+candidate budget. This difference is consistent with
+how the two reranking scores evolve 3 : QE scores
+for existing candidates are unaffected by later can-
+didates, whereas expanding MBR’s support set
+changes existing candidates’ scores and may de-
+lay stabilization of the best score. Larger windows
+generally delay stopping, particularly for MBR,
+producing behavior closer to full-budget reranking
+at the cost of smaller speedups.
+5.3
+Where do the Efficiency Gains Come
+from?
+Table 4 separates the cost of candidate generation
+from that of MBR reranking. For the unaccelerated
+2Appendix E gives the evaluation procedure and corre-
+sponding results using Lproxy
+bw
+(s) as the early-stopping risk.
+3Appendix F provides further analysis.
+Method
+w
+Time per segment (s) ↓
+Gen.
+Rerank.
+Total
+Unaccelerated MBR
+∞
+53.52
+1.40
+54.92
+PMBR
+–
+53.52
+0.53
+54.05
+PruneMBR
+–
+53.52
+0.33
+53.85
+QUIT
+4
+12.95
+0.14
+13.08
+QUIT
+8
+24.69
+0.43
+25.13
+QUIT
+16
+39.58
+0.88
+40.46
+Table 4: Average component-wise MBR runtime per
+source segment. Times were pooled over WMT24 and
+WMT25, and the three NMT models, weighting each
+test set by its number of source segments. Complete
+aggregate wall-clock times are given in Appendix G.
+MBR baseline, candidate generation requires 53.52
+seconds per segment on average, compared with
+only 1.40 seconds for reranking. The results reveal
+that candidate generation, rather than reranking, is
+the dominant bottleneck, accounting for nearly all
+end-to-end latency in unaccelerated MBR. Conse-
+quently, PMBR and PruneMBR substantially re-
+duce the cost of reranking itself but yield little end-
+to-end improvement because they still generate the
+full candidate set. This highlights a broader limi-
+tation of reranking-only acceleration: as candidate
+generation becomes more expensive, further reduc-
+ing the comparatively small reranking cost offers
+increasingly limited end-to-end benefits.
+6
+Related Work
+Reranking for NMT
+Although selecting the
+most probable candidate is a natural decoding strat-
+egy, model probability is often poorly aligned with
+translation quality (Stahlberg and Byrne, 2019; Ott
+et al., 2018; Freitag et al., 2022), motivating the use
+of external criteria for output selection. Against
+this background, MBR decoding, a decision rule
+widely studied in statistical machine translation,
+has been revisited for NMT. Early work on neu-
+7
+
+0%
+20%
+40%
+60%
+MBR
+w = 4
+w = 8
+w = 16
+32
+64
+96
+128
+160
+192
+224
+256
+288
+320
+352
+384
+416
+448
+480
+512
+0%
+20%
+40%
+60%
+QE
+64
+128
+192
+256
+320
+384
+448
+512
+128
+256
+384
+512
+Candidates generated at stopping
+Source sentences (%)
+Mean
+Figure 2: Distribution of candidate-set sizes when QUIT stops for MBR decoding and QE reranking. Bars show
+the percentage of source sentences for each window size. The bar at 512 includes sentences for which generation
+reaches the full candidate budget. Bars are placed at the possible stopping points, i.e., multiples of kw candidates
+(kw = 32, 64, and 128 for w = 4, 8, and 16).
+ral MBR decoding typically used surface-form
+metrics (Eikema and Aziz, 2020, 2022), such as
+sentence-level BLEU (Papineni et al., 2002) or
+ChrF (Popovi´c, 2015, 2017), as utility functions
+for comparing candidates with sampled support hy-
+potheses. As learned metrics have shown stronger
+agreement with human judgments, more recent
+work has increasingly adopted neural metrics as
+MBR utilities, allowing the decision rule to capture
+semantic similarity beyond lexical overlap (Fre-
+itag et al., 2022; Fernandes et al., 2022; Lyu et al.,
+2025; Kamigaito et al., 2025). In parallel, advances
+in reference-free QE have enabled QE reranking,
+which directly scores each source–hypothesis pair
+and selects the highest-scoring candidate without
+relying on support hypotheses (Fernandes et al.,
+2022).
+Efficient Methods for NMT Reranking
+Despite
+their effectiveness, both MBR decoding and QE
+reranking can be prohibitively expensive in latency-
+sensitive settings because they conventionally re-
+quire a large, fully generated candidate set. Exist-
+ing efficiency methods have focused primarily on
+MBR decoding by reducing the number or cost of
+utility-function evaluations, for example, by prun-
+ing or approximating candidate–support compar-
+isons (Trabelsi et al., 2024; Deguchi et al., 2024;
+Cheng and Vlachos, 2023; Jinnai and Ariu, 2024).
+These methods optimize the reranking stage but
+generally retain the full candidate budget. This
+limitation is increasingly consequential as LLM-
+based systems grow larger: candidate generation
+can dominate end-to-end inference time, even when
+reranking is performed naively. Moreover, QE
+reranking avoids MBR’s quadratic pairwise com-
+parisons but still pays the generation and scoring
+costs for every candidate in the fixed budget. To the
+best of our knowledge, QUIT is the first accelera-
+tion method for NMT reranking that adaptively
+stops candidate generation and thereby reduces
+both candidate-generation and reranking costs.
+7
+Conclusions and Future Work
+In this paper, we proposed QUIT, an uncertainty-
+guided early-stopping method that jointly reduces
+candidate-generation and reranking costs. It uses
+local reranking-score stability to decide when to
+stop, with the aim of keeping the selected output’s
+quality close to the quality achieved by full-budget
+reranking. Across three NMT models and 19 lan-
+guage pairs, QUIT with w = 8 achieved end-to-
+end speedups of 1.47–2.66× for MBR decoding
+and 3.43–4.12× for QE reranking while remain-
+ing within the tested equivalence margins for most
+automatic metric scores.
+Future work will explore early-stopping signal
+that do not require manually specified hyperparam-
+eters and evaluate the effectiveness of QUIT on
+tasks beyond machine translation.
+Limitations
+First, although our experiments cover three NMT
+models and 19 language pairs from WMT24 and
+WMT25, our conclusions remain tied to these mod-
+8
+
+els and test distributions. The observed speedups
+depend on the relative costs of candidate generation
+and reranking, which are influenced by model size
+and data characteristics. If candidate generation
+becomes substantially cheaper in future NMT sys-
+tems, reranking may instead dominate end-to-end
+latency, and the speedups achieved by QUIT could
+differ considerably from those reported here.
+Second, QUIT assumes that the candidate set
+can be generated incrementally, with newly sam-
+pled candidates appended to the existing set. This
+assumption does not hold directly for generation
+procedures such as beam search, in which hypothe-
+ses are jointly expanded and the resulting candidate
+sets are not necessarily nested. Adapting QUIT to
+such procedures requires further investigation.
+Finally, using the uncertainty score in Equa-
+tion 11 assumes that reranking scores obtained
+from different candidate sets are comparable. Al-
+though this assumption holds for the reranking
+methods considered in our experiments, future
+reranking objectives may produce scores whose
+scales vary with the candidate set. In such cases,
+the current stopping criterion may require score nor-
+malization or calibration. Even with comparable
+scores, local stability cannot guarantee low early-
+stopping risk: later candidates or changes in the
+reranker’s selection may still alter output quality.
+References
+Julius Cheng and Andreas Vlachos. 2023. Faster min-
+imum Bayes risk decoding with confidence-based
+pruning. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Process-
+ing, pages 12473–12480, Singapore. Association for
+Computational Linguistics.
+Hiroyuki Deguchi, Yusuke Sakai, Hidetaka Kamigaito,
+Taro Watanabe, Hideki Tanaka, and Masao Utiyama.
+2024. Centroid-based efficient minimum Bayes risk
+decoding. In Findings of the Association for Compu-
+tational Linguistics ACL 2024, pages 11009–11018,
+Bangkok, Thailand and virtual meeting. Association
+for Computational Linguistics.
+Bryan Eikema and Wilker Aziz. 2020. Is MAP decoding
+all you need? the inadequacy of the mode in neural
+machine translation. In Proceedings of the 28th Inter-
+national Conference on Computational Linguistics,
+pages 4506–4520, Barcelona, Spain (Online). Inter-
+national Committee on Computational Linguistics.
+Bryan Eikema and Wilker Aziz. 2022. Sampling-based
+approximations to minimum Bayes risk decoding
+for neural machine translation. In Proceedings of
+the 2022 Conference on Empirical Methods in Natu-
+ral Language Processing, pages 10978–10993, Abu
+Dhabi, United Arab Emirates. Association for Com-
+putational Linguistics.
+Patrick Fernandes, António Farinhas, Ricardo Rei,
+José G. C. de Souza, Perez Ogayo, Graham Neubig,
+and Andre Martins. 2022. Quality-aware decoding
+for neural machine translation. In Proceedings of
+the 2022 Conference of the North American Chap-
+ter of the Association for Computational Linguistics:
+Human Language Technologies, pages 1396–1412,
+Seattle, United States. Association for Computational
+Linguistics.
+Mara Finkelstein, Isaac Caswell, Tobias Domhan, Jan-
+Thorsten Peter, Juraj Juraska, Parker Riley, Daniel
+Deutsch, Geza Kovacs, Cole Dilanni, Colin Cherry,
+Eleftheria Briakou, Elizabeth Nielsen, Jiaming Luo,
+Kat Black, Ryan Mullins, Sweta Agrawal, Wenda
+Xu, Erin Kats, Stephane Jaskiewicz, and 2 others.
+2026. Translategemma technical report. Preprint,
+arXiv:2601.09012.
+Markus Freitag, David Grangier, Qijun Tan, and Bowen
+Liang. 2022. High quality rather than high model
+probability: Minimum Bayes risk decoding with neu-
+ral metrics. Transactions of the Association for Com-
+putational Linguistics, 10:811–825.
+Gemma Team, Sherif El Abd, Vaibhav Aggarwal, Robin
+Algayres, Alek Andreev, Olivier Bachem, Ian Bal-
+lantyne, Cormac Brick, Victor C˘arbune, Michelle
+Casbon, Mayank Chaturvedi, Aditya Chawla, Vic-
+tor Cotruta, Alice Coucke, Phil Culliton, Robert
+Dadashi, Lucas Dixon, Mohamed Elhawaty, Utku
+Evci, and 304 others. 2026. Gemma 4 technical re-
+port. Preprint, arXiv:2607.02770.
+Nuno M. Guerreiro, Ricardo Rei, Daan van Stigt, Luisa
+Coheur, Pierre Colombo, and André F. T. Martins.
+2024. xcomet: Transparent machine translation eval-
+uation through fine-grained error detection. Transac-
+tions of the Association for Computational Linguis-
+tics, 12:979–995.
+Yuu Jinnai and Kaito Ariu. 2024. Hyperparameter-free
+approach for faster minimum Bayes risk decoding.
+In Findings of the Association for Computational
+Linguistics: ACL 2024, pages 8547–8566, Bangkok,
+Thailand. Association for Computational Linguistics.
+Juraj Juraska, Daniel Deutsch, Mara Finkelstein, and
+Markus Freitag. 2024.
+MetricX-24: The Google
+submission to the WMT 2024 metrics shared task.
+In Proceedings of the Ninth Conference on Machine
+Translation, pages 492–504, Miami, Florida, USA.
+Association for Computational Linguistics.
+Hidetaka Kamigaito, Hiroyuki Deguchi, Yusuke Sakai,
+Katsuhiko Hayashi, and Taro Watanabe. 2025. Di-
+versity explains inference scaling laws: Through a
+case study of minimum Bayes risk decoding.
+In
+Proceedings of the 63rd Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+9
+
+Long Papers), pages 29060–29094, Vienna, Austria.
+Association for Computational Linguistics.
+Tom
+Kocmi,
+Ekaterina
+Artemova,
+Eleftherios
+Avramidis, Rachel Bawden, Ondˇrej Bojar, Kon-
+stantin Dranch, Anton Dvorkovich, Sergey Dukanov,
+Mark Fishel, Markus Freitag, Thamme Gowda,
+Roman Grundkiewicz, Barry Haddow, Marzena
+Karpinska,
+Philipp Koehn,
+Howard Lakougna,
+Jessica Lundin, Christof Monz, Kenton Murray,
+and 10 others. 2025.
+Findings of the WMT25
+general machine translation shared task: Time to
+stop evaluating on easy test sets. In Proceedings
+of the Tenth Conference on Machine Translation,
+pages 355–413, Suzhou, China. Association for
+Computational Linguistics.
+Tom Kocmi, Eleftherios Avramidis, Rachel Bawden,
+Ondˇrej Bojar, Anton Dvorkovich, Christian Feder-
+mann, Mark Fishel, Markus Freitag, Thamme Gowda,
+Roman Grundkiewicz, Barry Haddow, Marzena
+Karpinska, Philipp Koehn, Benjamin Marie, Christof
+Monz, Kenton Murray, Masaaki Nagata, Martin
+Popel, Maja Popovi´c, and 3 others. 2024. Findings
+of the WMT24 general machine translation shared
+task: The LLM era is here but MT is not solved yet.
+In Proceedings of the Ninth Conference on Machine
+Translation, pages 1–46, Miami, Florida, USA. As-
+sociation for Computational Linguistics.
+Tom Kocmi and Christian Federmann. 2023. GEMBA-
+MQM: Detecting translation quality error spans with
+GPT-4. In Proceedings of the Eighth Conference
+on Machine Translation, pages 768–775, Singapore.
+Association for Computational Linguistics.
+Shankar Kumar and Bill Byrne. 2004. Minimum bayes-
+risk decoding for statistical machine translation. In
+Proceedings of the Human Language Technology
+Conference of the North American Chapter of the
+Association for Computational Linguistics: HLT-
+NAACL 2004, pages 169–176.
+Boxuan Lyu, Hidetaka Kamigaito, Kotaro Funakoshi,
+and Manabu Okumura. 2025. Unveiling the power
+of source: Source-based minimum Bayes risk decod-
+ing for neural machine translation. In Proceedings
+of the 63rd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 2976–2994, Vienna, Austria. Association for
+Computational Linguistics.
+Myle Ott,
+Michael Auli,
+David Grangier,
+and
+Marc’Aurelio Ranzato. 2018. Analyzing uncertainty
+in neural machine translation. In International Con-
+ference on Machine Learning.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic evalu-
+ation of machine translation. In Proceedings of the
+40th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 311–318, Philadelphia,
+Pennsylvania, USA. Association for Computational
+Linguistics.
+Maja Popovi´c. 2015. chrF: character n-gram F-score
+for automatic MT evaluation. In Proceedings of the
+Tenth Workshop on Statistical Machine Translation,
+pages 392–395, Lisbon, Portugal. Association for
+Computational Linguistics.
+Maja Popovi´c. 2017. chrF++: words helping charac-
+ter n-grams. In Proceedings of the Second Confer-
+ence on Machine Translation, pages 612–618, Copen-
+hagen, Denmark. Association for Computational Lin-
+guistics.
+Ricardo Rei, José G. C. de Souza, Duarte Alves,
+Chrysoula Zerva, Ana C Farinha, Taisiya Glushkova,
+Alon Lavie, Luisa Coheur, and André F. T. Martins.
+2022a. COMET-22: Unbabel-IST 2022 submission
+for the metrics shared task. In Proceedings of the
+Seventh Conference on Machine Translation (WMT),
+pages 578–585, Abu Dhabi, United Arab Emirates
+(Hybrid). Association for Computational Linguistics.
+Ricardo Rei, Marcos Treviso, Nuno M. Guerreiro,
+Chrysoula Zerva, Ana C Farinha, Christine Maroti,
+José G. C. de Souza, Taisiya Glushkova, Duarte
+Alves, Luisa Coheur, Alon Lavie, and André F. T.
+Martins. 2022b. CometKiwi: IST-unbabel 2022 sub-
+mission for the quality estimation shared task. In
+Proceedings of the Seventh Conference on Machine
+Translation (WMT), pages 634–645, Abu Dhabi,
+United Arab Emirates (Hybrid). Association for Com-
+putational Linguistics.
+Danielle Saunders, Rosie Sallis, and Bill Byrne. 2022.
+First the worst: Finding better gender translations dur-
+ing beam search. In Findings of the Association for
+Computational Linguistics: ACL 2022, pages 3814–
+3823, Dublin, Ireland. Association for Computational
+Linguistics.
+Donald J. Schuirmann. 1987. A comparison of the two
+one-sided tests procedure and the power approach for
+assessing the equivalence of average bioavailability.
+Journal of Pharmacokinetics and Biopharmaceutics,
+15:657–680.
+Felix Stahlberg and Bill Byrne. 2019. On NMT search
+errors and model errors: Cat got your tongue? In
+Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the
+9th International Joint Conference on Natural Lan-
+guage Processing (EMNLP-IJCNLP), pages 3356–
+3362, Hong Kong, China. Association for Computa-
+tional Linguistics.
+Firas Trabelsi, David Vilar, Mara Finkelstein, and
+Markus Freitag. 2024.
+Efficient minimum bayes
+risk decoding using low-rank matrix completion al-
+gorithms. In The Thirty-eighth Annual Conference
+on Neural Information Processing Systems.
+Roy Tromble, Shankar Kumar, Franz Och, and Wolf-
+gang Macherey. 2008. Lattice Minimum Bayes-Risk
+decoding for statistical machine translation. In Pro-
+ceedings of the 2008 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 620–629,
+10
+
+Honolulu, Hawaii. Association for Computational
+Linguistics.
+Jannis Vamvas and Rico Sennrich. 2024. Linear-time
+minimum Bayes risk decoding with reference aggre-
+gation. In Proceedings of the 62nd Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 2: Short Papers), pages 790–801, Bangkok,
+Thailand. Association for Computational Linguistics.
+Roman Vashurin, Ekaterina Fadeeva, Artem Vazhentsev,
+Lyudmila Rvanova, Daniil Vasilev, Akim Tsvigun,
+Sergey Petrakov, Rui Xing, Abdelrahman Sadallah,
+Kirill Grishchenkov, Alexander Panchenko, Timothy
+Baldwin, Preslav Nakov, Maxim Panov, and Artem
+Shelmanov. 2025. Benchmarking uncertainty quan-
+tification methods for large language models with
+LM-polygraph. Transactions of the Association for
+Computational Linguistics, 13:220–248.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, Chujie Zheng, Day-
+iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao
+Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41
+others. 2025.
+Qwen3 technical report.
+Preprint,
+arXiv:2505.09388.
+Mao Zheng, Zheng Li, Tao Chen, Bo Lv, Mingrui
+Sun, Mingyang Song, Jinlong Song, Hong Huang,
+Decheng Wu, Hai Wang, Yifan Song, Yanfeng Chen,
+and Guanwei Zhang. 2026. Hy-mt2: A family of
+fast, efficient and powerful multilingual translation
+models in the wild. Preprint, arXiv:2605.22064.
+11
+
+A
+Effect of Batch Size k
+QUIT generates k candidates at each step and evalu-
+ates score stability over a window of w consecutive
+observations; therefore, each window spans kw
+newly generated candidates.
+With w fixed, increasing k enlarges the candi-
+date span of each window and delays the earliest
+possible stopping point. As shown in Table 5, the
+average stopping position consistently increases
+with k for both MBR and QE. Figure 3 provides an
+example where a very small k leads to early stop-
+ping, while a large k results in substantially more
+generated candidates.
+When kw is fixed, changing k instead changes
+how frequently the score trajectory is observed
+within the same candidate span. This effect is
+more pronounced for MBR decoding. Since ex-
+panding the support set can change the scores of
+existing candidates, the MBR score may fluctuate
+locally; using a smaller k gives more observations
+within the same span and is therefore more likely
+to capture such fluctuations, delaying stopping. In
+contrast, QE scores of existing candidates are unaf-
+fected by later candidates, so this effect is weaker.
+Figure 4 illustrates this difference, while Table 5
+shows the same trend on average over all evaluation
+data. This behavior is consistent with the differ-
+ent score dynamics of MBR and QE discussed in
+Appendix F.
+B
+Convergence-threshold Ablation
+We evaluate α ∈{10−6, 10−5, 10−4, 10−3, 10−2}
+with w ∈{4, 8, 16} on the complete WMT24 and
+WMT25 test sets, while keeping all other settings
+unchanged from Section 4.1. We report the mean
+number of generated candidates, the proportion of
+source sentences for which generation reaches the
+full candidate budget of 512, end-to-end speedup,
+and the same reranking and translation quality met-
+rics as in the main experiments.
+Tables 6–11 show macro-averages over the
+six test-set–model combinations. We use paired-
+bootstrap tests with 10,000 resamples against both
+the default α = 10−3 and the unaccelerated base-
+line. The final column counts how often the tested
+configuration performs significantly worse or bet-
+ter than the default configuration across the 30
+test-set–model–metric comparisons. MetricX is
+sign-reversed for testing but reported in its original
+lower-is-better orientation. “Rerank.” denotes the
+COMET-22 score for MBR and the CometKiwi-22
+score for QE.
+For MBR, α = 10−3 marks a turning point in the
+trade-off between speedup and translation quality.
+Tightening it by one order of magnitude causes
+generation to reach the full candidate budget for
+42%, 83%, and 97% of source sentences for w =
+4, 8, and 16, respectively, and reduces speedup
+to 1.43×, 1.06×, and 1.01×, with a significant
+improvement over the unaccelerated baseline in at
+most 3 of the 30 comparisons.
+QE is less sensitive to small positive convergence
+thresholds. For QE, the best reranking score Ri(s)
+is a running maximum. If it does not increase
+within a window, the uncertainty score ∆R
+b (s) is
+exactly zero, so the stopping criterion is satisfied
+for any α > 0. Consequently, even α = 10−6 re-
+tains much of the speedup. A detectable but small
+degradation, approximately −0.006σ on average,
+emerges only when the threshold is relaxed to 10−2.
+Overall, QE is relatively insensitive to convergence
+thresholds below the default, whereas MBR shows
+a stronger trade-off between speedup and transla-
+tion quality.
+C
+Complete Window-size Sweep
+Figures 5–8 report the complete sweep over w ∈
+{2, 4, 6, 8, 10, 12, 14, 16} for every test set, NMT
+model, and reranking paradigm. We show end-
+to-end speedup and all reference-based evaluation
+metrics reported in the main tables, while omitting
+the reranking score. Solid lines show QUIT; gray
+dashed lines show the corresponding unaccelerated
+MBR or QE baseline. The speedup baseline is 1×
+in every panel. Tables 12 and 13 list the corre-
+sponding numbers, with equivalence marks as in
+the main tables, for the window sizes not shown
+there.
+D
+ChrF as the MBR Utility
+To verify that QUIT remains effective with other
+utility functions, we repeat the MBR experiments
+with ChrF (Popovi´c, 2015) as the utility. Since
+ChrF is defined on a 0–100 scale, we rescale it to
+[0, 1] before applying the stopping criterion. All
+other settings follow Section 4: the maximum bud-
+get is Nmax = 512, the convergence threshold is
+α = 10−3, and we sweep w ∈{2, 4, . . . , 16}. We
+evaluate with the same four external metrics and
+apply the same paired-bootstrap TOST procedure
+against the unaccelerated baseline, with equiva-
+lence margins of 0.05σ and 0.02σ.
+12
+
+Table 14 summarizes the results. Compared with
+the neural COMET-22 utility, ChrF is more sensi-
+tive to surface-form variation, leading to larger fluc-
+tuations in the {Ri(s)} trajectories and slower con-
+vergence. Nevertheless, QUIT remains effective:
+with w = 4, all three models on WMT24 pass the
+stricter 0.02σ equivalence test on all four external
+metrics while achieving 2.48×–3.08× speedups.
+These results demonstrate that QUIT is not tied
+to a specific utility function and remains effective
+across utilities with substantially different scoring
+characteristics.
+E
+PRR Evaluation
+We evaluate the full test sets, replaying the 512-
+candidate trajectories with k = w = 8. Each
+source–window pair (s, b) is one instance, for
+b = 1, . . . , 7, corresponding to candidate counts
+64 through 448. We exclude the final window be-
+cause it already uses the full candidate pool and
+thus has zero early-stopping risk by construction.
+For each source sentence, we include all seven win-
+dows, even those after the point where QUIT would
+stop. We then compute one PRR value for each
+test set, NMT model, reranker, and quality metric,
+using the source–window pairs from all evaluated
+sentences.
+The risk is Lbw(s): the absolute difference be-
+tween the quality of the output selected at step
+bw and that of the output selected from all 512
+candidates by the same reranker. We compute it
+separately with xCOMET and GEMBA. The uncer-
+tainty score is ∆R
+b (s), the within-window range of
+the reranking scores.
+We progressively reject instances in descending
+uncertainty order and record the mean risk among
+the retained instances. The oracle curve instead
+rejects instances in descending risk order, while the
+expected random-ranking curve stays at the overall
+mean risk. We integrate these curves and compute
+PRR with Equation 13.
+Table 15 evaluates ∆R
+b (s) against the early-
+stopping risk proxy Lproxy
+bw
+(s) from Equation 10,
+using the same window setting as Table 3. Here,
+the risk is computed from reranking scores, and
+instances are pooled within each test-set–model–
+reranker combination. All values are positive, with
+mean PRR of 0.726 for MBR and 0.259 for QE.
+These results support local reranking-score varia-
+tion as an informative, imperfect indicator of the
+early-stopping risk proxy.
+Tables 16 and 17 repeat the ∆R
+b (s) evaluation
+against Lbw(s) for the other two window sizes of
+the main tables (w = 4 and w = 16, i.e., 15 and 3
+windows per source).
+F
+Evolution of the Best Reranking Score
+MBR and QE differ in their scoring mechanisms.
+MBR uses the average utility over a support set as
+a Monte Carlo approximation to expected utility
+as defined in Equation 3. As the candidate and
+support sets expand together, existing candidates’
+scores also change. QE, by contrast, scores each
+candidate independently, so its score is unaffected
+by later candidates according to Equation 4. QUIT
+tracks the best reranking score and stops generation
+when its within-window variation does not exceed
+a threshold, as defined in Equations 8–12.
+Figure 9 shows the score trajectories for four
+source sentences randomly sampled from WMT25-
+HY. Each row corresponds to one source sentence,
+with MBR on the left and QE on the right. MBR
+scores may fluctuate substantially early on because
+utility estimates based on small support sets are
+sensitive to additional samples, potentially delay-
+ing stabilization of the best score. The best QE
+score increases only when a higher-scoring candi-
+date appears, producing a stepwise trajectory that
+more readily satisfies the stopping criterion. These
+trajectories help explain why QE generally stops
+earlier, while MBR stopping positions are more
+broadly distributed.
+G
+Component-wise Runtime
+Tables 18 and 19 report the complete wall-clock
+measurements underlying Table 4.
+The Gener-
+ation and Reranking columns report candidate-
+generation time and MBR reranking time, re-
+spectively, in seconds. The aggregate measure-
+ments cover 12,010 source segments per model
+for WMT24 and 5,232 per model for WMT25; the
+per-segment averages in Table 4 pool all 51,726
+segment–model runs.
+13
+
+k
+MBR
+QE
+w = 4
+w = 8
+w = 16
+w = 4
+w = 8
+w = 16
+4
+81.11
+162.55
+271.38
+29.05
+65.04
+138.53
+8
+132.86
+252.12
+388.65
+57.43
+128.62
+272.71
+16
+214.76
+371.20
+501.06
+113.16
+253.46
+461.15
+Table 5: Average number of generated candidates at stopping for different generation batch sizes k and window
+sizes w, averaged over all data.
+Candidate Number
+0.915
+0.920
+0.925
+0.930
+0.935
+0.940
+Ri(s)
+MBR · Sentence 4660 · k = 1
+Window=8
+stop=24
+Candidate Number
+MBR · Sentence 4660 · k = 4
+Window=32
+stop=128
+Candidate Number
+MBR · Sentence 4660 · k = 8
+Window=64
+stop=192
+Candidate Number
+MBR · Sentence 4660 · k = 16
+Window=128
+stop=256
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.75
+0.76
+0.77
+0.78
+0.79
+0.80
+0.81
+0.82
+Ri(s)
+QE · Sentence 4660 · k = 1
+Window=8
+stop=24
+0
+100
+200
+300
+400
+500
+Candidate Number
+QE · Sentence 4660 · k = 4
+Window=32
+stop=64
+0
+100
+200
+300
+400
+500
+Candidate Number
+QE · Sentence 4660 · k = 8
+Window=64
+stop=192
+0
+100
+200
+300
+400
+500
+Candidate Number
+QE · Sentence 4660 · k = 16
+Window=128
+stop=256
+Figure 3: Example score trajectories for different batch sizes k with a fixed window size w = 8. A smaller k may
+trigger early stopping too early, whereas a larger k increases the candidate span of each window and can result in
+substantially more generated candidates before stopping.
+Candidate Number
+0.85
+0.86
+0.87
+0.88
+0.89
+0.90
+Ri(s)
+MBR · Sentence 1776 · w = 16, k = 4
+Window=64
+stop=256
+Candidate Number
+MBR · Sentence 1776 · w = 8, k = 8
+Window=64
+stop=128
+Candidate Number
+MBR · Sentence 1776 · w = 4, k = 16
+Window=64
+stop=64
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.60
+0.62
+0.64
+0.66
+0.68
+0.70
+0.72
+0.74
+Ri(s)
+QE · Sentence 1776 · w = 16, k = 4
+Window=64
+stop=128
+0
+100
+200
+300
+400
+500
+Candidate Number
+QE · Sentence 1776 · w = 8, k = 8
+Window=64
+stop=128
+0
+100
+200
+300
+400
+500
+Candidate Number
+QE · Sentence 1776 · w = 4, k = 16
+Window=64
+stop=128
+Figure 4: Example score trajectories for different (k, w) combinations with a fixed candidate span kw. A smaller
+k provides more frequent score observations within the same candidate span. This effect is more pronounced for
+MBR, whose scores can fluctuate as the support set expands, while QE is less affected because scores of existing
+candidates do not change with later candidates.
+14
+
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+501
+97.6
+1.00
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/24
+10−5
+499
+96.4
+1.01
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/24
+10−4
+380
+42.5
+1.43
+.8236
+41.36
+.6761
+5.65
+−7.00
+0/21
+10−3
+133
+1.2
+4.35
+.8209
+41.31
+.6724
+5.72
+−7.11
+–
+10−2
+45
+0.0
+12.19
+.8173
+41.24
+.6682
+5.81
+−7.28
+26/0
+Table 6: α ablation for MBR with w = 4. “Full (%)” is the percentage of source sentences that reach 512 candidates;
+n↓and n↑count comparisons in which the tested configuration performs significantly worse and better than the
+default, respectively.
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+504
+98.1
+1.00
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/20
+10−5
+504
+98.1
+1.00
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/20
+10−4
+481
+82.6
+1.06
+.8239
+41.38
+.6770
+5.63
+−6.96
+0/20
+10−3
+252
+12.1
+2.25
+.8227
+41.35
+.6749
+5.67
+−7.02
+–
+10−2
+95
+0.0
+5.83
+.8198
+41.30
+.6716
+5.74
+−7.14
+21/0
+Table 7: α ablation for MBR with w = 8, following the conventions of Table 6.
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+506
+98.5
+1.00
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/16
+10−5
+506
+98.5
+1.00
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/16
+10−4
+505
+97.4
+1.01
+.8239
+41.39
+.6770
+5.63
+−6.96
+0/16
+10−3
+389
+40.8
+1.36
+.8236
+41.36
+.6763
+5.64
+−6.99
+–
+10−2
+191
+0.6
+2.86
+.8220
+41.35
+.6744
+5.69
+−7.04
+18/0
+Table 8: α ablation for MBR with w = 16, following the conventions of Table 6.
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+64
+0.0
+7.73
+.7795
+40.48
+.6685
+5.72
+−7.23
+0/8
+10−5
+64
+0.0
+7.74
+.7795
+40.48
+.6685
+5.72
+−7.23
+0/9
+10−4
+63
+0.0
+7.81
+.7795
+40.48
+.6685
+5.72
+−7.24
+0/11
+10−3
+59
+0.0
+8.37
+.7793
+40.49
+.6683
+5.72
+−7.23
+–
+10−2
+45
+0.0
+11.46
+.7777
+40.49
+.6669
+5.75
+−7.28
+17/1
+Table 9: α ablation for QE with w = 4, following the conventions of Table 6.
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+144
+0.0
+3.41
+.7852
+40.29
+.6727
+5.62
+−7.16
+0/8
+10−5
+144
+0.0
+3.41
+.7852
+40.29
+.6727
+5.62
+−7.16
+0/8
+10−4
+142
+0.0
+3.45
+.7852
+40.29
+.6726
+5.62
+−7.16
+1/8
+10−3
+133
+0.0
+3.72
+.7849
+40.29
+.6723
+5.62
+−7.16
+–
+10−2
+97
+0.0
+5.25
+.7834
+40.32
+.6711
+5.65
+−7.18
+15/2
+Table 10: α ablation for QE with w = 8, following the conventions of Table 6.
+α
+N
+Full (%)
+Speedup
+Rerank.
+ChrF++
+xCOMET
+MetricX
+GEMBA
+n↓/n↑
+10−6
+303
+11.1
+1.62
+.7898
+40.08
+.6749
+5.54
+−7.15
+1/7
+10−5
+303
+11.1
+1.62
+.7898
+40.08
+.6749
+5.54
+−7.15
+1/8
+10−4
+300
+10.4
+1.64
+.7898
+40.08
+.6749
+5.54
+−7.15
+2/7
+10−3
+281
+6.6
+1.76
+.7896
+40.08
+.6748
+5.54
+−7.15
+–
+10−2
+206
+0.7
+2.48
+.7882
+40.11
+.6740
+5.56
+−7.14
+12/2
+Table 11: α ablation for QE with w = 16, following the conventions of Table 6.
+15
+
+2
+4
+6
+8
+10
+Speedup ↑
+Std.
+1.0
+Qwen3
+2
+4
+6
+8
+10
+12
+14
+Std.
+1.0
+TranslateGemma
+2
+4
+6
+8
+10
+12
+14
+Std.
+1.0
+Hy-MT2
+41.85
+41.90
+41.95
+42.00
+42.05
+42.10
+ChrF++ ↑
+Std.
+42.09
+44.86
+44.87
+44.88
+44.89
+44.90
+Std.
+44.90
+49.78
+49.80
+49.82
+49.84
+49.86
+Std.
+49.86
+0.740
+0.742
+0.744
+0.746
+0.748
+0.750
+0.752
+xCOMET ↑
+Std.
+0.752
+0.849
+0.850
+0.851
+0.852
+Std.
+0.852
+0.8850
+0.8855
+0.8860
+0.8865
+Std.
+0.887
+5.20
+5.25
+5.30
+5.35
+5.40
+MetricX ↓
+Std.
+5.17
+3.16
+3.18
+3.20
+Std.
+3.15
+2.93
+2.94
+2.95
+2.96
+Std.
+2.92
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+8.2
+8.1
+8.0
+7.9
+7.8
+GEMBA ↑
+Std.
+-7.82
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+3.26
+3.24
+3.22
+3.20
+3.18
+3.16
+3.14
+Std.
+-3.14
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+1.82
+1.81
+1.80
+1.79
+1.78
+1.77
+Std.
+-1.79
+WMT24: Complete MBR Window-size Sweep
+solid: QUIT dashed: Standard MBR
+Figure 5: Complete MBR window-size sweep on WMT24. Gray dashed lines mark the per-model unaccelerated
+MBR performance; the gray dashed line in the speedup panel marks the 1× unaccelerated baseline.
+16
+
+2
+4
+6
+8
+Speedup ↑
+Std.
+1.0
+Qwen3
+2
+4
+6
+8
+10
+12
+Std.
+1.0
+TranslateGemma
+2
+4
+6
+8
+10
+12
+Std.
+1.0
+Hy-MT2
+33.75
+33.80
+33.85
+33.90
+33.95
+34.00
+34.05
+ChrF++ ↑
+Std.
+34.06
+36.10
+36.15
+36.20
+36.25
+Std.
+36.25
+41.050
+41.075
+41.100
+41.125
+41.150
+41.175
+Std.
+41.19
+0.3525
+0.3550
+0.3575
+0.3600
+0.3625
+0.3650
+0.3675
+xCOMET ↑
+Std.
+0.370
+0.564
+0.566
+0.568
+0.570
+0.572
+Std.
+0.573
+0.618
+0.620
+0.622
+0.624
+0.626
+0.628
+Std.
+0.628
+10.9
+11.0
+11.1
+11.2
+11.3
+MetricX ↓
+Std.
+10.86
+6.10
+6.15
+6.20
+Std.
+6.06
+5.625
+5.650
+5.675
+5.700
+5.725
+5.750
+Std.
+5.62
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+18.7
+18.6
+18.5
+18.4
+18.3
+18.2
+18.1
+GEMBA ↑
+Std.
+-18.11
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+7.1
+7.0
+6.9
+6.8
+Std.
+-6.74
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+4.45
+4.40
+4.35
+4.30
+4.25
+Std.
+-4.25
+WMT25: Complete MBR Window-size Sweep
+solid: QUIT dashed: Standard MBR
+Figure 6: Complete MBR window-size sweep on WMT25, following the conventions of Figure 5.
+17
+
+5
+10
+15
+20
+Speedup ↑
+Std.
+1.0
+Qwen3
+5
+10
+15
+20
+Std.
+1.0
+TranslateGemma
+5
+10
+15
+20
+Std.
+1.0
+Hy-MT2
+39.6
+39.8
+40.0
+40.2
+40.4
+40.6
+ChrF++ ↑
+Std.
+39.61
+43.6
+43.8
+44.0
+44.2
+44.4
+44.6
+Std.
+43.59
+47.75
+48.00
+48.25
+48.50
+48.75
+49.00
+Std.
+47.67
+0.740
+0.745
+0.750
+0.755
+xCOMET ↑
+Std.
+0.759
+0.851
+0.852
+0.853
+0.854
+0.855
+0.856
+0.857
+Std.
+0.857
+0.8805
+0.8810
+0.8815
+0.8820
+Std.
+0.880
+5.0
+5.1
+5.2
+5.3
+5.4
+MetricX ↓
+Std.
+4.96
+3.14
+3.16
+3.18
+3.20
+Std.
+3.14
+2.96
+2.97
+2.98
+2.99
+Std.
+2.98
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+8.4
+8.3
+8.2
+8.1
+8.0
+7.9
+GEMBA ↑
+Std.
+-7.91
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+3.125
+3.100
+3.075
+3.050
+3.025
+3.000
+2.975
+Std.
+-3.12
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+2.3
+2.2
+2.1
+2.0
+Std.
+-2.37
+WMT24: Complete QE Window-size Sweep
+solid: QUIT dashed: Standard QE
+Figure 7: Complete QE window-size sweep on WMT24. Gray dashed lines mark the per-model unaccelerated QE
+performance; the gray dashed line in the speedup panel marks the 1× unaccelerated baseline.
+18
+
+5
+10
+15
+20
+Speedup ↑
+Std.
+1.0
+Qwen3
+5
+10
+15
+20
+Std.
+1.0
+TranslateGemma
+5
+10
+15
+20
+Std.
+1.0
+Hy-MT2
+30.5
+31.0
+31.5
+32.0
+ChrF++ ↑
+Std.
+30.32
+36.08
+36.10
+36.12
+36.14
+36.16
+36.18
+36.20
+Std.
+36.17
+40.80
+40.85
+40.90
+40.95
+Std.
+40.78
+0.345
+0.350
+0.355
+0.360
+0.365
+0.370
+xCOMET ↑
+Std.
+0.370
+0.556
+0.558
+0.560
+0.562
+0.564
+0.566
+Std.
+0.567
+0.610
+0.612
+0.614
+0.616
+0.618
+0.620
+0.622
+Std.
+0.622
+10.2
+10.4
+10.6
+10.8
+11.0
+11.2
+MetricX ↓
+Std.
+10.10
+6.15
+6.20
+6.25
+6.30
+Std.
+6.11
+5.725
+5.750
+5.775
+5.800
+5.825
+5.850
+Std.
+5.71
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+19.0
+18.8
+18.6
+18.4
+18.2
+GEMBA ↑
+Std.
+-18.24
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+7.10
+7.05
+7.00
+6.95
+6.90
+6.85
+6.80
+Std.
+-6.80
+2
+4
+6
+8
+10
+12
+14
+16
+Window size w
+4.85
+4.80
+4.75
+4.70
+4.65
+Std.
+-4.88
+WMT25: Complete QE Window-size Sweep
+solid: QUIT dashed: Standard QE
+Figure 8: Complete QE window-size sweep on WMT25, following the conventions of Figure 7.
+19
+
+NMT Model
+Reranker Acceleration
+Speedup ↑Rerank. ↑ChrF++ ↑xCOMET ↑MetricX ↓GEMBA ↑
+Qwen3
+MBR
+Unaccelerated
+1.00
+.8357
+42.09
+.7520
+5.17
+-7.82
+PruneMBR
+1.05
+.8355††
+42.07††
+.7519††
+5.17††
+-7.81††
+PMBR
+1.03
+.8352††
+42.11††
+.7516††
+5.17††
+-7.81††
+QUIT (w = 2)
+9.78
+.8255
+41.84††
+.7392
+5.40
+-8.27
+QUIT (w = 4)
+3.44
+.8315†
+41.94††
+.7462†
+5.28†
+-8.03†
+QUIT (w = 6)
+2.26
+.8334†
+42.01††
+.7480†
+5.23††
+-7.97†
+QUIT (w = 8)
+1.74
+.8344††
+42.04††
+.7497††
+5.19††
+-7.87††
+QUIT (w = 10)
+1.48
+.8349††
+42.04††
+.7506††
+5.18††
+-7.87††
+QUIT (w = 12)
+1.33
+.8352††
+42.04††
+.7510††
+5.17††
+-7.85††
+QUIT (w = 14)
+1.22
+.8354††
+42.07††
+.7515††
+5.17††
+-7.84††
+QUIT (w = 16)
+1.16
+.8355††
+42.06††
+.7518††
+5.17††
+-7.82††
+QE
+Unaccelerated
+1.00
+.8223
+39.61
+.7585
+4.96
+-7.91
+QUIT (w = 2)
+20.37
+.7975
+40.74
+.7370
+5.45
+-8.37
+QUIT (w = 4)
+8.16
+.8067
+40.72
+.7464
+5.25
+-8.10†
+QUIT (w = 6)
+5.02
+.8108
+40.57
+.7496†
+5.19
+-7.96††
+QUIT (w = 8)
+3.64
+.8133
+40.46†
+.7524†
+5.13†
+-7.92††
+QUIT (w = 10)
+2.84
+.8151
+40.42†
+.7539†
+5.09†
+-7.87††
+QUIT (w = 12)
+2.33
+.8165
+40.33†
+.7554††
+5.05†
+-7.85††
+QUIT (w = 14)
+1.99
+.8175
+40.26†
+.7564††
+5.02††
+-7.84††
+QUIT (w = 16)
+1.73
+.8185†
+40.21†
+.7572††
+5.01††
+-7.84††
+TranslateGemma
+MBR
+Unaccelerated
+1.00
+.8570
+44.90
+.8521
+3.15
+-3.14
+PruneMBR
+1.04
+.8570††
+44.88††
+.8520††
+3.15††
+-3.13††
+PMBR
+1.03
+.8566††
+44.91††
+.8518††
+3.15††
+-3.16††
+QUIT (w = 2)
+13.72
+.8543†
+44.87††
+.8488†
+3.21†
+-3.26†
+QUIT (w = 4)
+5.23
+.8557††
+44.88††
+.8502††
+3.18††
+-3.16††
+QUIT (w = 6)
+3.46
+.8563††
+44.87††
+.8509††
+3.17††
+-3.15††
+QUIT (w = 8)
+2.66
+.8566††
+44.88††
+.8509††
+3.16††
+-3.16††
+QUIT (w = 10)
+2.20
+.8567††
+44.86††
+.8511††
+3.16††
+-3.16††
+QUIT (w = 12)
+1.89
+.8568††
+44.88††
+.8511††
+3.16††
+-3.16††
+QUIT (w = 14)
+1.68
+.8569††
+44.87††
+.8513††
+3.16††
+-3.16††
+QUIT (w = 16)
+1.51
+.8569††
+44.87††
+.8513††
+3.15††
+-3.16††
+QE
+Unaccelerated
+1.00
+.8376
+43.59
+.8570
+3.14
+-3.12
+QUIT (w = 2)
+22.01
+.8251
+44.69
+.8511†
+3.20†
+-3.01†
+QUIT (w = 4)
+8.92
+.8295
+44.57
+.8534†
+3.17†
+-2.98†
+QUIT (w = 6)
+5.54
+.8314
+44.49
+.8547†
+3.16††
+-2.98†
+QUIT (w = 8)
+4.01
+.8327
+44.37†
+.8553††
+3.15††
+-3.01†
+QUIT (w = 10)
+3.12
+.8336
+44.32†
+.8557††
+3.15††
+-3.00†
+QUIT (w = 12)
+2.57
+.8344
+44.29†
+.8562††
+3.14††
+-3.02†
+QUIT (w = 14)
+2.17
+.8349
+44.25†
+.8567††
+3.14††
+-3.00†
+QUIT (w = 16)
+1.88
+.8355†
+44.24†
+.8570††
+3.14††
+-3.00†
+Hy-MT2
+MBR
+Unaccelerated
+1.00
+.8731
+49.86
+.8867
+2.92
+-1.79
+PruneMBR
+1.02
+.8732††
+49.87††
+.8869††
+2.92††
+-1.80††
+PMBR
+1.02
+.8728††
+49.87††
+.8866††
+2.93††
+-1.79††
+QUIT (w = 2)
+14.16
+.8712†
+49.78††
+.8848††
+2.96†
+-1.82††
+QUIT (w = 4)
+5.42
+.8723††
+49.85††
+.8863††
+2.94††
+-1.78††
+QUIT (w = 6)
+3.52
+.8726††
+49.86††
+.8862††
+2.93††
+-1.77††
+QUIT (w = 8)
+2.66
+.8728††
+49.86††
+.8867††
+2.93††
+-1.79††
+QUIT (w = 10)
+2.18
+.8729††
+49.85††
+.8866††
+2.93††
+-1.80††
+QUIT (w = 12)
+1.87
+.8730††
+49.85††
+.8866††
+2.93††
+-1.78††
+QUIT (w = 14)
+1.65
+.8730††
+49.82††
+.8868††
+2.93††
+-1.79††
+QUIT (w = 16)
+1.50
+.8731††
+49.83††
+.8866††
+2.93††
+-1.80††
+QE
+Unaccelerated
+1.00
+.8366
+47.67
+.8801
+2.98
+-2.37
+QUIT (w = 2)
+22.70
+.8254
+48.99
+.8809††
+3.00††
+-1.98
+QUIT (w = 4)
+9.17
+.8290
+48.77
+.8814††
+2.98††
+-2.03
+QUIT (w = 6)
+5.70
+.8306
+48.62†
+.8817††
+2.97††
+-2.05
+QUIT (w = 8)
+4.12
+.8317
+48.54†
+.8821††
+2.96††
+-2.06
+QUIT (w = 10)
+3.22
+.8325
+48.44†
+.8822†
+2.96††
+-2.08
+QUIT (w = 12)
+2.65
+.8332
+48.34†
+.8819††
+2.96††
+-2.11
+QUIT (w = 14)
+2.24
+.8338†
+48.28†
+.8816††
+2.96††
+-2.13†
+QUIT (w = 16)
+1.94
+.8342†
+48.19†
+.8816††
+2.96††
+-2.16†
+Table 12: Complete window-size sweep on WMT24 for the window sizes not shown in Table 1, following its
+conventions.
+20
+
+NMT Model
+Reranker Acceleration
+Speedup ↑Rerank. ↑ChrF++ ↑xCOMET ↑MetricX ↓GEMBA ↑
+Qwen3
+MBR
+Unaccelerated
+1.00
+.7345
+34.06
+.3696
+10.86
+-18.11
+PruneMBR
+1.02
+.7344††
+34.04††
+.3692††
+10.86††
+-18.10††
+PMBR
+1.01
+.7339††
+34.07††
+.3689††
+10.88††
+-18.16††
+QUIT (w = 2)
+8.23
+.7192
+33.73†
+.3531
+11.31
+-18.71
+QUIT (w = 4)
+2.81
+.7280†
+33.89††
+.3621†
+11.07†
+-18.36†
+QUIT (w = 6)
+1.83
+.7309†
+33.93††
+.3654†
+10.98†
+-18.29†
+QUIT (w = 8)
+1.47
+.7322††
+33.98††
+.3671††
+10.95††
+-18.19††
+QUIT (w = 10)
+1.30
+.7333††
+34.00††
+.3672††
+10.92††
+-18.20††
+QUIT (w = 12)
+1.20
+.7336††
+34.01††
+.3683††
+10.90††
+-18.19††
+QUIT (w = 14)
+1.14
+.7339††
+34.04††
+.3686††
+10.88††
+-18.16††
+QUIT (w = 16)
+1.10
+.7340††
+34.04††
+.3689††
+10.88††
+-18.17††
+QE
+Unaccelerated
+1.00
+.7106
+30.32
+.3705
+10.10
+-18.24
+QUIT (w = 2)
+19.77
+.6675
+32.17
+.3453
+11.27
+-18.97
+QUIT (w = 4)
+7.75
+.6818
+31.81
+.3532
+10.88
+-18.60
+QUIT (w = 6)
+4.79
+.6888
+31.59
+.3584
+10.69
+-18.48†
+QUIT (w = 8)
+3.43
+.6935
+31.28
+.3613†
+10.54
+-18.37†
+QUIT (w = 10)
+2.68
+.6967
+31.22
+.3626†
+10.46
+-18.34†
+QUIT (w = 12)
+2.19
+.6996
+31.05†
+.3646†
+10.38
+-18.30††
+QUIT (w = 14)
+1.87
+.7021
+30.94†
+.3658†
+10.31†
+-18.24††
+QUIT (w = 16)
+1.64
+.7036
+30.80†
+.3665†
+10.26†
+-18.22††
+TranslateGemma
+MBR
+Unaccelerated
+1.00
+.8129
+36.25
+.5731
+6.06
+-6.74
+PruneMBR
+1.01
+.8129††
+36.25††
+.5735††
+6.06††
+-6.71††
+PMBR
+1.01
+.8125††
+36.22††
+.5717††
+6.08††
+-6.85†
+QUIT (w = 2)
+12.54
+.8074
+36.07††
+.5633†
+6.22
+-7.16
+QUIT (w = 4)
+4.76
+.8099†
+36.13††
+.5673†
+6.17†
+-6.94†
+QUIT (w = 6)
+3.30
+.8108†
+36.15††
+.5683†
+6.14†
+-6.91†
+QUIT (w = 8)
+2.61
+.8112††
+36.18††
+.5690†
+6.12†
+-6.87†
+QUIT (w = 10)
+2.18
+.8116††
+36.17††
+.5697††
+6.10††
+-6.82†
+QUIT (w = 12)
+1.89
+.8119††
+36.16††
+.5704††
+6.10††
+-6.80††
+QUIT (w = 14)
+1.67
+.8121††
+36.19††
+.5711††
+6.09††
+-6.82††
+QUIT (w = 16)
+1.51
+.8123††
+36.19††
+.5713††
+6.10††
+-6.79††
+QE
+Unaccelerated
+1.00
+.7721
+36.17
+.5670
+6.11
+-6.80
+QUIT (w = 2)
+20.40
+.7543
+36.08††
+.5556
+6.31
+-7.12
+QUIT (w = 4)
+8.09
+.7608
+36.15††
+.5601†
+6.23†
+-7.03†
+QUIT (w = 6)
+4.97
+.7638
+36.16††
+.5623†
+6.20†
+-7.02†
+QUIT (w = 8)
+3.55
+.7657
+36.16††
+.5645††
+6.18†
+-6.86†
+QUIT (w = 10)
+2.78
+.7670
+36.15††
+.5651††
+6.17†
+-6.88†
+QUIT (w = 12)
+2.29
+.7680
+36.17††
+.5651††
+6.16††
+-6.85††
+QUIT (w = 14)
+1.94
+.7688†
+36.19††
+.5656††
+6.15††
+-6.84††
+QUIT (w = 16)
+1.69
+.7694†
+36.20††
+.5654††
+6.14††
+-6.81††
+Hy-MT2
+MBR
+Unaccelerated
+1.00
+.8298
+41.19
+.6281
+5.62
+-4.25
+PruneMBR
+1.01
+.8298††
+41.20††
+.6278††
+5.62††
+-4.19††
+PMBR
+1.01
+.8294††
+41.19††
+.6279††
+5.63††
+-4.23††
+QUIT (w = 2)
+12.28
+.8257†
+41.04††
+.6175†
+5.76
+-4.46†
+QUIT (w = 4)
+4.46
+.8279††
+41.19††
+.6226†
+5.69†
+-4.38†
+QUIT (w = 6)
+3.03
+.8285††
+41.17††
+.6245††
+5.67††
+-4.35†
+QUIT (w = 8)
+2.36
+.8289††
+41.18††
+.6262††
+5.65††
+-4.25††
+QUIT (w = 10)
+1.97
+.8291††
+41.15††
+.6263††
+5.64††
+-4.29††
+QUIT (w = 12)
+1.72
+.8292††
+41.16††
+.6278††
+5.64††
+-4.25††
+QUIT (w = 14)
+1.53
+.8294††
+41.17††
+.6275††
+5.64††
+-4.22††
+QUIT (w = 16)
+1.40
+.8295††
+41.17††
+.6279††
+5.63††
+-4.22††
+QE
+Unaccelerated
+1.00
+.7786
+40.78
+.6219
+5.71
+-4.88
+QUIT (w = 2)
+20.48
+.7618
+40.98††
+.6105
+5.87
+-4.77†
+QUIT (w = 4)
+8.12
+.7678
+40.89††
+.6151†
+5.81†
+-4.65†
+QUIT (w = 6)
+4.95
+.7708
+40.90††
+.6171†
+5.79†
+-4.65†
+QUIT (w = 8)
+3.59
+.7725
+40.90††
+.6184†
+5.77†
+-4.74†
+QUIT (w = 10)
+2.80
+.7737
+40.90††
+.6195††
+5.76†
+-4.78†
+QUIT (w = 12)
+2.29
+.7747
+40.88††
+.6197††
+5.75††
+-4.79†
+QUIT (w = 14)
+1.94
+.7755†
+40.86††
+.6207††
+5.75††
+-4.79†
+QUIT (w = 16)
+1.70
+.7761†
+40.84††
+.6210††
+5.74††
+-4.83††
+Table 13: Complete window-size sweep on WMT25 for the window sizes not shown in Table 2, following its
+conventions.
+21
+
+Dataset
+NMT Model
+Window
+¯
+N
+Speedup ↑
+ChrF++ ↑
+xCOMET ↑
+MetricX ↓
+GEMBA ↑
+WMT24
+Qwen3
+Unaccelerated
+512.00
+1.00
+42.48
+.6998
+6.21
+-9.96
+w = 2
+84.25
+8.11
+42.15††
+.6968††
+6.28††
+-10.16†
+w = 4
+268.35
+2.48
+42.36††
+.6985††
+6.24††
+-10.02††
+w = 6
+374.27
+1.63
+42.42††
+.6992††
+6.22††
+-9.96††
+w = 8
+430.57
+1.33
+42.44††
+.6989††
+6.23††
+-9.98††
+w = 10
+460.37
+1.19
+42.46††
+.6988††
+6.22††
+-9.98††
+w = 12
+477.99
+1.12
+42.47††
+.6993††
+6.22††
+-9.98††
+w = 14
+488.04
+1.07
+42.47††
+.6996††
+6.22††
+-9.97††
+w = 16
+496.39
+1.04
+42.48††
+.6997††
+6.21††
+-9.96††
+TranslateGemma
+Unaccelerated
+512.00
+1.00
+45.08
+.8341
+3.42
+-3.60
+w = 2
+75.68
+8.88
+44.96††
+.8336††
+3.44††
+-3.64††
+w = 4
+237.32
+2.81
+45.04††
+.8337††
+3.42††
+-3.64††
+w = 6
+339.77
+1.83
+45.06††
+.8340††
+3.42††
+-3.61††
+w = 8
+398.79
+1.48
+45.07††
+.8337††
+3.42††
+-3.61††
+w = 10
+434.86
+1.30
+45.08††
+.8340††
+3.41††
+-3.60††
+w = 12
+457.26
+1.20
+45.08††
+.8339††
+3.42††
+-3.59††
+w = 14
+472.65
+1.13
+45.08††
+.8341††
+3.42††
+-3.61††
+w = 16
+484.90
+1.08
+45.08††
+.8341††
+3.42††
+-3.60††
+Hy-MT2
+Unaccelerated
+512.00
+1.00
+50.14
+.8777
+3.09
+-1.99
+w = 2
+65.74
+9.34
+50.07††
+.8774††
+3.11††
+-2.05†
+w = 4
+205.69
+3.08
+50.12††
+.8775††
+3.09††
+-1.99††
+w = 6
+301.00
+1.99
+50.14††
+.8777††
+3.09††
+-2.00††
+w = 8
+362.47
+1.57
+50.14††
+.8777††
+3.09††
+-2.00††
+w = 10
+403.05
+1.35
+50.14††
+.8777††
+3.09††
+-2.00††
+w = 12
+430.88
+1.23
+50.14††
+.8776††
+3.09††
+-1.98††
+w = 14
+450.16
+1.15
+50.14††
+.8778††
+3.09††
+-2.00††
+w = 16
+465.10
+1.09
+50.14††
+.8777††
+3.09††
+-1.98††
+WMT25
+Qwen3
+Unaccelerated
+512.00
+1.00
+34.85
+.3238
+12.63
+-19.80
+w = 2
+79.76
+6.76
+34.43†
+.3192†
+12.76†
+-20.01†
+w = 4
+242.09
+2.19
+34.70††
+.3213††
+12.68††
+-19.98†
+w = 6
+341.36
+1.54
+34.77††
+.3225††
+12.64††
+-19.87††
+w = 8
+399.55
+1.31
+34.80††
+.3232††
+12.65††
+-19.87††
+w = 10
+436.95
+1.19
+34.81††
+.3229††
+12.65††
+-19.88††
+w = 12
+461.87
+1.12
+34.83††
+.3232††
+12.64††
+-19.84††
+w = 14
+477.64
+1.08
+34.81††
+.3235††
+12.64††
+-19.84††
+w = 16
+491.28
+1.05
+34.84††
+.3236††
+12.64††
+-19.79††
+TranslateGemma
+Unaccelerated
+512.00
+1.00
+36.81
+.5397
+6.64
+-7.48
+w = 2
+59.85
+9.43
+36.64††
+.5371††
+6.69††
+-7.49††
+w = 4
+169.09
+3.40
+36.70††
+.5363†
+6.66††
+-7.54†
+w = 6
+249.41
+2.29
+36.74††
+.5372††
+6.66††
+-7.60†
+w = 8
+311.28
+1.81
+36.77††
+.5367††
+6.67††
+-7.57†
+w = 10
+359.31
+1.54
+36.77††
+.5375††
+6.66††
+-7.55††
+w = 12
+397.55
+1.37
+36.78††
+.5382††
+6.65††
+-7.53††
+w = 14
+427.25
+1.26
+36.77††
+.5378††
+6.65††
+-7.54††
+w = 16
+452.50
+1.17
+36.80††
+.5389††
+6.64††
+-7.54††
+Hy-MT2
+Unaccelerated
+512.00
+1.00
+42.00
+.5994
+6.10
+-4.91
+w = 2
+60.23
+9.24
+41.74††
+.5945†
+6.23†
+-5.32
+w = 4
+168.03
+3.37
+41.87††
+.5969††
+6.15†
+-5.15
+w = 6
+252.65
+2.22
+41.93††
+.5973††
+6.12††
+-5.06†
+w = 8
+316.98
+1.75
+41.96††
+.5980††
+6.12††
+-5.01†
+w = 10
+368.15
+1.48
+41.98††
+.5978††
+6.11††
+-4.98†
+w = 12
+409.52
+1.31
+41.97††
+.5987††
+6.11††
+-4.95††
+w = 14
+438.35
+1.21
+41.98††
+.5985††
+6.11††
+-4.95††
+w = 16
+464.20
+1.13
+41.99††
+.5988††
+6.11††
+-4.90††
+Table 14: Translation quality when using ChrF as the utility function for MBR decoding, with a maximum candidate
+budget of Nmax = 512. Results are reported for the unaccelerated baseline and QUIT across window sizes
+w ∈{2, 4, 6, 8, 10, 12, 14, 16} on WMT24 and WMT25. Mean N denotes the average number of candidates used
+per sentence. Speedup is estimated as the unaccelerated generation-plus-utility time divided by the corresponding
+accelerated time. Equivalence markers follow the conventions of the main results.
+22
+
+Test set
+NMT model
+MBR
+QE
+WMT24
+Qwen3
+0.721
+0.278
+WMT24
+TranslateGemma
+0.749
+0.242
+WMT24
+Hy-MT2
+0.784
+0.192
+WMT25
+Qwen3
+0.663
+0.269
+WMT25
+TranslateGemma
+0.705
+0.288
+WMT25
+Hy-MT2
+0.734
+0.286
+Average
+0.726
+0.259
+Table 15: Pooled PRR with uncertainty ∆R
+b (s) and proxy early-stopping risk Lproxy
+bw
+(s) (Equation 10), w = 8
+(windows b = 1, . . . , 7). The full-data evaluation and window construction match Table 3; the risk is computed
+from reranking scores. Higher PRR is better.
+Test set
+NMT model
+MBR
+QE
+xCOMET
+GEMBA
+xCOMET
+GEMBA
+WMT24
+Qwen3
+0.416
+0.399
+0.106
+0.089
+WMT24
+TranslateGemma
+0.387
+0.390
+0.110
+0.103
+WMT24
+Hy-MT2
+0.491
+0.556
+0.103
+0.090
+WMT25
+Qwen3
+0.267
+0.107
+0.109
+0.088
+WMT25
+TranslateGemma
+0.286
+0.331
+0.091
+0.080
+WMT25
+Hy-MT2
+0.318
+0.484
+0.104
+0.098
+Average
+0.361
+0.378
+0.104
+0.091
+Table 16: Pooled PRR with uncertainty ∆R
+b (s) and early-stopping risk Lbw(s) (Equation 9), w = 4 (windows
+b = 1, . . . , 15). Higher PRR is better.
+Test set
+NMT model
+MBR
+QE
+xCOMET
+GEMBA
+xCOMET
+GEMBA
+WMT24
+Qwen3
+0.389
+0.377
+0.246
+0.211
+WMT24
+TranslateGemma
+0.357
+0.372
+0.283
+0.271
+WMT24
+Hy-MT2
+0.490
+0.557
+0.256
+0.237
+WMT25
+Qwen3
+0.197
+0.065
+0.208
+0.160
+WMT25
+TranslateGemma
+0.216
+0.271
+0.184
+0.183
+WMT25
+Hy-MT2
+0.258
+0.452
+0.222
+0.255
+Average
+0.318
+0.349
+0.233
+0.220
+Table 17: Pooled PRR with uncertainty ∆R
+b (s) and early-stopping risk Lbw(s) (Equation 9), w = 16 (windows
+b = 1, . . . , 3). Higher PRR is better.
+23
+
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.89
+0.90
+0.91
+0.92
+0.93
+Ri(s)
+Sentence 1177 
+ sMBR
+stop = 192
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.70
+0.72
+0.74
+0.76
+0.78
+Ri(s)
+Sentence 1177 
+ sQE
+stop = 192
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.88
+0.89
+0.90
+0.91
+0.92
+0.93
+Ri(s)
+Sentence 4584 
+ sMBR
+stop = 128
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.62
+0.64
+0.66
+0.68
+0.70
+Ri(s)
+Sentence 4584 
+ sQE
+stop = 128
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.895
+0.900
+0.905
+0.910
+0.915
+0.920
+0.925
+Ri(s)
+Sentence 2361 
+ sMBR
+stop = 384
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.76
+0.78
+0.80
+0.82
+0.84
+Ri(s)
+Sentence 2361 
+ sQE
+stop = 192
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.910
+0.915
+0.920
+0.925
+0.930
+0.935
+Ri(s)
+Sentence 22 
+ sMBR
+stop = 128
+0
+100
+200
+300
+400
+500
+Candidate Number
+0.73
+0.74
+0.75
+0.76
+0.77
+0.78
+0.79
+Ri(s)
+Sentence 22 
+ sQE
+stop = 128
+Figure 9: Evolution of the best reranking score Ri(s) for four randomly selected source sentences from WMT25
+with HY-MT2 as the candidate set grows. Each row corresponds to one source sentence, with MBR on the left and
+QE on the right. Black dashed lines and dots mark the stopping positions of QUIT with w = 8, α = 0.001, and
+k = 8.
+24
+
+Method
+w
+Qwen3
+TranslateGemma
+Hy-MT2
+Generation Reranking Generation Reranking Generation Reranking
+QUIT
+2
+28,663.0
+285.97
+24,184.0
+192.77
+34,071.0
+140.53
+QUIT
+4
+79,854.0
+2,369.35
+62,531.8
+1,440.79
+88,251.2
+1,034.54
+QUIT
+6
+120,380
+5,080.10
+93,674.8
+2,946.10
+135,153
+2,255.54
+QUIT
+8
+155,297
+7,524.67
+121,476
+4,395.07
+178,592
+3,587.21
+QUIT
+10
+182,116
+9,428.58
+146,152
+5,797.00
+217,507
+4,901.43
+QUIT
+12
+202,580
+10,963.7
+169,529
+7,143.56
+253,175
+6,200.59
+QUIT
+14
+219,347
+12,261.7
+191,172
+8,383.02
+285,284
+7,461.55
+QUIT
+16
+231,725
+13,298.9
+212,182
+9,725.38
+314,869
+8,709.65
+Unaccelerated MBR ∞
+266,352
+16,803.0
+317,548
+16,803.0
+467,484
+16,803.0
+PMBR
+–
+266,352
+7,301.66
+317,548
+6,079.76
+467,484
+5,497.37
+PruneMBR
+–
+266,352
+2,978.32
+317,548
+4,977.67
+467,484
+8,002.77
+Table 18: Complete candidate-generation and MBR reranking wall-clock times (seconds) on WMT24 with a
+maximum budget of 512 candidates.
+Method
+w
+Qwen3
+TranslateGemma
+Hy-MT2
+Generation Reranking Generation Reranking Generation Reranking
+QUIT
+2
+53,678.5
+138.07
+41,504.1
+73.95
+63,015.5
+76.06
+QUIT
+4
+156,733
+1,131.16
+109,052
+564.03
+173,237
+621.09
+QUIT
+6
+240,220
+2,502.81
+157,107
+1,028.57
+254,613
+1,150.87
+QUIT
+8
+297,719
+3,641.88
+197,999
+1,478.28
+326,227
+1,706.51
+QUIT
+10
+336,032
+4,464.99
+237,644
+2,001.33
+391,669
+2,293.50
+QUIT
+12
+363,642
+5,136.86
+273,125
+2,525.07
+447,977
+2,862.44
+QUIT
+14
+382,797
+5,627.80
+308,877
+3,095.56
+502,860
+3,494.68
+QUIT
+16
+397,191
+6,044.74
+340,941
+3,678.19
+550,413
+4,092.32
+Unaccelerated MBR ∞
+435,665
+7,320.00
+514,263
+7,320.00
+767,318
+7,320.00
+PMBR
+–
+435,665
+3,030.74
+514,263
+2,637.34
+767,318
+2,741.44
+PruneMBR
+–
+435,665
+284.15
+514,263
+295.94
+767,318
+423.40
+Table 19: Complete candidate-generation and MBR reranking wall-clock times (seconds) on WMT25 with a
+maximum budget of 512 candidates.
+25

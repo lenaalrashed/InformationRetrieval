@@ -1,0 +1,707 @@
+A Hybrid Hierarchical 1D-CNN-BiLSTM
+Framework for Extractive Summarization of
+Biomedical and Clinical Text
+Saad Bin Ather
+CS Department
+NUCES-FAST
+Lahore, Pakistan
+l230838@lhr.nu.edu.pk
+Muhammad Saif
+CS Department
+NUCES-FAST
+Lahore, Pakistan
+l230969@lhr.nu.edu.pk
+Ali Hassan Khan
+CS Department
+NUCES-FAST
+Lahore, Pakistan
+l230924@lhr.nu.edu.pk
+Manzer Abbas
+CS Department
+NUCES-FAST
+Lahore, Pakistan
+l230970@lhr.nu.edu.pk
+Hajra Waheed
+CS Department
+NUCES-FAST
+Lahore, Pakistan
+hajra.waheed@nu.edu.pk
+Abstract—Large language models have made abstractive sum-
+marization remarkably fluent, but fluency has come at a cost.
+Models trained to generate freely over long documents often
+hallucinate, producing summaries that read well but drift from
+what the source actually says. This risk is especially serious in
+domains such as biomedical and clinical text, where a fabricated
+detail is not a stylistic flaw but a factual failure. We address
+this by removing generation from the pipeline entirely rather
+than trying to constrain it. Our Hybrid Hierarchical CNN-LSTM
+Summarizer reframes summarization as extractive sentence selec-
+tion: a stacked, multi-kernel convolutional network first composes
+sentence-level embeddings into progressively richer inter-sentence
+factual units, layer by layer, and a bidirectional LSTM then
+models long-range dependencies and ordering across the full
+document. A lightweight scoring head projects this contextual
+representation into a per-sentence importance score, trained end-
+to-end with binary cross-entropy against oracle extractive la-
+bels. At inference time, a dynamic mean-plus-standard-deviation
+threshold, with a top-3 fallback, selects sentences directly from
+the source document, which are then chronologically reordered
+into the final summary. Because every output sentence is copied
+verbatim from the input, factual drift is structurally impossible
+rather than merely discouraged. Evaluated on the open-domain
+PubMed benchmark, our architecture outperforms isolated CNN
+and LSTM baselines, with ablations confirming that wider con-
+volutional receptive fields improve sentence scoring. On clinical
+datasets (MIMIC-CXR, MIMIC-IV BHC), the model excels
+on unstructured narratives, though it mechanically defaults to
+simple positional baselines on highly templated reports. These
+results suggest that structural constraints, rather than larger
+models or better decoding heuristics, offer a more reliable path
+toward factually grounded summarization. We position this work
+as a step toward summarization systems that are trustworthy by
+design rather than by correction.
+Index Terms—Extractive Text Summarization, Clinical Nat-
+ural Language Processing, Hierarchical 1D-CNN, Bidirectional
+LSTM, Electronic Health Records (EHR), Factuality Preserva-
+tion, Biomedical Document Extraction.
+I. INTRODUCTION
+Text summarization is broadly categorized into two main ap-
+proaches: extractive and abstractive. Extractive summarization
+identifies and selects key sentences directly from the source
+text, and is safe by construction, since every word in the
+output already existed in the input, though it tends to produce
+summaries that read as disconnected fragments rather than
+coherent prose [1]. Abstractive methods, especially those built
+on modern large language models, instead read the source and
+generate an entirely new summary, producing fluent, human-
+like text that extractive methods cannot match [2].
+That fluency comes at a cost. When attention spreads
+thin across long inputs, small inconsistencies compound: the
+model does not fail by refusing to answer, but by answering
+confidently with summaries that are fluent, plausible, and
+factually wrong. This behavior, commonly called hallucina-
+tion, is especially dangerous in domains such as biomedical
+and clinical text, where an invented detail is not a stylistic
+imperfection but a factual error with real consequences [2].
+Much of the recent literature manages hallucination after the
+fact, through better decoding strategies, factuality scoring, or
+post-hoc verification. We take a different position: rather than
+generating a summary and then checking whether it is faithful,
+we ask whether free-form generation is necessary at all.
+Prior work has shown that LSTM-based sentence classifiers
+built on pretrained embeddings are effective for identifying
+salient content in long documents [3], that stacking recurrent
+and convolutional components is highly complementary in
+specialized domains such as biomedical transcripts [4], and
+that explicitly modeling a document’s local and hierarchical
+structure improves sentence selection on long, well-organized
+text [5]. What none of this work does is combine a sequen-
+tially stacked, multi-kernel hierarchical convolutional network
+with a bidirectional LSTM and a confidence-calibrated, dy-
+namically thresholded selection mechanism, evaluated jointly
+across open-domain scientific and high-stakes clinical narra-
+tive text.
+We address this gap with a Hybrid Hierarchical CNN-LSTM
+Summarizer that reframes summarization as pure sentence
+selection rather than text generation, so that factual drift is
+structurally impossible rather than merely discouraged. The
+primary contributions of this work are as follows:
+1) Hierarchical
+Architecture: A sequential 1D-CNN
+pipeline that progressively refines local sentence fea-
+tures before modeling global document context via a
+arXiv:2609.13481v1 [cs.CL] 11 Sep 2026
+
+BiLSTM.
+2) Adaptive Extraction: A dynamic thresholding strategy
+that adapts to the unique score distribution of each
+document, eliminating the need for rigid, fixed-length
+summaries.
+3) Comprehensive
+Validation:
+Evaluations
+across
+biomedical research and raw clinical narratives, backed
+by targeted ablation studies that validate our network’s
+depth and hybrid design.
+II. RELATED WORK
+A. Surveys of Extractive Summarization
+Extractive summarization has been studied from many an-
+gles, and two recent reviews give a useful sense of where the
+field currently stands. Azam et al. [1] surveyed 145 papers
+and proposed a layered generic architecture for extractive
+systems, moving through preprocessing, feature extraction,
+sentence scoring, base modeling, sentence selection, and post-
+processing. Their review found that deep learning methods, in-
+cluding CNN and LSTM hybrids, now dominate across news,
+scientific, and social media domains. Zayed et al. [2] took a
+broader view, comparing statistical, graph-based, and neural
+approaches across both extractive and abstractive summariza-
+tion, specifically flagging hallucination, prompt sensitivity, and
+the lack of standardized cross-domain benchmarks as open
+problems. This directly motivates our work, since limiting hal-
+lucination through structural constraints on generation, rather
+than correcting it after the fact, is the central rationale for our
+purely extractive approach.
+B. Recurrent and Hybrid CNN-LSTM Architectures
+At the model level, pairing pretrained embeddings with
+recurrent networks has proven highly effective for extractive
+tasks. Framing extraction as binary sentence classification,
+a simple LSTM paired with BERT embeddings was shown
+to outperform baseline classifiers on the Cornell Newsroom
+dataset [3]. Comparative studies reinforce this; LSTMs and
+GRUs have been found to perform at a similarly high level for
+scientific journal summarization, decisively beating classical
+latent semantic analysis on ROUGE scores [6].
+Building on these recurrent foundations, recent work has
+explored combining LSTMs with CNNs. Bedi et al. [4] pro-
+posed a Deep Dense LSTM network followed by a CNN layer
+for biomedical transcript summarization, demonstrating strong
+transferability to medical text. Similarly, while Transformer-
+based models have been found to often edge out standard deep
+learning baselines on PubMed clinical text [7], our own results
+(Table I) show a BERTSUM baseline trailing both variants of
+our stacked architecture, suggesting the integration of con-
+volutional and recurrent layers remains a robust, lightweight
+alternative for domain-specific processing.
+C. Hierarchical Structure and Pipeline Complexity
+Handling long, structurally complex documents has pushed
+the field beyond single flat encoders. Explicitly modeling both
+local topics and overarching document hierarchy has been
+shown to outperform flat baselines like BERTSUM on lengthy
+PubMed and ArXiv papers [5]. In multi-document settings,
+classical feature scoring has been combined with a CNN-RNN
+module to reduce redundancy [8].
+Furthermore, as summarization pipelines expand into mul-
+timedia and specialized domains, managing structural com-
+plexity becomes critical. A cascaded audio-visual pipeline
+for multimedia summarization has been proposed [9], weak
+supervision has been combined with a BART-CNN model
+for clinical question answering [10], and extraction has been
+extended into low-resource languages such as Urdu [11].
+However, cascaded and highly modular pipelines risk error
+propagation, where an early mistake carries forward into the
+final summary. This underscores the need for architectures that
+are shallow, tightly coupled, and supervised end-to-end.
+This literature traces a fairly clear path from statistical
+methods toward deep learning and hybrid CNN-LSTM ar-
+chitectures. What is largely missing, however, is a stacked,
+sequentially hierarchical convolutional stage where each kernel
+width is applied directly to the previous layer’s feature map
+rather than in parallel, paired with a bidirectional LSTM
+and a dynamically thresholded, confidence-calibrated sentence
+selector. Our work builds on the CNN-LSTM foundation but
+pushes it toward a lightweight, structurally sound design.
+By evaluating jointly across open-domain scientific text and
+high-stakes clinical narratives, we present a system where
+hallucination is constrained by construction, as the model is
+never permitted to generate text that did not already exist in
+the source.
+III. METHODOLOGY
+This research proposes a Hybrid Hierarchical Stacked 1D-
+CNN–BiLSTM Extractive Summarizer. In contrast to conven-
+tional multi-kernel convolutional architectures, which apply
+several kernel widths in parallel and concatenate their outputs,
+our design adopts a strictly sequential, stacked hierarchy:
+each convolutional layer operates directly on the feature map
+produced by the layer before it, allowing lower-order n-
+gram representations to be progressively refined into higher-
+order factual units before contextualization and scoring. The
+complete pipeline, including tensor dimensions at each stage,
+is illustrated in Fig. 1.
+A. Sentence Tokenization and Dense Vector Representation
+A document D is represented as an ordered sequence of N
+sentences, D = {s1, . . . , sN}, via NLTK tokenization. Each
+sentence si is encoded using a domain-specific Transformer
+(SciBERT), taking its [CLS] token as a dense embedding:
+ei = TransformerEncoder(si)[CLS] ∈RDembed,
+Dembed = 768.
+(1)
+Documents are standardized to a fixed maximum length of
+Nseq = 512 sentences via zero-padding or truncation, yielding
+a document-level embedding tensor X(0) ∈RB×Nseq×Dembed,
+where B is the batch size, transposed to a channel-first layout
+X(0) ∈RB×768×512 prior to convolution.
+
+Fig. 1.
+Overall architecture of the proposed Hybrid Hierarchical Stacked
+1D-CNN-BiLSTM Summarizer, detailing tensor transformations and sequence
+dimensions at each pipeline stage.
+B. Stacked Hierarchical 1D Convolutional Feature Refinement
+The central architectural contribution is a sequentially
+stacked 1D convolutional network where each kernel oper-
+ates on the preceding layer’s output (Fig. 2). This design
+encourages progressive compositional abstraction rather than
+aggregating parallel fixed-width views of the same input.
+Formally, each layer l ∈{1, 2, 3, 4} applies a 1D convo-
+lution with kernel width kl = l directly to the output of the
+preceding layer:
+X(l) = ReLU
+ Conv1Dk=l
+ X(l−1)
+∈RB×128×512,
+l = 1, . . . , 4.
+(2)
+All layers use Cfilters = 128 filters with padding=’same’
+to preserve the sequence length throughout the stack. Be-
+cause convolution is applied over a sequence of sentence-
+level embeddings, kernel widths represent local inter-sentence
+context rather than conventional word-level n-grams. Layer 1
+(k = 1) projects the 768-dimensional sentence embeddings
+into a 128-dimensional single-sentence feature space; Layer 2
+(k = 2) composes adjacent sentence features into a 2-sentence
+contextual window; Layer 3 (k = 3) further composes this into
+3-sentence-level coarse factual units; and Layer 4 (k = 4)
+aggregates these into broader, document-level factual units,
+Fig. 2.
+Conceptual flow of the hierarchical 1D-CNN stack. Lower-order
+sentence-level features are progressively composed into higher-order factual
+units layer by layer.
+completing the hierarchical composition. Because each layer l
+operates on the representation learned at layer l−1 rather than
+on the raw input independently, this stacked formulation is
+the key structural distinction between our design and standard
+parallel multi-kernel CNNs.
+C. Inter-Sentence Contextual Modeling via BiLSTM
+While the stacked convolutional stack captures increas-
+ingly abstract local factual structure, extractive summarization
+additionally requires modeling long-range dependencies and
+discourse-level ordering across the document. The final feature
+map X(4) is transposed to a sequence-first layout, Hcnn =
+(X(4))T ∈RB×512×128, and passed through a single-layer
+Bidirectional LSTM with hidden dimension hdim = 128 per di-
+rection. The forward and backward hidden states are concate-
+nated at each sentence position to produce a 256-dimensional
+contextualized representation, Hlstm ∈RB×512×256, which
+jointly encodes each sentence’s local factual content and its
+position within the surrounding document flow.
+D. Extractive Scoring Head and Training Objective
+Each contextualized sentence representation is mapped to
+a scalar saliency score via a linear projection followed by a
+sigmoid activation, ˆyi = σ(WcHlstm,i + bc) ∈[0, 1], where ˆyi
+denotes the predicted probability that sentence si belongs in
+the summary. The model is trained end-to-end using masked
+binary cross-entropy over valid sentences against oracle labels
+yi ∈{0, 1}; padded positions are excluded from the loss via
+a binary mask.
+E. Dynamic Confidence-Calibrated Inference
+Rather than a fixed top-k cutoff applied uniformly across
+documents of varying length and content density, we select
+
+sentences at inference time using a per-document, confidence-
+calibrated threshold:
+τ = µ(ˆyvalid) + 0.5 σ(ˆyvalid),
+Sselected = {si | ˆyi > τ} .
+(3)
+where µ and σ are the mean and standard deviation of the
+predicted scores over the Nvalid non-padded sentences in that
+document. In degenerate cases where fewer than two sentences
+exceed τ, a fallback rule selects the top k = min(3, Nvalid)
+highest-scoring sentences. Selected sentences are finally re-
+ordered according to their original position in the source
+document, preserving narrative and chronological coherence
+in the extracted summary.
+IV. EXPERIMENTAL SETUP
+In this section, we describe the datasets, baseline models,
+training protocol, and evaluation metrics used to empirically
+validate our proposed architecture.
+A. Datasets and Benchmark Suite
+We evaluate our model across three diverse biomedical and
+clinical datasets to test both open-domain scientific literature
+summarization and high-stakes clinical EHR narratives:
+• PubMed: A large-scale biomedical document summa-
+rization dataset [12]. The model was trained on roughly
+10,000 documents. For computational feasibility, evalu-
+ation used a fixed subset of 300 test documents, with
+ground-truth abstracts serving as target summaries.
+• MIMIC-CXR: A specialized clinical dataset containing
+chest X-ray radiology reports [13]. Summarization here
+requires extracting critical diagnostic findings and im-
+pressions from semi-structured radiological notes.
+• MIMIC-IV BHC (Brief Hospital Course): A complex
+clinical narrative dataset derived from electronic health
+records [14].
+B. Baseline Models and Architectural Variants
+To isolate the individual contributions of our stacked con-
+volutional layers, recurrent modeling, pre-trained backbones,
+and overall pipeline, we compare our full architecture against
+several standard baselines and ablation variants:
+• Lead-3 Heuristic: A widely used non-trainable baseline
+that blindly extracts the first three sentences of a docu-
+ment.
+• TextRank: A graph-based, unsupervised extractive base-
+line that constructs sentence graphs using TF-IDF cosine
+similarity and ranks sentences via PageRank.
+• BERTSUM: A pretrained BERT-based extractive sum-
+marization baseline that scores and selects sentences via
+a fine-tuned transformer encoder [15].
+• CNN-Only Model: A variant that passes sentence em-
+beddings through the 4-layer stacked CNN stack followed
+directly by a linear classification head, removing the
+BiLSTM sequential bottleneck.
+• LSTM-Only Model: A variant that feeds sentence em-
+beddings directly into the BiLSTM without convolutional
+feature refinement.
+• Vanilla
+BERT
+Variant:
+Our
+complete
+stacked
+CNN-BiLSTM
+architecture
+using
+standard
+bert-base-uncased embeddings (Dembed = 768)
+instead of domain-specific SciBERT.
+• Proposed
+Hierarchical
+Model
+(SciBERT):
+Our
+full
+framework
+combining
+SciBERT
+embeddings
+(allenai/scibert_scivocab_uncased),
+4-
+layer
+stacked
+1D-CNNs,
+BiLSTM,
+and
+dynamic
+confidence thresholding.
+C. Implementation and Training Details
+All models were implemented in PyTorch and trained on
+Apple Silicon MPS / CUDA GPU hardware. Input documents
+were truncated or padded to a maximum sequence length of
+Nseq = 512 sentences, with individual sentence representations
+embedded into a 768-dimensional hidden space.
+The stacked 1D-CNN utilized Cfilters = 128 channels across
+kernel sizes k ∈{1, 2, 3, 4} with padding=’same’. The
+BiLSTM layer operated with a hidden dimension of 128
+per direction (256 concatenated). Models were optimized
+using Adam with Binary Cross-Entropy loss (LBCE) over
+valid non-padded sentences. Performance was evaluated using
+standard ROUGE-1, ROUGE-2, and ROUGE-L F1-scores
+against ground-truth summaries using NLTK stemming. For
+supervised training, our framework directly utilized the binary
+extractive labels provided within the benchmark datasets to
+serve as the oracle. These binary indicators (yi ∈{0, 1})
+explicitly mark which source sentences optimally align with
+the ground-truth summary.
+V. RESULTS AND DISCUSSION
+A. Open-Domain Biomedical Benchmark (PubMed)
+We first evaluate our framework on the open-domain
+PubMed benchmark, with the comparative results detailed in
+Table I. Our complete architecture combining the SciBERT
+embedding space, the hierarchical stacked CNN, and the
+BiLSTM achieves the highest overall performance across all
+metrics, reaching a ROUGE-1 score of 0.7143, a ROUGE-2
+of 0.7090, and a ROUGE-L of 0.7191.
+TABLE I
+PERFORMANCE COMPARISON ON THE PUBMED BENCHMARK DATASET
+Model Architecture / Variant
+ROUGE-1
+ROUGE-2
+ROUGE-L
+Lead-3 Baseline
+0.5439
+0.5398
+0.5421
+TextRank Baseline
+0.5628
+0.5015
+0.5419
+BERTSUM Baseline
+0.5581
+0.5103
+0.5439
+Vanilla BERT + Proposed Stack
+0.6780
+0.6720
+0.6788
+Proposed Model (SciBERT + Stack)
+0.7143
+0.7090
+0.7191
+Beyond the absolute scores, the empirical findings on
+PubMed reveal two critical insights about our architectural
+design:
+
+1) The Limitations of Surface-Level Heuristics: Tra-
+ditional, unsupervised baselines struggle to navigate
+the density of lengthy biomedical texts. Lead-3 and
+TextRank max out at ROUGE-1 scores of 0.5439 and
+0.5628, respectively. Our proposed model outperforms
+Lead-3 by an absolute ROUGE-1 gain of +0.1704 (a
+relative improvement of 31.3%) and TextRank by an
+absolute gain of +0.1515 (a relative improvement of
+26.9%).
+2) The Value of Domain-Aware Embeddings: Swap-
+ping a general-purpose Vanilla BERT encoder for the
+medically-tuned SciBERT yields a direct absolute gain
+of +0.0363 (a 5.4% relative improvement) in ROUGE-1.
+This validates that injecting domain-specific vocabulary
+at the very beginning of the pipeline provides a much
+richer foundational representation for the convolutional
+layers to build upon.
+B. Clinical Narrative Performance (MIMIC-CXR & MIMIC-
+IV BHC)
+Moving from polished scientific papers to raw electronic
+health records (EHRs) introduces a significant domain shift.
+Table II details our framework’s performance across clinical
+narratives. It is important to note that unlike PubMed articles,
+where target abstracts are often near-verbatim extracts of the
+paper, clinical ground-truth summaries are highly abstractive
+and human-synthesized. This inherent structural difference
+naturally lowers the absolute ROUGE scores across the board
+for all extractive models.
+TABLE II
+COMPARATIVE BENCHMARKING ON MIMIC-CXR AND MIMIC-IV BHC
+Method
+ROUGE-1
+ROUGE-2
+ROUGE-L
+MIMIC-CXR Dataset
+Lead-3 Baseline
+0.1728
+0.0773
+0.1482
+TextRank
+0.1829
+0.0762
+0.1600
+Proposed Model
+0.1741
+0.0773
+0.1499
+MIMIC-IV BHC Dataset
+Lead-3 Baseline
+0.2062
+0.0708
+0.1351
+TextRank
+0.1353
+0.0329
+0.0787
+Proposed Model
+0.2682
+0.0715
+0.1392
+On MIMIC-CXR, the proposed model performs nearly
+identically to the Lead-3 baseline, with scores within 0.002
+across all three metrics. This near-parity is not coincidental: it
+reflects a mechanical behavior. Due to the extreme brevity
+and structured nature of these radiology reports, very few
+sentences exceed the dynamic confidence threshold τ. Con-
+sequently, the model defaults to its top-3 fallback rule for
+nearly every document. This reveals a critical limitation of our
+dynamic selection strategy on highly templated, short clinical
+documents: the fallback mechanism forces the architecture
+to functionally collapse into a simple positional baseline.
+TextRank achieves a marginally higher ROUGE-1 (0.1829) on
+this dataset by exploiting high-frequency clinical keywords,
+though this form of surface-level lexical matching is not
+guaranteed to generalize to less formulaic text.
+This distinction becomes clear on the MIMIC-IV Brief
+Hospital Course (BHC) dataset, where the predictable ra-
+diology template is absent and narratives are longer and
+less rigidly structured. Under these conditions, TextRank’s
+keyword-driven heuristic degrades sharply, dropping to a
+ROUGE-1 of 0.1353. In contrast, the proposed model achieves
+its largest relative advantage on MIMIC-IV BHC, reaching
+a ROUGE-1 of 0.2682. This translates to an absolute im-
+provement of +0.0620 (a 30.1% relative gain) over Lead-3
+and +0.1329 (a 98.2% relative gain) over TextRank. Taken
+together, these results suggest a consistent pattern rather than
+uniform superiority: on structured clinical text with predictable
+information placement, a simple positional baseline is already
+competitive, whereas on unstructured, narrative clinical text,
+the hybrid hierarchical model’s dynamic thresholding and
+multi-level feature refinement provide a clear, measurable
+advantage over both positional and graph-based baselines.
+C. Ablation Studies: Component Isolation & CNN Depth
+Progression
+To truly understand why the hierarchical architecture works,
+we conducted component and depth ablations on the PubMed
+dataset to examine the contribution of the hybrid architecture.
+We systematically isolated key components and disabled upper
+convolutional layers to observe how depth impacts feature
+learning. The results of component isolation and depth pro-
+gression are documented in Table III and Table IV, respec-
+tively.
+TABLE III
+ABLATION STUDY: COMPONENT ISOLATION AND HYBRID COUPLING
+(PUBMED)
+Ablation Variant
+ROUGE-1
+ROUGE-2
+ROUGE-L
+CNN-Only
+0.6339
+0.6191
+0.6312
+LSTM-Only
+0.6766
+0.6712
+0.6741
+Proposed Full Stack
+0.7143
+0.7090
+0.7191
+1) The Synergy of Hybrid Architectures: When evaluated
+in isolation (as shown in Table III), the CNN-Only model
+captures local patterns reasonably well (ROUGE-1: 0.6339),
+while the LSTM-Only model manages sequential flow more
+effectively (ROUGE-1: 0.6766). However, coupling them into
+a unified, hierarchical pipeline yields a substantial performance
+leap to 0.7143. This represents an absolute gain of +0.0377
+(5.6% relative improvement) over the LSTM-Only baseline
+and +0.0804 (12.7% relative improvement) over the CNN-
+Only baseline. This confirms our core hypothesis: local inter-
+sentence factual refinement and global context modeling are
+strictly complementary forces.
+2) The Impact of Stacked Convolutional Depth: The layer
+progression results in Table IV tell a compelling story about
+representation learning. Relying solely on 1-sentence or 2-
+sentence stacks yields near-stagnant scores (ROUGE-1: 0.6262
+
+TABLE IV
+ABLATION STUDY: STACKED CNN DEPTH PROGRESSION (PUBMED)
+Convolutional Stack Depth
+ROUGE-1
+ROUGE-2
+ROUGE-L
+Layer 1 Only (1-sentence)
+0.6262
+0.6195
+0.6248
+Stacked Layer 1–2 (2-sentences)
+0.6291
+0.6203
+0.6265
+Stacked Layer 1–3 (3-sentences)
+0.6780
+0.6720
+0.6759
+Stacked Layer 1–4 (Proposed)
+0.7143
+0.7090
+0.7191
+and 0.6291, respectively), indicating that medical concepts
+are too complex to be captured in one or two adjacent
+statements. However, the moment we introduce Layer 3 (3-
+sentence window), the model experiences a sharp absolute
+gain of +0.0489 (a 7.8% relative jump) in performance. This
+suggests that 3-sentence inter-relationships provide the critical
+receptive field required to recognize a fully-formed medical
+claim. Finally, capping the architecture with Layer 4 acts as a
+global synthesizer, providing a final absolute boost of +0.0363
+(a 5.4% relative improvement) and securing the peak score.
+This progression firmly validates our design choice: deep,
+sequential feature refinement is essential for composing robust,
+high-level factual units before passing them to a recurrent
+classifier.
+D. Limitations
+While the proposed architecture demonstrates strong em-
+pirical performance, our reliance on standard ROUGE met-
+rics may not fully capture the clinical usefulness or deeper
+factual consistency of the extracted summaries. Furthermore,
+the strictly extractive framework can produce fragmented
+narratives when diagnostic information is dispersed, and its
+dynamic thresholding strategy remains highly sensitive to
+underlying document structures.
+VI. CONCLUSION
+In this paper, we addressed the critical issue of factual
+hallucination in biomedical and clinical text summarization
+by reframing the task as a strictly extractive, confidence-
+calibrated sentence selection problem. We proposed a Hy-
+brid Hierarchical Stacked 1D-CNN-BiLSTM framework that
+structurally prevents generative factual drift while maintaining
+high contextual fidelity. By sequentially stacking convolutional
+layers, the architecture progressively refines dense sentence
+embeddings into high-level multi-sentence factual units, which
+are subsequently contextualized across the entire document
+sequence using a Bidirectional LSTM.
+On the open-domain PubMed benchmark, our complete 4-
+layer architecture achieved a peak ROUGE-1 score of 0.7143,
+significantly outperforming non-trainable heuristics and iso-
+lated baseline variants. Across the two clinical datasets, the
+model’s behavior was more nuanced: on the highly templated
+MIMIC-CXR radiology reports, it performed nearly identically
+to the Lead-3 baseline, suggesting that on rigidly structured
+text the model converges toward a similar positional strategy
+rather than offering additional benefit; on the less predictable,
+unstructured MIMIC-IV BHC narratives, it achieved its largest
+relative gains over both Lead-3 and TextRank, indicating that
+the hierarchical architecture is most useful precisely where
+simple positional or keyword-based heuristics break down.
+Ultimately, this work suggests that structural constraints
+and supervised extractive architectures offer a reliable, com-
+putationally efficient, and trustworthy alternative to large au-
+toregressive language models in high-stakes medical domains,
+though their advantage over simpler baselines is dataset-
+dependent rather than universal. Future work will explore ex-
+panding this hierarchical framework to multi-document patient
+history summarization and evaluating cross-lingual zero-shot
+extraction for under-resourced healthcare settings.
+REFERENCES
+[1] M. Azam, S. Khalid, S. Almutairi, H. A. Khattak, A. Namoun, A. Ali,
+and H. S. M. Bilal, “Current trends and advances in extractive text
+summarization: A comprehensive review,” IEEE Access, vol. 13, pp.
+28 150–28 166, 2025.
+[2] S. Zayed, M. Ezzat, and H. A. Hefny, “Automatic text summarization:
+A review of approaches, challenges, and future directions,” Journal of
+Computer Science & Technology, vol. 25, 2025.
+[3] S. Biswas, M. Biswas, A. Mandal, F. T. Liza, and J. Sarker, “Efficient
+extractive text summarization for online news articles using machine
+learning,” arXiv preprint arXiv:2509.15614, 2025.
+[4] P. P. S. Bedi, M. Bala, and K. Sharma, “Extractive text summarization
+for biomedical transcripts using deep dense lstm-cnn framework,” Expert
+Systems, vol. 41, no. 7, p. e13490, 2024.
+[5] T. Wang, C. Yang, M. Zou, J. Liang, D. Xiang, W. Yang, H. Wang,
+and J. Li, “A study of extractive summarization of long documents in-
+corporating local topic and hierarchical information,” Scientific Reports,
+vol. 14, no. 1, p. 10140, 2024.
+[6] D. Fitrianah and R. N. Jauhari, “Extractive text summarization for
+scientific journal articles using long short-term memory and gated
+recurrent units,” Bulletin of Electrical Engineering and Informatics,
+vol. 11, no. 1, pp. 150–157, 2022.
+[7] N. Datta et al., “Extractive text summarization of clinical text using deep
+learning models,” in 2024 Second International Conference on Emerging
+Trends in Information Technology and Engineering (ICETITE).
+IEEE,
+2024, pp. 1–6.
+[8] B. Purushothaman and G. Tamilpavai, “Enhancing multi-document
+summarization with hybrid convolutional recurrent neural networks for
+efficient information extraction,” Neural Computing and Applications,
+vol. 38, no. 7, p. 205, 2026.
+[9] T. Hossain, A.-R. Islam, M. S. Hossain, and A. A. Rasel, “A cascaded
+architecture for extractive summarization of multimedia content via
+audio-to-text alignment,” arXiv preprint arXiv:2504.06275, 2025.
+[10] N. Saeed, “Medifact at peranssumm 2025: Leveraging lightweight
+models for perspective-specific summarization of clinical q&a forums,”
+in Proceedings of the Second Workshop on Patient-Oriented Language
+Processing (CL4Health), 2025, pp. 331–339.
+[11] S. Nazir, M. Asif, S. Ahmad, H. Aljuaid, and S. Ahmad, “Enhanced
+extractive text summarization framework for low-resourced urdu lan-
+guage,” PLoS One, vol. 21, no. 2, p. e0341596, 2026.
+[12] A. Cohan, F. Dernoncourt, S. Doo, C. Wu, P. Bhashyam, J. Guo, and
+N. Goharian, “A discourse-aware attention model for abstractive sum-
+marization of long documents,” in Proceedings of the 2018 Conference
+of the North American Chapter of the Association for Computational
+Linguistics: Human Language Technologies (NAACL-HLT), 2018, pp.
+615–621.
+[13] A. E. Johnson, T. J. Pollard, S. J. Berkowitz, N. R. Greenbaum,
+M. P. Lungren, C.-y. Deng, R. G. Mark, and S. Horng, “Mimic-cxr,
+a de-identified publicly available database of chest radiographs with
+radiologist reports,” Scientific Data, vol. 6, no. 1, p. 317, 2019.
+[14] A. E. Johnson, L. Bulgarelli, L. Shen, A. Gayles, A. Shammout,
+S. Horng, T. J. Pollard, S. Moodie, B. Gow, L.-w. H. Lehman et al.,
+“Mimic-iv, a freely accessible electronic health record dataset,” Scientific
+Data, vol. 10, no. 1, p. 1, 2023.
+[15] Y. Liu, “Fine-tune bert for extractive summarization,” in arXiv preprint
+arXiv:1903.10318, 2019.

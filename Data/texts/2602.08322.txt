@@ -1,0 +1,2142 @@
+A Generative Model for Joint Multiple Intent Detection and Slot Filling
+Liz Li1,, Wei Zhu2,∗
+1 DataSelect AI, Xuhui, Shanghai, China
+2University of Hong Kong, Hong Kong, HK, China
+Abstract
+In task-oriented dialogue systems, spoken lan-
+guage understanding (SLU) is a critical com-
+ponent, which consists of two sub-tasks, in-
+tent detection and slot filling. Most existing
+methods focus on the single-intent SLU, where
+each utterance only has one intent. However,
+in real-world scenarios users usually express
+multiple intents in an utterance, which poses
+a challenge for existing dialogue systems and
+datasets. In this paper, we propose a generative
+framework to simultaneously address multiple
+intent detection and slot filling. In particular,
+an attention-over-attention decoder is proposed
+to handle the variable number of intents and
+the interference between the two sub-tasks by
+incorporating an inductive bias into the process
+of multi-task learning. Besides, we construct
+two new multi-intent SLU datasets based on
+single-intent utterances by taking advantage
+of the next sentence prediction (NSP) head of
+the BERT model. Experimental results demon-
+strate that our proposed attention-over-attention
+generative model achieves state-of-the-art per-
+formance on two public datasets, MixATIS and
+MixSNIPS, and our constructed datasets.
+1
+Introduction
+In modern task-oriented dialogue systems, spo-
+ken language understanding (SLU) is a necces-
+sary component to capture the semantics of user
+queries. Typically, SLU is comprised of two sub-
+tasks, namely intent detection and slot filling(Tur
+and De Mori, 2011).
+Take the utterance "Put
+Ramy Ayach on latin pop rising" as an example,
+the intent detection task is to recognize the intent
+AddToPlaylist, while the slot filling task is to
+find the values for slots, i.e. Ramy Ayach as the
+artist and latin pop rising as the playlist. In
+prior work(Xu and Sarikaya, 2013; Ravuri and Stol-
+cke, 2015; Raymond and Riccardi, 2007; Wu et al.,
+∗Corresponding author. For any inquiries, please contact:
+michaelwzhu91@gmail.com.
+2018; van den Oord et al., 2018; Tian et al., 2020;
+He et al., 2020; Chen and He, 2021; Cui et al., 2023;
+Wang et al., 2024; Wenjing Yue and Wang, 2023;
+Yue et al., 2024; Zhang et al., 2023d; Zhao et al.,
+2023; Xu et al., 2023; Ding et al., 2022; Xin et al.,
+2024; Qin et al., 2023; Zhu et al., 2023; Zhu et al.,
+2023a, 2024a, 2021a; Li et al., 2023; Zhu et al.,
+2023b; Zhang et al., 2023a; Zhu et al., 2023d; Guo
+et al., 2021; Zhu et al., 2021b; Zheng et al., 2023;
+Sun et al., 2020; Zhang et al., 2023b,c; Wang et al.,
+2023; Zhu et al., 2019a; Zhu, 2021d; Zhang et al.,
+2021; Wang et al., 2020; Li et al., 2025; Leong
+et al., 2025; Zhang et al., 2025a; Yin et al., 2024;
+Zhu, 2026c,d; Liu et al., 2024; Zhu, 2021b; Zhu
+et al., 2021c; Zhang et al., 2024; Li et al., 2019b;
+Zhu, 2021a; Zhu and Cheung, 2021; Zheng et al.,
+2024c; Zhang et al., 2025b; Zheng et al., 2024a;
+Zhu, 2021c, 2026e,a,b; Zhao et al., 2026), intent
+detection is usually solved as a classification task
+and slot filling as a sequence labeling task.
+Since the two sub-tasks are strongly tied, cur-
+rent state-of-the-art systems typically adopt joint
+models to capture the interaction between the two
+sub-tasks(Zhang and Wang, 2016; Goo et al., 2018;
+Li et al., 2018; Qin et al., 2019; Gunel et al., 2021;
+Tian et al., 2024b; Hersh, 2024; Tian et al., 2024b;
+Hersh, 2024; Zhu et al., 2024b; Zhu and Tan, 2023;
+Liu et al., 2022; Xie et al., 2024; Cui et al., 2023;
+Zheng et al., 2024b; Zhu et al., 2023c; Gao et al.,
+2023; Zuo et al., 2022; Zhang et al., 2022; Sun
+et al., 2022; Zhu et al., 2021d; Zhu, 2021e; Li
+et al., 2019a; Zhu et al., 2019c,b; Zhou et al., 2019;
+Zhang et al., 2025a; Wang et al., 2025; Liu et al.,
+2025; Yi-Ge et al., 2024; Tian et al., 2024a). In
+particular, the intent prediction is usually lever-
+aged to guide slot filling(Qin et al., 2020). De-
+spite their success, most existing works only con-
+sider simple single intent scenarios, where each
+utterance only express a single intent. However,
+in the real world, users often express multiple
+intents in an utterance.
+For example, Gangad-
+arXiv:2602.08322v2 [cs.CL] 12 Feb 2026
+
+PlayMusic
+AddToPlaylist
+Utterance
+Intent
+Slot
+Put
+Ramy
+Ayach
+on
+latin
+pop
+rising
+and
+play
+some
+Bertine
+Zetlitz
+record
+O
+B-artist
+I-artist
+O
+B-playlist
+I-playlist
+I-playlist
+O
+O
+O
+B-artist
+I-artist
+B-music_item
+Figure 1: An example to illustrate the task, joint multiple intent detection and slot filling. We show the slot
+annotation in the BIO format, where BIO means Begin/Inside/Outside.
+haraiah and Narayanaswamy(Gangadharaiah and
+Narayanaswamy, 2019) show that 52% of utter-
+ances in the amazon internal dataset have multi-
+ple intents. An example with multiple intent and
+slot annotation is shown in Figure 1. The SLU
+system is required to detect all the intents (i.e.,
+AddToPlaylist and PlayMusic in the example)
+and their corresponding slots.
+Multi-intent SLU has posed challenges for both
+models and datasets. On the one hand, most exist-
+ing single-intent SLU models cannot easily adapt
+to the multi-intent scenario. Though there are some
+neural-based models(Qin et al., 2020, 2021b; Ku-
+mar and Baghel, 2021) proposed in recent years for
+joint multiple intent detection and slot filling, the
+adopted interaction structure such as graph neural
+networks cannot take full advantage of pre-trained
+language models, and therefore limits the perfor-
+mance. On the other hand, there is currently a
+lack of high-quality multi-intent datasets. To this
+end, Qin et al.(Qin et al., 2020) constructed two
+multi-intent datasets, MixATIS and MixSNIPS, by
+randomly concatenating single-intent utterances in
+ATIS(Hemphill et al., 1990) and SNIPS(Coucke
+et al., 2018). Nevertheless, many samples in their
+constructed MixATIS and MixSNIPS are unnatural,
+which means the multiple intents expressed in the
+same utterance rarely co-occur in the real world.
+This work is a response to the two challenges
+above. For the challenge of models, we propose
+a generative model, namely GEMIS, based on a
+pre-trained sequence-to-sequence language model,
+BART(Lewis et al., 2020), to better capture the
+relation between the two sub-tasks with the pre-
+trained attention mechanism.
+In particular, we
+recast the joint multiple intent detection and slot
+filling as a sequence-to-sequence task, where the
+source sequence is the original utterance and the
+target sequence is a structured sequence of labels
+that contains intents, slot categories, and slot val-
+ues. Besides, to better leverage the predictions of
+intents to guide the generation of slot categories
+and values, we design an attention-over-attention
+(AoA) structure to replace the cross-attention layers
+of BART decoder. For the challenge of dataset,
+we utilize pre-trained BERT(Devlin et al., 2019) to
+construct two multi-intent datasets, namely Multi-
+ATIS and MultiSNIPS. Unlike previous work(Qin
+et al., 2020) that randomly concatenates utterances
+with different intents to construct new ones, we
+utilize the next sentence prediction (NSP) head
+of BERT to obtain the probability that the con-
+catenated utterances are successive sentences as
+the criterion of being selected into the constructed
+multi-intent datasets. Due to the usage of NSP, our
+constructed samples are more natural than those
+in previous work(Qin et al., 2020). Experimen-
+tal results demonstrate that our proposed GEMIS
+achieves state-of-the-art performance on two pub-
+lic datasets, MixATIS and MixSNIPS, and our con-
+structed datasets, MultiATIS and MultiSNIPS.
+Our main contributions can be summarized as
+follows:
+• We propose a generative framework, i.e.,
+GEMIS, for joint multiple intent detection and
+slot filling instead of solving them in classifi-
+cation and/or sequence labelling paradigm.
+• We design an attention-over-attention (AoA)
+structure for BART decoder to guide slot fill-
+ing with the attention pattern of intent predic-
+tions.
+• With the next sentence prediction (NSP) head
+of BERT, we construct two high-quality multi-
+intent SLU datasets, i.e., MultiATIS and Mul-
+tiSNIPS, which are comprised of 20,000 and
+50,000 samples, respectively.
+• Experimental results show that our proposed
+GEMIS achieves new state-of-the-art results
+on two public datasets, MixATIS and MixS-
+NIPS, and also on our constructed datasets,
+MultiATIS and MultiSNIPS. Especially, our
+analysis demonstrates that the superiority of
+GEMIS is more significant as the number of
+
+intents in one utterance increases.
+2
+Related Work
+2.1
+Intent Detection
+Intent detection task can be solved as a multi-label
+text classification problem. Before 2012, the ma-
+jor area is to construct features to represent the
+semantics and syntax of sentence. For example,
+González-Caro and Baeza-Yates (González-Caro
+and Baeza-Yates, 2011) proposed multi-faceted
+query intent prediction to enhance the SVM clas-
+sifier, Tür et al.(Tür et al., 2011) proposed that
+adding simplified sentence structure to the features
+of AdaBoost model could improve the classifica-
+tion performance. After the rise of deep learn-
+ing, researchers investigated neural-network-based
+classification models such as convolutional neural
+networks (Xu and Sarikaya, 2013) and recurrent
+neural networks (Ravuri and Stolcke, 2015), which
+refresh the state-of-the-art. Beyond the internal
+information (syntax and word context), external
+information was also applied in recent work. Fir-
+daus et al. (Firdaus et al., 2018) and Qiu et al.
+(Qiu et al., 2018) proposed to use pre-trained em-
+bedding such as Word2Vec(Mikolov et al., 2013)
+and GloVe(Pennington et al., 2014) to improve the
+representation of utterance in GRU(Chung et al.,
+2014) and LSTM(Sak et al., 2014). Capsule net-
+works (Xia et al., 2018) with zero-shot learning
+was proposed to discriminate the emerging intents
+via knowledge transfer.
+2.2
+Slot Filling
+Slot filling is another critical task in natural lan-
+guage understanding, which attaches a slot label
+to each token in an utterance. As shown in Fig-
+ure 1, we use the BIO tagging scheme to describe
+the slot labels in an utterance. Classical methods to
+solve sequence labelling task is using probabilistic
+graphical models including generative models and
+discriminative models. Generative models (Wang
+et al., 2005) like hidden Markov model (HMMs)
+is to estimate the joint probability distribution of
+tokens and slot labels in an utterance, while dis-
+criminative models such as conditional random
+fields (CRFs)(Zheng et al., 2015) is to learn the
+slot label condition probabilities when given the
+observed sequence. Similar to the intent detection
+task, deep learning also revolutionized this field.
+Yu et al.(Yu et al., 2010) first combined the deep
+learning and CRF, proposing deep structured CRF.
+Mesnil et al.(Mesnil et al., 2013) and Kurata et
+al. (Kurata et al., 2016) proposed to use recurrent
+neural networks and LSTM for spoken language
+understanding. Gong et al. (Gong et al., 2019)
+proposed to jointly learn segment tagging, named
+entity tagging and slot filling, reaching state-of-the-
+art performance in slot filling at that time. Recently,
+Zhang et al. (Zhang et al., 2020) used deep time
+delay neural network from speech recognition that
+also performs state-of-the-art results in slot filling.
+2.3
+Joint Intent Detection and Slot Filling
+Considering the close connection between intent
+detection and slot filling, the mass of research re-
+cently focus on the joint models. Qin et al.(Qin
+et al., 2021c) summarized existing methods of joint
+models as implicit joint modeling and explicit joint
+modeling. Implicit joint modeling shares the model
+encoder to capture the shared knowledge of utter-
+ance without explicit interaction between two sub-
+tasks. Zhang et al.(Zhang and Wang, 2016) pro-
+posed to use recurrent neural networks to learn the
+shared feature for intents and slots, Liu et al.(Liu
+and Lane, 2016a,b) introduced bi-directional recur-
+rent neural networks with attention and language
+modeling to improve the performance of joint in-
+tent detection and slot filling. Explicit joint model-
+ing is to construct an interaction module between
+intents and slots, aiming to control the interaction
+process before performing prediction for specific
+tasks. Goo et al.(Goo et al., 2018) proposed the
+slot-gated mechanism in attention-based recurrent
+neural networks, realizing the conditional interac-
+tion between intents and slots. Qin et al.(Qin et al.,
+2019) go a step further, using a stack-propagation
+framework to directly guide the slot filling with in-
+tent detection result, improving the state-of-the-art.
+E et al.(E et al., 2019) proposed a bi-directional
+interrelated mechanism in the SF-ID network to
+enhance the two sub-tasks in one joint model. Qin
+et al.(Qin et al., 2021a) proposed a co-interactive
+transformer to strengthen the relationship between
+the two sub-tasks.
+3
+Model
+Our proposed GEnerative framework for Multi-
+Intent SLU (GEMIS) is introduced in this sec-
+tion.
+We give an overview of the framework
+in Section 3.1, which is based on a pre-trained
+sequence-to-sequence language model introduced
+in Section 3.2. Further, we introduce the proposed
+
+attention-over-attention (AoA) structure in Sec-
+tion 3.3, which is integrated in the decoder layers.
+At last, Section 3.4 describes the training process.
+3.1
+Joint Multiple Intent Detection and Slot
+Filling as a Sequence-to-Sequence Task
+Sequence-to-sequence paradigm has shown great
+power and universality in various structured pre-
+diction tasks in language domain(Sun et al., 2021),
+which motivates us to solve joint multiple intent
+detection and slot filling as a sequence-to-sequence
+task. In contrast to prior works that perform intent
+detection and slot filling with separate task-specific
+decoders, we adopt a shared decoder to generate
+intents and slots conditioned on the input utter-
+ance. Figure 2 illustrates the difference between
+our method and previous state-of-the-art models.
+As shown in the figure, previous models usually
+employ an interaction module to capture the rela-
+tionship between the two sub-tasks. Though the
+interaction modules are reasonable, they are trained
+from scratch and therefore can not fully enjoy the
+advantage of pre-trained parameters of language
+models such as BERT(Devlin et al., 2019). In
+our proposed generative framework, we adopt a
+pre-trained sequence-to-sequence language model,
+BART(Lewis et al., 2020), to solve the joint task
+without additional randomly initialized parameters.
+As shown in Figure 2, we reformulate the intent
+and slot labels into a structured sequence. By this,
+the auto-regressive decoder can generate slot labels
+conditioning on the predicted intents, and therefore
+captures the interaction between intent detection
+and slot filling.
+In
+particular,
+the
+intent
+and
+slot
+labels
+are reformulated as follows.
+Assume an
+utterance
+with
+N
+tokens
+is
+denoted
+as
+X
+=
+⟨x1, x2, ..., xN⟩, the target sequence is
+its intent labels followed by its slot triplets, i.e.,
+⟨Intent1, ..., Intentp, s1, e1, Slot1, ..., sq, eq, Slotq⟩,
+where si and ei are the start and end positions of
+the i-th slot, p and q are the number of intents and
+slots, respectively. Take the example from Figure 2,
+for the input utterance "Please play Got The Time
+and add My Hands to travelling playlist", the target
+sequence is ⟨PlayMusic, AddToPlaylist, 2, 5,
+track, 7, 9, entity_name, 10, 11, playlist⟩,
+where PlayMusic and AddToPlaylist are the
+intents expressed in the utterance, (2, 5, track),
+(7, 9, entity_name), (10, 11, playlist) are the
+slot triplets.
+Take slot track for an instance,
+Shared Encoder
+(e.g. LSTM, BERT, etc.)
+Interaction Module
+(e.g. Graph Neural Networks)
+Intent Decoder
+Slot Decoder
+Please play Got The Time and add My 
+Hands to travelling playlist
+PlayMusic
+AddToPlaylist
+O O B-track I-track I-track
+O O B-entity_name …
+<PlayMusic> <AddToPlaylist> 2 5 [track] 
+7 9 [entity_name] 10 11 [playlist]
+Shared Encoder
+(e.g. BART Encoder)
+Shared Decoder
+(e.g. BART Decoder)
+Please play Got The Time and add My 
+Hands to travelling playlist
+Pointer Network
+(a) Previous SOTA architecture
+(b) Our generative architecture
+Figure 2: Comparison between previous state-of-the-art
+architectures (a) and our proposed generative architec-
+ture (b). In contrast to previous architectures where an
+interaction module is needed and trained from scratch,
+our architecture reformulates the two sub-tasks as a uni-
+fied sequence-to-sequence task and uses a pre-trained
+shared decoder to capture the relationship between the
+two sub-tasks.
+the filled value is indicated by the start position
+(i.e., 2) and the end position (i.e., 5), which
+represents "Got The Time" in the utterance. Such
+a sequence-to-sequence paradigm can cope with
+variable number of intents and slots, and therefore
+is suitable for joint multiple intent detection and
+slot filling.
+As a common practice for sequence-to-sequence
+tasks, we can use an auto-regressive decoder to
+generate the target sequence conditioning on the
+input sequence, i.e.,
+P(Y |X) =
+M
+Y
+t=1
+P(yt|X, Y<t),
+(1)
+where X is the input sequence, Y is the target se-
+quence, M is the number of tokens in the target
+sequence. Such a formulation can enjoy the power
+of pre-trained sequence-to-sequence language mod-
+els such as BART(Lewis et al., 2020), which will
+be introduced in the following subsection.
+3.2
+The Modified BART Model
+The BART model(Lewis et al., 2020) follows the
+standard Transformer architecture(Vaswani et al.,
+2017), which consists a bidirectional encoder and
+a left-to-right decoder. BART is pre-trained with
+a denoising objective, which is to reconstruct the
+corrupted texts. We slightly modify BART to adapt
+to the joint task. Figure 3(a) gives an overall ar-
+chitecture of our modified BART, where we add a
+pointer network on the top and the cross-attention
+
+Input
+Self-Attention
+Feed-Forward
+Add & Norm
+Add & Norm
+Embedding
+N×
+Self-Attention
+Attention-over-
+Attention (AOA)
+Add & Norm
+Add & Norm
+Embedding
+Feed-Forward
+Add & Norm
+N×
+Linear & Softmax
+Output
+INPUT
+Please play Got The Time and add My Hands
+to travelling playlist
+OUTPUT
+<PlayMusic> <AddToPlaylist> 2 5 [track] 7 9 
+[entity_name] 10 11 [playlist]
+Shifted Output
+𝑲
+𝒒
+dot product
+… 
+𝑽
+… 
+Please
+play
+Got
+The
+Time
+and
+add
+My
+Hands
+To
+travelling
+playlist
+Previous Cross-Attention Maps at Layer 𝒍−𝟏
+Self-Attention Map at Layer 𝒍
+weighted 
+sum
+⊗
+Encoder Representations
+linear
+⊗
+⊕
+⊗
+weighted sum
+Input
+Output
+(a) Overall architecture
+(b) Attention-over-Attention
+Pointer Network
+Figure 3: Illustration of the overall architecture and the attention-over-attention (AoA) structure.
+layers are replaced with our proposed attention-
+over-attention layers. As shown in the figure, the
+architecture contains an encoder and a decoder.
+Encoder encodes the input utterance X into vec-
+tors He, i.e.,
+He = Encoder(X),
+(2)
+where He ∈RN×d, N is the number of tokens
+in the input sequence, d is the dimension of hid-
+den vectors. The encoder is comprised of multiple
+Transformer encoder layers, each of which con-
+tains a self-attention sublayer and a feed-forward
+sublayer.
+Decoder is to predict the intent or slot prob-
+ability distribution P(yt|X, Y<t) for each step t.
+A special token <SOS> to indicate the start of the
+sequence is introduced as y0. The generation pro-
+cess will stop when predicting another special to-
+ken <EOS>, which means the end of the sequence.
+Considering that the tokens in the target sequence,
+which contains not only intent and slot categories
+but also position indices, are not in the BART vo-
+cabulary, it is necessary to make them readable
+to BART. For intent and slot categories such as
+PlayMusic and track, we directly add them to the
+BART vocabulary and initialize their embeddings
+as the mean vectors of their subwords. For posi-
+tion indicies, we employ a pointer network(Vinyals
+et al., 2015) to perform prediction over the input
+sequence. For the inputs of the decoder, we convert
+the previously predicted position indices to the cor-
+responding wordpieces. Take the target sequence
+in Figure 3 as an example, the predicted position
+2 will be converted to its corresponding wordpiece
+"Got" to be fed into the decoder. Denote the con-
+verted target sequence as ˆY = ⟨ˆy1, . . . , ˆyM⟩, the
+decoder can be formulated as follows,
+hd
+t = Decoder(H; ˆY<t),
+(3)
+ˆyt = PointerNet(hd
+t , He, EX),
+(4)
+where hd
+t is the decoding hidden state of the t-th to-
+ken, EX are the token embeddings of the input X,
+PointerNet is the pointer network. Similar to the en-
+coder, the decoder is consisting of multiple decoder
+layers, each of which contains a self-attention sub-
+layer, an attention-over-attention sublayer, and a
+feed-forward sublayer.
+Pointer network is on the top of the decoder
+to perform position prediction over the input se-
+quence, which is then fused with the prediction
+over intent and slot categories. The workflow of
+the pointer network is as follows,
+ˆHe = α · MLP(He) + (1 −α) · EX,
+(5)
+ˆyt = Softmax([ ˆHe ⊗hd
+t ; W ⊗hd
+t ]),
+(6)
+ˆyt = arg max ˆyt,
+(7)
+where EX ∈RN×d are the token embeddings of
+the input X, α is a hyper-parameter to balance
+the token embeddings and the encoder represen-
+tations, ⊗represents dot product, [·; ·] represents
+concatenating tensors, W ∈RL×d are the predic-
+tion weights over the intent and slot categories,
+L is the total number of categories of intents and
+slots. As shown in the equations above, the encoder
+representations and the token embeddings are first
+fused into ˆHe, to be perform position predictions,
+
+which are then concatenated with intent and slot
+category predictions. The final prediction of the
+pointer network is performed over N + L possible
+labels.
+3.3
+Attention-over-Attention
+In original BART, the interaction between intent
+detection and slot filling is captured in the self-
+attention sublayers in the decoder. That is, the
+hidden states for generating current intents or slots
+can attend to previously generated intents and slots.
+Hence, such style of interaction lies in the branch
+of single flow interaction(Goo et al., 2018; Qin
+et al., 2019), which allows slot filling to condi-
+tion on the intent predictions. Further, to enhance
+the interaction between the two sub-tasks, we go
+beyond self-attention and design an attention-over-
+attention (AoA) sublayer to replace the original
+cross-attention sublayer in the BART decoder.
+The general idea of AoA is to utilize the infor-
+mative attention patterns of previously predicted
+intents and slots to guide the generation at current
+step. In particular, we manage to reuse the his-
+torical cross attention maps (CAMs) of previously
+generated labels. At generation step t, the CAM of
+the l-th layer is calculated as follows,
+CAMl
+t = Softmax(Ql
+tK⊤
+enc),
+(8)
+where Ql
+t ∈Rt×d is the query from the decoder,
+Kenc ∈RN×d is the key from the encoder, and N
+is the number of tokens in the input sequence. In-
+tuitively, the CAMs can contain rich label-specific
+information that could help the prediction of re-
+lated labels. Take the example from Figure 3, the
+CAM of the intent PlayMusic can highlight related
+tokens in the input sequence, e.g., "play Got The
+Time", which would be helpful when generating
+position indices of the slot track.
+In particular, at step t and layer l, we weigh
+CAMl
+t
+∈
+Rt×N with the self-attention maps
+(SAMs), which is
+SAMl
+t = Softmax(ql
+tKl⊤
+dec),
+(9)
+where ql
+t ∈Rd is the query vector at step t and
+layer l, Kl
+dec ∈Rt×d is the key matrix at the l-th
+decoder layer. Then we use the SAMl
+t to weigh
+the CAMl
+t to obtain a new cross-attention map that
+captures some prior knowledge encoded in the pre-
+vious attention patterns. Since such an attention
+map is obtained by a self-attention map multiplied
+over a cross-attention map, we name this structure
+attention-over-attention (AoA). The obtained atten-
+tion map is then combined with the original cross-
+attention map to calculate the final cross-attention
+map, i.e.,
+Al
+t = Softmax(ql
+tK⊤
+enc + SAMl
+t · CAMl
+t
+√dk
+), (10)
+where Al
+t ∈RN, SAMl
+t ∈Rt, CAMl
+t ∈Rt×N,
+and dk is the dimension of keys for each head. For
+simplicity, we neglect the calculation of multi-head
+attention in the equations above. The calculation
+of the AoA structure is depicted in Figure 3(b).
+3.4
+Training and Inference
+By converting the joint multiple intent detection
+and slot filling task into a sequence-to-sequence
+task, we can use the conventional loss for training
+sequence-to-sequence models, i.e.,
+L = −1
+M
+M
+X
+m=1
+N+L
+X
+i=1
+ym,i log ˆym,i,
+(11)
+where ym is the m-th one-hot ground truth in the
+target sequence and ˆym is the corresponding model
+prediction. During training, we use teacher forcing
+following common practice in training sequence-to-
+sequence models. During inference, we use greedy
+generation instead of beam search. Our pilot exper-
+iments show that beam search brings little effect
+on model performance, which is also found in (Yan
+et al., 2021).
+4
+Multi-Intent Dataset Construction
+In real-world scenarios, users often express mul-
+tiple intents in one utterance (Gangadharaiah and
+Narayanaswamy, 2019). However, most examples
+in widely used datasets such as ATIS(Hemphill
+et al., 1990) and SNIPS(Coucke et al., 2018) only
+contain one intent. Qin et al.(Qin et al., 2020) con-
+structed two synthetic multi-intent datasets, Mix-
+ATIS and MixSNIPS, by randomly concatenating
+single-intent utterances in ATIS and SNIPS with
+some conjunctions such as "and then". Neverthe-
+less, these randomly concatenated samples can be
+unnatural. For example, an utterance in MixATIS
+"Add Sara Hickman to my targeted list and then
+will the weather be stormy in aurora" contains two
+intents that are almost impossible to co-occur in
+real-world scenarios. More examples can be found
+in Table 1. In real-world task-oriented dialogue sys-
+tems, users tend to experss multiple semantically
+
+related or progressive intents in the same utterance.
+To that end, we utilize the next sentence prediction
+(NSP) head of BERT(Devlin et al., 2019) to con-
+struct more realistic multi-intent datasets, namely
+MultiATIS and MultiSNIPS.
+Algorithm 1: Multi-Intent Dataset Con-
+struction
+Input: Single-intent dataset Us, coherence
+threshold τ
+Output: Multi-intent dataset Um
+1: Initialize multi-intent dataset Um ←∅
+2: for us in Us do
+3:
+Sample the number of intents n ∈{1, 2, 3}
+with probabilities (0.3, 0.5, 0.2)
+4:
+Initialize the multi-intent utterance
+um ←us
+5:
+while n > 1 do
+6:
+Filter out utterances in Us with intents
+appeared in um and obtain a candidate
+set ˆUs
+7:
+for uc in ˆUs do
+8:
+if PNSP(um||uc) > τ then
+9:
+um ←um||uc
+▷|| means
+concatenation
+10:
+break
+11:
+end if
+12:
+end for
+13:
+n ←n −1
+14:
+end while
+15:
+Put um into Um
+16: end for
+17: return Multi-intent dataset Um
+4.1
+Constructing Multi-Intent Datasets with
+Next Sentence Prediction
+Next Sentence Prediction (NSP) is a pre-training
+task used in BERT(Devlin et al., 2019), which is
+to predict whether a pair of sentences are succes-
+sive sentences. In particular, BERT chooses two
+sentences A and B for each pre-training example,
+meanwhile 50% of the time B is the actual next
+sentence of A and 50% of the time B is a random
+sentence sampled from the corpus. During pre-
+training, BERT is trained to predict whether B is
+the next sentence of A. After pre-training, the NSP
+head of BERT can effectively capture the relation-
+ship of a pair of sentences, and therefore is suitable
+for scoring the coherence of two utterances, which
+can be regarded as a criterion of concatenating.
+Hence, we define the coherence score Pcoh of two
+utterances based on the next sentence probability,
+Pcoh = PNSP(uA||uB),
+(12)
+where uA and uB are two utterances, || means
+string concatenation. If the coherence score ex-
+ceeds a pre-defined threshold, we can concate-
+nate the two utterances as a single utterance (e.g.,
+"uA and then uB") that expresses multiple related
+intents. If the coherence score does not exceed
+the threshold, we filter out the concatenated sam-
+ple. By iteratively performing such concatenate-
+evaluate process, we can also generate samples that
+have more than two intents. Algorithm 1 shows
+the detalied process of constructing multi-intent
+datasets. Similar with Qin et al. (Qin et al., 2020),
+we construct our synthetic datasets MultiATIS and
+MultiSNIPS based on ATIS and SNIPS.
+4.2
+Comparison with MixATIS and
+MixSNIPS
+Rather than randomly concatenating single-intent
+utterances like MixATIS and MixSNIPS, we con-
+struct our MultiATIS and MultiSNIPS by concate-
+nating single-intent utterances that have high coher-
+ence scores, which is expected to result in higher
+quality of datasets. However, comprehensively
+evaluating the quality of datasets can be labor-
+intensive.
+In this section, we verify the quality of our con-
+structed MultiATIS and MultiSNIPS by counting
+the frequency of intent co-occurrence.
+Ideally,
+users tend to express related or progressive intents
+in the same utterance, so a high-quality multi-intent
+dataset is expected to show high co-occurrence
+of related intents. Figure 4 shows the distribu-
+tions of intent co-occurrence for MixSNIPS (Qin
+et al., 2020) and our constructed MultiSNIPS. As
+shown in Figure 4(a), the distribution of intent
+co-occurrence for each intent in MixSNIPS is a
+uniform distribution since it does not consider the
+relationship among these intents when concatenat-
+ing utterances. In our constructed MultiSNIPS,
+as shown in Figure 4(b), the distribution of in-
+tent co-occurrence for each intent is quite differ-
+ent. For example, the intent AddToPlaylist tends
+to appear with PlayMusic in the same utterance;
+the intent BoookRestaurant tends to appear with
+GetWeather in the same utterance. Thus, the intent
+co-occurrence of MultiSNIPS is more intuitive and
+realistic than that of MixSNIPS. Some examples of
+our constructed datasets can be found in Table 1.
+
+Table 1: Examples in MixATIS/MixSNIPS and MultiATIS/MultiSNIPS.
+Examples in MixATIS and MixSNIPS
+I need a ticket from Nashville to Seattle and then flight numbers from Chicago to Seattle on continental.
+Tell me about the m80 aircraft, list airports and then how many Canadian airlines flights use aircraft dh8.
+List California airports, which flights travel from Cleveland to Indianapolis on April fifth and also what are the fairs for ground transportation in Denver?
+Add Sara Hickman to my targeted list and then will the weather be stormy in aurora.
+This track should go into my playlist called this is Beethoven , I want to eat mezes at the pub for 1 at four pm and find me haunted castle.
+Examples in MultiATIS and MultiSNIPS
+I would like to fly from Boston to Baltimore and show me ground transportation in Boston and in Baltimore.
+Which flights on us air go from Orlando to Cleveland and I’m trying to find the flight number from a flight from Orlando to Cleveland on us air and it arrives around 10 pm.
+List the number of flights leaving Boston for Dallas fort worth before 9 am in the morning and then what is the earliest flight from Boston to Dallas fort worth leaving august eighth?
+I want to eat in 19 hours at NM and what will the weather be in NM in 1 minute.
+I’d like for you to put this artist to my evening commute playlist and then play my playlist tgif on iTunes.
+AddToPlaylist
+BookRestaurant
+GetWeather
+PlayMusic
+RateBook
+SearchCreativeWork
+SearchScreeningEvent
+AddToPlaylist
+BookRestaurant
+GetWeather
+PlayMusic
+RateBook
+SearchCreativeWork
+SearchScreeningEvent
+0
+0.17
+0.16
+0.16
+0.17
+0.17
+0.17
+0.17
+0
+0.17
+0.16
+0.16
+0.17
+0.17
+0.16
+0.17
+0
+0.16
+0.17
+0.16
+0.17
+0.17
+0.17
+0.17
+0
+0.16
+0.17
+0.17
+0.17
+0.17
+0.17
+0.16
+0
+0.17
+0.17
+0.17
+0.17
+0.16
+0.16
+0.17
+0
+0.17
+0.16
+0.17
+0.16
+0.16
+0.17
+0.17
+0
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+0.14
+0.16
+AddToPlaylist
+BookRestaurant
+GetWeather
+PlayMusic
+RateBook
+SearchCreativeWork
+SearchScreeningEvent
+AddToPlaylist
+BookRestaurant
+GetWeather
+PlayMusic
+RateBook
+SearchCreativeWork
+SearchScreeningEvent
+0
+0.03
+0.02
+0.66
+0.07
+0.19
+0.02
+0.04
+0
+0.55
+0.03
+0.04
+0.08
+0.27
+0.02
+0.49
+0
+0.01
+0.02
+0.07
+0.38
+0.56
+0.02
+0.01
+0
+0.05
+0.31
+0.06
+0.3
+0.11
+0.06
+0.24
+0
+0.2
+0.09
+0.18
+0.06
+0.06
+0.34
+0.05
+0
+0.31
+0.03
+0.21
+0.33
+0.07
+0.02
+0.34
+0
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+Figure 4: Intent co-occurrence of MixSNIPS and MultiSNIPS. (a) In MixSNIPS (Qin et al., 2020), the distribution of
+intent co-occurrence for each intent is a uniform distribution because MixSNIPS randomly concatenates single-intent
+utterances regardless of the relationship between the intents. (b) In our constructed MultiSNIPS, related intents,
+e.g., AddToPlaylist and PlayMusic, BookRestaurant and GetWeather, frequently appear in the same utterance,
+which is more realistic.
+5
+Experiments
+5.1
+Datasets and metrics
+We first conduct experiments on two public multi-
+intent datasets, MixATIS and MixSNIPS, which is
+constructed by Qin et al.(Qin et al., 2020). Mix-
+ATIS is created by randomly concatenating sam-
+ples in the ATIS dataset(Hemphill et al., 1990).
+MixSNIPS is constructed based on the SNIPS
+dataset(Coucke et al., 2018) in the same way of
+MixATIS. For MixATIS and MixSNIPS, the num-
+ber of intents in one utterance ranges from 1 to
+3, with proportions of [0.3, 0.5, 0.2], respectively.
+We use the clean versions of MixATIS and MixS-
+NIPS that remove the repeated utterances in orig-
+inal datasets1. Besides, we also conduct experi-
+ments on our constructed MultiATIS and Multi-
+SNIPS (Section 4), which are also based on ATIS
+1https://github.com/LooperXX/AGIF
+and SNIPS but consider the relationship between
+the utterances to be concatenated. The statistics of
+our evaluated datasets are shown in Table 2.
+Table 2: Statistics of our used datasets.
+Dataset
+MixATIS
+MultiATIS
+MixSNIPS
+MultiSNIPS
+Train
+13162
+18000
+39776
+45000
+Dev
+759
+1000
+2198
+2500
+Test
+828
+1000
+2199
+2500
+To evaluate the system performance on joint mul-
+tiple intent detection and slot filling, we follow the
+metrics used in prior work(Goo et al., 2018; Qin
+et al., 2019). We evaluate the performance of slot
+filling using F1 score, intent detection using ac-
+curacy, the sentence-level semantic frame parsing
+using overall accuracy, which represents all of the
+intents and slots in the utterance are correctly pre-
+dicted. We use the overall accuracy as the primary
+
+metric to perform model selection.
+5.2
+Implementation details
+The
+parameters
+and
+configuration
+of
+our
+sequence-to-sequence model are initialized with
+BARTLARGE(Lewis et al., 2020). Our implementa-
+tion is based on Hugginface’s Transformers (Wolf
+et al., 2019). We use AdamW(Loshchilov and
+Hutter, 2019) with batch size of 16 to optimize our
+model for 30 epochs on each dataset. We perform
+hyper-parameter search with learning rate in {1e-5,
+2e-5, 3e-5} and select the models that achieve the
+best performance on the development sets. All the
+experiments are conducted with a single NVIDIA
+Tesla V100 SXM2.
+5.3
+Baselines
+We compare our proposed model with existing
+state-of-the-art multi-intent SLU baselines:
+• Slot-Gated(Goo et al., 2018), a slot-gated
+model that explicitly utilizes the correlation
+of intent detection and slot filling.
+• SF-ID(E et al., 2019), which directly connects
+intent detection and slot filling, promoting
+each other mutually.
+• Stack-Propagation(Qin et al., 2019), a joint
+model that performs token-level intent detec-
+tion and captures intent semantic knowledge
+and alleviates error propagation from intent.
+• Joint Multiple ID-SF(Gangadharaiah and
+Narayanaswamy, 2019), an attention-based
+neural network that performs joint multiple
+intent detection and slot filling at token-level.
+• AGIF(Qin et al., 2020), an adaptive graph-
+interaction framework to realize the fine-
+grained integration between multiple intent
+detection and slot filling.
+• GL-GIN(Qin
+et
+al.,
+2021b),
+a
+non-
+autoregressive model with local slot-aware
+and global intent-slot graph interaction layer
+to alleviate the uncoordinated slots problem
+and enhance the interaction of intent detection
+and slot filling.
+5.4
+Main results
+Experimental results on MixATIS and MixSNIPS
+are shown in Table 3.
+Our proposed GEMIS
+achieves new state-of-the-art performances in terms
+of the considered metrics on the two datasets. On
+both MixATIS and MixSNIPS, GL-GIN achieves
+the best overall accuracy (43.5% and 75.4%)
+among the baseline models. In contrast, our pro-
+posed GEMIS achieves 53.4% and 87.4% overall
+accuracy, outperforming all of the baseline models
+by a large margin. Without AoA, GEMIS can still
+achieve 52.7% and 85.1% overall accuracy, demon-
+strating the superior performance of the genera-
+tive framework. By replacing conventional cross-
+attention with our proposed AoA structure, we ob-
+tain improvement on all the metrics (slot F1, intent
+accuracy, and overall accuracy) on the both datasets.
+Especially, AoA achieves 2.3% absolute points im-
+provement of overall accuracy on MixSNIPS over
+vanilla GEMIS.
+Experimental results on our constructed Mul-
+tiATIS and MultiSNIPS are shown in Table 4.
+We compare our proposed GEMIS with two
+state-of-the-art models, namely AGIF(Qin et al.,
+2020) and GL-GIN(Qin et al., 2021b). Similar
+with experimental results on MixATIS and MixS-
+NIPS, GEMIS significantly outperforms previous
+methods on MultiATIS and MultiSNIPS. GEMIS
+achieves 11.3% and 17.6% absolute point improve-
+ment on overall accuracy of MultiATIS and Multi-
+SNIPS, respectively. The improvements over pre-
+vious state-of-the-art models on MultiATIS and
+MultiSNIPS are more significant than that on Mix-
+ATIS and MixSNIPS, indicating that GEMIS is
+more favorable in real-world dialogue scenarios.
+5.5
+On number of intents
+Each sample in our evaluated multi-intent datasets
+contains variable number of intents (range from 1 to
+3). In this section we evaluate model performance
+on sub-datasets with different number of intents.
+In particular, we divide each test set into three sub-
+sets by the number of intents and evaluate GL-GIN,
+AGIF, and our proposed GEMIS on each sub-set.
+Figure 5 shows the trend of overall accuracy as the
+number of intents increases. We observe that:
+• On single-intent samples, both GEMIS and
+the baseline models achieve competitive per-
+formance, in which case GEMIS only slightly
+outperforms its counterparts.
+• As the number of intents increases, the overall
+accuracy of both GEMIS and baseline models
+decreases, which demonstrates the challenge
+of multiple intents. Nevertheless, in contrast
+to baseline methods, GEMIS shows less per-
+formance degradation on multi-intent samples.
+In other words, the performance superiority
+
+Table 3: Main results on MixATIS and MixSNIPS.
+Models
+MixATIS
+MixSNIPS
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+Slot-Gated(Goo et al., 2018)
+87.7
+63.9
+35.5
+87.9
+94.6
+55.4
+SF-ID(E et al., 2019)
+87.4
+66.2
+34.9
+90.6
+95.0
+59.9
+Stack-Propagation
+87.8
+72.1
+40.1
+94.2
+96.0
+72.9
+Joint Multiple ID-SF
+84.6
+73.4
+36.1
+90.6
+95.1
+62.9
+AGIF(Qin et al., 2020)
+86.7
+74.4
+40.8
+94.2
+95.1
+74.2
+GL-GIN(Qin et al., 2021b)
+88.3
+76.3
+43.5
+94.9
+95.6
+75.4
+GEMIS w/o AoA
+88.6
+80.0
+52.7
+96.7
+97.3
+85.1
+GEMIS
+89.2
+81.4
+53.4
+97.4
+98.1
+87.4
+Table 4: Main results on our constructed MultiATIS and MultiSNIPS.
+Models
+MultiATIS
+MultiSNIPS
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+AGIF(Qin et al., 2020)
+94.3
+68.2
+60.2
+94.3
+95.9
+73.9
+GL-GIN(Qin et al., 2021b)
+94.8
+74.5
+58.3
+93.6
+64.9
+53.0
+GEMIS w/o AoA
+95.2
+93.4
+71.1
+97.6
+98.5
+88.9
+GEMIS
+95.4
+94.1
+71.5
+98.1
+98.8
+91.5
+of GEMIS over baseline models is enlarged
+as the number of intents increases.
+• The performance degradation of GEMIS on
+MultiATIS and MultiSNIPS is not as signifi-
+cant as it is on MixATIS and MixSNIPS, in-
+dicating that the relationship of the different
+intents can be well exploited by GEMIS to
+help prediction. However, in MixATIS and
+MixSNIPS, one utterance often carries unre-
+lated intents, resulting in severe performance
+degradation.
+5.6
+Effect of model size
+Typically, the size of the pre-trained language
+model has an important effect on the performance.
+In previous experiments, our evaluated GEMIS is
+built on BARTLARGE by default. In this section, to
+study the effect of model size on the four datasets,
+we also conduct experiments using BARTBASE. We
+denote GEMIS using BARTLARGE (BARTBASE)
+as GEMISLARGE (GEMISBASE).
+As shown in
+Table 5, GEMISLARGE outperforms GEMISBASE,
+which confirms the increasing power of large-
+scale pre-trained language models. Nevertheless,
+GEMISBASE still outperforms previous baseline
+models by a large margin, indicating the effective-
+ness of our generative framework for joint multiple
+intent detection and slot filling.
+6
+Conclusion
+In this work, we formulate the joint multiple intent
+detection and slot filling as a unified sequence-to-
+sequence task, and use a pre-trained sequence-to-
+sequence model, BART (Lewis et al., 2020), to
+handle it. In particular, we build a pointer network
+on the top of BART to perform joint prediction
+over positions of input sequences and categories
+of intents and slots. Besides, we propose a novel
+attention-over-attention (AoA) module to replace
+the cross-attention in the BART decoder, which
+incorporates an inductive bias to capture the inter-
+action between the intent detection and slot filling.
+In addition, we propose to leverage the next sen-
+tence prediction (NSP) head of BERT (Devlin et al.,
+2019) to construct two new multi-intent datasets
+based on single-intent datasets. Experimental re-
+sults demonstrate that our proposed model achieves
+state-of-the-art performance on two public multi-
+intent datasets and our constructed multi-intent
+datasets.
+References
+Xinlei Chen and Kaiming He. 2021. Exploring simple
+siamese representation learning. 2021 IEEE/CVF
+Conference on Computer Vision and Pattern Recog-
+nition (CVPR), pages 15745–15753.
+Junyoung Chung, Çaglar Gülçehre, KyungHyun Cho,
+and Yoshua Bengio. 2014. Empirical evaluation of
+gated recurrent neural networks on sequence model-
+ing. CoRR, abs/1412.3555.
+Alice Coucke, Alaa Saade, Adrien Ball, Théodore
+Bluche, Alexandre Caulier, David Leroy, Clément
+Doumouro, Thibault Gisselbrecht, Francesco Calt-
+agirone, Thibaut Lavril, Maël Primet, and Joseph
+
+1
+2
+3
+Number of Intents
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Overall Accuracy
+MixATIS
+GEMIS
+GL-GIN
+AGIF
+1
+2
+3
+Number of Intents
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+Overall Accuracy
+MixSNIPS
+GEMIS
+GL-GIN
+AGIF
+1
+2
+3
+Number of Intents
+0.1
+0.3
+0.5
+0.7
+0.9
+Overall Accuracy
+MultiATIS
+GEMIS
+GL-GIN
+AGIF
+1
+2
+3
+Number of Intents
+0.1
+0.3
+0.5
+0.7
+0.9
+Overall Accuracy
+MultiSNIPS
+GEMIS
+GL-GIN
+AGIF
+Figure 5: Overall accuracy with different number of intents. Our proposed GEMIS significantly outperforms
+previous state-of-the-art methods as the number of intents increases.
+Table 5: Results of GEMIS using BARTBASE and BARTLARGE.
+Dataset
+GEMISBASE
+GEMISLARGE
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+Slot (F1)
+Intent (Acc)
+Overall (Acc)
+MixATIS
+88.5
+81.3
+52.5
+89.2
+81.4
+53.4
+MixSNIPS
+96.6
+96.5
+84.3
+97.4
+98.1
+87.4
+MultiATIS
+94.9
+94.7
+69.5
+95.4
+94.1
+71.5
+MultiSNIPS
+97.3
+98.3
+88.2
+98.1
+98.8
+91.5
+Dureau. 2018. Snips voice platform: an embedded
+spoken language understanding system for private-
+by-design voice interfaces. CoRR, abs/1805.10190.
+Ganqu Cui, Lifan Yuan, Ning Ding, Guanming Yao,
+Wei Zhu, Yuan Ni, Guotong Xie, Zhiyuan Liu, and
+Maosong Sun. 2023. Ultrafeedback: Boosting lan-
+guage models with high-quality feedback. ArXiv,
+abs/2310.01377.
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019. BERT: pre-training of
+deep bidirectional transformers for language under-
+standing. In Proceedings of the 2019 Conference of
+the North American Chapter of the Association for
+Computational Linguistics: Human Language Tech-
+nologies, NAACL-HLT 2019, Minneapolis, MN, USA,
+June 2-7, 2019, Volume 1 (Long and Short Papers),
+pages 4171–4186. Association for Computational
+Linguistics.
+Ning Ding, Yujia Qin, Guang Yang, Fu Wei, Zong-
+han Yang, Yusheng Su, Shengding Hu, Yulin Chen,
+Chi-Min Chan, Weize Chen, Jing Yi, Weilin Zhao,
+Xiaozhi Wang, Zhiyuan Liu, Haitao Zheng, Jianfei
+Chen, Yang Liu, Jie Tang, Juan Li, and Maosong
+Sun. 2022. Delta tuning: A comprehensive study of
+parameter efficient methods for pre-trained language
+models. ArXiv, abs/2203.06904.
+Haihong E, Peiqing Niu, Zhongfu Chen, and Meina
+Song. 2019.
+A novel bi-directional interrelated
+model for joint intent detection and slot filling. In
+Proceedings of the 57th Conference of the Associa-
+tion for Computational Linguistics, ACL 2019, Flo-
+rence, Italy, July 28- August 2, 2019, Volume 1: Long
+Papers, pages 5467–5471. Association for Computa-
+tional Linguistics.
+Mauajama Firdaus, Shobhit Bhatnagar, Asif Ekbal, and
+Pushpak Bhattacharyya. 2018. Intent detection for
+spoken language understanding using a deep ensem-
+ble model. In PRICAI 2018: Trends in Artificial Intel-
+ligence - 15th Pacific Rim International Conference
+on Artificial Intelligence, Nanjing, China, August
+28-31, 2018, Proceedings, Part I, volume 11012 of
+Lecture Notes in Computer Science, pages 629–642.
+Springer.
+
+Rashmi
+Gangadharaiah
+and
+Balakrishnan
+Narayanaswamy. 2019.
+Joint multiple intent
+detection and slot labeling for goal-oriented dialog.
+In Proceedings of the 2019 Conference of the North
+American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies,
+NAACL-HLT 2019, Minneapolis, MN, USA, June
+2-7, 2019, Volume 1 (Long and Short Papers), pages
+564–569. Association for Computational Linguistics.
+Xiangxiang Gao, Wei Zhu, Jiasheng Gao, and Congrui
+Yin. 2023. F-pabee: Flexible-patience-based early
+exiting for single-label and multi-label text classifica-
+tion tasks. In ICASSP 2023-2023 IEEE International
+Conference on Acoustics, Speech and Signal Process-
+ing (ICASSP), pages 1–5. IEEE.
+Yu Gong, Xusheng Luo, Yu Zhu, Wenwu Ou, Zhao Li,
+Muhua Zhu, Kenny Q. Zhu, Lu Duan, and Xi Chen.
+2019. Deep cascade multi-task learning for slot fill-
+ing in online shopping assistant. In The Thirty-Third
+AAAI Conference on Artificial Intelligence, AAAI
+2019, The Thirty-First Innovative Applications of
+Artificial Intelligence Conference, IAAI 2019, The
+Ninth AAAI Symposium on Educational Advances in
+Artificial Intelligence, EAAI 2019, Honolulu, Hawaii,
+USA, January 27 - February 1, 2019, pages 6465–
+6472. AAAI Press.
+Cristina N. González-Caro and Ricardo Baeza-Yates.
+2011. A multi-faceted approach to query intent clas-
+sification. In String Processing and Information Re-
+trieval, 18th International Symposium, SPIRE 2011,
+Pisa, Italy, October 17-21, 2011. Proceedings, vol-
+ume 7024 of Lecture Notes in Computer Science,
+pages 368–379. Springer.
+Chih-Wen Goo, Guang Gao, Yun-Kai Hsu, Chih-Li Huo,
+Tsung-Chieh Chen, Keng-Wei Hsu, and Yun-Nung
+Chen. 2018. Slot-gated modeling for joint slot filling
+and intent prediction. In Proceedings of the 2018
+Conference of the North American Chapter of the
+Association for Computational Linguistics: Human
+Language Technologies, NAACL-HLT, New Orleans,
+Louisiana, USA, June 1-6, 2018, Volume 2 (Short Pa-
+pers), pages 753–757. Association for Computational
+Linguistics.
+Beliz Gunel, Jingfei Du, Alexis Conneau, and Ves
+Stoyanov. 2021.
+Supervised contrastive learning
+for pre-trained language model fine-tuning. ArXiv,
+abs/2011.01403.
+Zhao Guo, Yuan Ni, Keqiang Wang, Wei Zhu, and
+Guotong Xie. 2021. Global attention decoder for
+Chinese spelling error correction. In Findings of
+the Association for Computational Linguistics: ACL-
+IJCNLP 2021, pages 1419–1428, Online. Association
+for Computational Linguistics.
+Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and
+Ross B. Girshick. 2020. Momentum contrast for
+unsupervised visual representation learning. 2020
+IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition (CVPR), pages 9726–9735.
+Charles T. Hemphill, John J. Godfrey, and George R.
+Doddington. 1990. The ATIS spoken language sys-
+tems pilot corpus. In Speech and Natural Language:
+Proceedings of a Workshop Held at Hidden Valley,
+Pennsylvania, USA, June 24-27, 1990. Morgan Kauf-
+mann.
+William Hersh. 2024. Search still matters: informa-
+tion retrieval in the era of generative ai. Journal of
+the American Medical Informatics Association, page
+ocae014.
+Niraj Kumar and Bhiman Kumar Baghel. 2021. Smart
+stacking of deep learning models for granular joint
+intent-slot extraction for multi-intent SLU. IEEE
+Access, 9:97582–97590.
+Gakuto Kurata, Bing Xiang, Bowen Zhou, and Mo Yu.
+2016. Leveraging sentence-level information with
+encoder LSTM for semantic slot filling. In Proceed-
+ings of the 2016 Conference on Empirical Methods in
+Natural Language Processing, EMNLP 2016, Austin,
+Texas, USA, November 1-4, 2016, pages 2077–2083.
+The Association for Computational Linguistics.
+Hui Yi Leong, Yuheng Li, Yuqing Wu, Wenwen Ouyang,
+Wei Zhu, Jiechao Gao, and Wei Han. 2025. Amas:
+Adaptively determining communication topology for
+llm-based multi-agent system. In Proceedings of the
+2025 Conference on Empirical Methods in Natural
+Language Processing: Industry Track, pages 2061–
+2070.
+Mike Lewis, Yinhan Liu, Naman Goyal, Marjan
+Ghazvininejad, Abdelrahman Mohamed, Omer Levy,
+Veselin Stoyanov, and Luke Zettlemoyer. 2020.
+BART: denoising sequence-to-sequence pre-training
+for natural language generation, translation, and com-
+prehension. In Proceedings of the 58th Annual Meet-
+ing of the Association for Computational Linguistics,
+ACL 2020, Online, July 5-10, 2020, pages 7871–7880.
+Association for Computational Linguistics.
+Changliang Li, Liang Li, and Ji Qi. 2018.
+A self-
+attentive model with gate mechanism for spoken lan-
+guage understanding. In Proceedings of the 2018
+Conference on Empirical Methods in Natural Lan-
+guage Processing, Brussels, Belgium, October 31 -
+November 4, 2018, pages 3824–3833. Association
+for Computational Linguistics.
+Xiaonan Li, Kai Lv, Hang Yan, Tianya Lin, Wei Zhu,
+Yuan Ni, Guo Tong Xie, Xiaoling Wang, and Xipeng
+Qiu. 2023. Unified demonstration retriever for in-
+context learning. ArXiv, abs/2305.04320.
+Xiepeng Li, Zhexi Zhang, Wei Zhu, Zheng Li, Yuan
+Ni, Peng Gao, Junchi Yan, and Guotong Xie. 2019a.
+Pingan smart health and SJTU at COIN - shared task:
+utilizing pre-trained language models and common-
+sense knowledge in machine reading tasks. In Pro-
+ceedings of the First Workshop on Commonsense
+Inference in Natural Language Processing, pages
+93–98, Hong Kong, China. Association for Computa-
+tional Linguistics.
+
+Xiepeng Li, Zhexi Zhang, Wei Zhu, Zheng Li, Yuan Ni,
+Peng Gao, Junchi Yan, and Guotong Xie. 2019b. Pin-
+gan smart health and sjtu at coin-shared task: utiliz-
+ing pre-trained language models and common-sense
+knowledge in machine reading tasks. In Proceedings
+of the First Workshop on Commonsense Inference in
+Natural Language Processing, pages 93–98.
+Yuheng Li, Jiechao Gao, Wei Han, Wenwen Ouyang,
+Wei Zhu, and Hui Yi Leong. 2025. Ft-mdt: Extract-
+ing decision trees from medical texts via a novel
+low-rank adaptation method. In Proceedings of the
+2025 Conference on Empirical Methods in Natural
+Language Processing: Industry Track, pages 65–76.
+Bing Liu and Ian R. Lane. 2016a. Attention-based recur-
+rent neural network models for joint intent detection
+and slot filling. In Interspeech 2016, 17th Annual
+Conference of the International Speech Communica-
+tion Association, San Francisco, CA, USA, September
+8-12, 2016, pages 685–689. ISCA.
+Bing Liu and Ian R. Lane. 2016b. Joint online spoken
+language understanding and language modeling with
+recurrent neural networks. In Proceedings of the
+SIGDIAL 2016 Conference, The 17th Annual Meet-
+ing of the Special Interest Group on Discourse and
+Dialogue, 13-15 September 2016, Los Angeles, CA,
+USA, pages 22–30. The Association for Computer
+Linguistics.
+Haokun Liu, Derek Tam, Mohammed Muqeeth, Jay Mo-
+hta, Tenghao Huang, Mohit Bansal, and Colin Raffel.
+2022. Few-shot parameter-efficient fine-tuning is
+better and cheaper than in-context learning. ArXiv,
+abs/2205.05638.
+Zequan Liu, Jiawen Lyn, Wei Zhu, Xing Tian, and
+Yvette Graham. 2024. Alora: Allocating low-rank
+adaptation for fine-tuning large language models.
+arXiv preprint arXiv:2403.16187.
+Zequan Liu, Yi Zhao, Ming Tan, Wei Zhu, and
+Aaron Xuxiang Tian. 2025. Para: Parameter-efficient
+fine-tuning with prompt aware representation adjust-
+ment. arXiv preprint arXiv:2502.01033.
+Ilya Loshchilov and Frank Hutter. 2019. Decoupled
+weight decay regularization. In 7th International
+Conference on Learning Representations, ICLR 2019,
+New Orleans, LA, USA, May 6-9, 2019. OpenRe-
+view.net.
+Grégoire Mesnil, Xiaodong He, Li Deng, and Yoshua
+Bengio. 2013.
+Investigation of recurrent-neural-
+network architectures and learning methods for spo-
+ken language understanding.
+In INTERSPEECH
+2013, 14th Annual Conference of the International
+Speech Communication Association, Lyon, France,
+August 25-29, 2013, pages 3771–3775. ISCA.
+Tomás Mikolov, Kai Chen, Greg Corrado, and Jeffrey
+Dean. 2013. Efficient estimation of word representa-
+tions in vector space. In 1st International Conference
+on Learning Representations, ICLR 2013, Scottsdale,
+Arizona, USA, May 2-4, 2013, Workshop Track Pro-
+ceedings.
+Jeffrey Pennington, Richard Socher, and Christopher D.
+Manning. 2014. Glove: Global vectors for word
+representation. In Proceedings of the 2014 Confer-
+ence on Empirical Methods in Natural Language Pro-
+cessing, EMNLP 2014, October 25-29, 2014, Doha,
+Qatar, A meeting of SIGDAT, a Special Interest Group
+of the ACL, pages 1532–1543. ACL.
+Chengwei Qin, Aston Zhang, Zhuosheng Zhang, Jiaao
+Chen, Michihiro Yasunaga, and Diyi Yang. 2023. Is
+chatgpt a general-purpose natural language process-
+ing task solver? arXiv preprint arXiv:2302.06476.
+Libo Qin, Wanxiang Che, Yangming Li, Haoyang Wen,
+and Ting Liu. 2019. A stack-propagation framework
+with token-level intent detection for spoken language
+understanding. In Proceedings of the 2019 Confer-
+ence on Empirical Methods in Natural Language Pro-
+cessing and the 9th International Joint Conference
+on Natural Language Processing, EMNLP-IJCNLP
+2019, Hong Kong, China, November 3-7, 2019, pages
+2078–2087. Association for Computational Linguis-
+tics.
+Libo Qin, Tailu Liu, Wanxiang Che, Bingbing Kang,
+Sendong Zhao, and Ting Liu. 2021a. A co-interactive
+transformer for joint slot filling and intent detec-
+tion. In IEEE International Conference on Acous-
+tics, Speech and Signal Processing, ICASSP 2021,
+Toronto, ON, Canada, June 6-11, 2021, pages 8193–
+8197. IEEE.
+Libo Qin, Fuxuan Wei, Tianbao Xie, Xiao Xu, Wanx-
+iang Che, and Ting Liu. 2021b. GL-GIN: fast and
+accurate non-autoregressive model for joint multi-
+ple intent detection and slot filling. In Proceedings
+of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International
+Joint Conference on Natural Language Processing,
+ACL/IJCNLP 2021, (Volume 1: Long Papers), Virtual
+Event, August 1-6, 2021, pages 178–188. Association
+for Computational Linguistics.
+Libo Qin, Tianbao Xie, Wanxiang Che, and Ting Liu.
+2021c. A survey on spoken language understanding:
+Recent advances and new frontiers. In Proceedings
+of the Thirtieth International Joint Conference on
+Artificial Intelligence, IJCAI 2021, Virtual Event /
+Montreal, Canada, 19-27 August 2021, pages 4577–
+4584. ijcai.org.
+Libo Qin, Xiao Xu, Wanxiang Che, and Ting Liu. 2020.
+Towards fine-grained transfer: An adaptive graph-
+interactive framework for joint multiple intent detec-
+tion and slot filling. In Findings of the Association
+for Computational Linguistics: EMNLP 2020, Online
+Event, 16-20 November 2020, volume EMNLP 2020
+of Findings of ACL, pages 1807–1816. Association
+for Computational Linguistics.
+Lirong Qiu, Yida Chen, Haoran Jia, and Zhen Zhang.
+2018. Query intent recognition based on multi-class
+features. IEEE Access, 6:52195–52204.
+
+Suman V. Ravuri and Andreas Stolcke. 2015. Recurrent
+neural network and LSTM models for lexical utter-
+ance classification. In INTERSPEECH 2015, 16th
+Annual Conference of the International Speech Com-
+munication Association, Dresden, Germany, Septem-
+ber 6-10, 2015, pages 135–139. ISCA.
+Christian Raymond and Giuseppe Riccardi. 2007. Gen-
+erative and discriminative algorithms for spoken lan-
+guage understanding. In INTERSPEECH 2007, 8th
+Annual Conference of the International Speech Com-
+munication Association, Antwerp, Belgium, August
+27-31, 2007, pages 1605–1608. ISCA.
+Hasim Sak, Andrew W. Senior, and Françoise Beaufays.
+2014. Long short-term memory recurrent neural net-
+work architectures for large scale acoustic modeling.
+In INTERSPEECH 2014, 15th Annual Conference of
+the International Speech Communication Association,
+Singapore, September 14-18, 2014, pages 338–342.
+ISCA.
+Haixia Sun, Jin Xiao, Wei Zhu, Yilong He, Sheng
+Zhang, Xiaowei Xu, Li Hou, Jiao Li, Yuan Ni, and
+Guo Tong Xie. 2020. Medical knowledge graph to
+enhance fraud, waste, and abuse detection on claim
+data: Model development and performance evalua-
+tion. JMIR Medical Informatics, 8.
+Tianxiang Sun, Xiangyang Liu, Xipeng Qiu, and Xuan-
+jing Huang. 2021. Paradigm shift in natural language
+processing. CoRR, abs/2109.12575.
+Tianxiang Sun, Xiangyang Liu, Wei Zhu, Zhichao Geng,
+Lingling Wu, Yilong He, Yuan Ni, Guotong Xie, Xu-
+anjing Huang, and Xipeng Qiu. 2022.
+A simple
+hash-based early exiting approach for language un-
+derstanding and generation. In Findings of the As-
+sociation for Computational Linguistics: ACL 2022,
+pages 2409–2421, Dublin, Ireland. Association for
+Computational Linguistics.
+Aaron Tian, Yi Zhao, Congrui Yin, Wei Zhu, Xing Tian,
+and Yi Ge. 2024a. Fanlora: Fantastic loras and where
+to find them in large language model fine-tuning. In
+Proceedings of the 2024 Conference on Empirical
+Methods in Natural Language Processing: Industry
+Track, pages 515–528.
+Shubo Tian, Qiao Jin, Lana Yeganova, Po-Ting Lai,
+Qingqing Zhu, Xiuying Chen, Yifan Yang, Qingyu
+Chen, Won Kim, Donald C Comeau, et al. 2024b.
+Opportunities and challenges for chatgpt and large
+language models in biomedicine and health. Brief-
+ings in Bioinformatics, 25(1):bbad493.
+Yonglong Tian, Dilip Krishnan, and Phillip Isola. 2020.
+Contrastive multiview coding. In ECCV.
+Gokhan Tur and Renato De Mori. 2011. Spoken lan-
+guage understanding: Systems for extracting seman-
+tic information from speech. John Wiley & Sons.
+Gökhan Tür, Dilek Hakkani-Tür, Larry P. Heck, and
+Sarangarajan Parthasarathy. 2011. Sentence simpli-
+fication for spoken language understanding. In Pro-
+ceedings of the IEEE International Conference on
+Acoustics, Speech, and Signal Processing, ICASSP
+2011, May 22-27, 2011, Prague Congress Center,
+Prague, Czech Republic, pages 5628–5631. IEEE.
+Aäron van den Oord, Yazhe Li, and Oriol Vinyals. 2018.
+Representation learning with contrastive predictive
+coding. ArXiv, abs/1807.03748.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In Advances in Neural Information Pro-
+cessing Systems 30: Annual Conference on Neural
+Information Processing Systems 2017, December 4-9,
+2017, Long Beach, CA, USA, pages 5998–6008.
+Oriol Vinyals, Meire Fortunato, and Navdeep Jaitly.
+2015.
+Pointer networks.
+In Advances in Neural
+Information Processing Systems 28: Annual Confer-
+ence on Neural Information Processing Systems 2015,
+December 7-12, 2015, Montreal, Quebec, Canada,
+pages 2692–2700.
+Li Wang, Wei Zhu, Sihang Jiang, Sheng Zhang, Ke-
+qiang Wang, Yuan Ni, Guo Tong Xie, and Yanghua
+Xiao. 2020. Mining infrequent high-quality phrases
+from domain-specific corpora. Proceedings of the
+29th ACM International Conference on Information
+& Knowledge Management.
+Pengfei Wang, Huanran Zheng, Silong Dai, Wenjing
+Yue, Wei Zhu, and Xiaoling Wang. 2024. Ts-tcd:
+Triplet-level cross-modal distillation for time-series
+forecasting using large language models.
+arXiv
+preprint arXiv:2409.14978.
+Pengfei Wang, Huanran Zheng, Qi’ao Xu, Silong Dai,
+Yiqiao Wang, Wenjing Yue, Wei Zhu, Tianwen Qian,
+and Liang Zhao. 2025. Ts-htfa: Advancing time-
+series forecasting via hierarchical text-free alignment
+with large language models. Symmetry, 17(3):401.
+Xuwu Wang, Lihan Chen, Wei Zhu, Yuan Ni, Guo Tong
+Xie, Deqing Yang, and Yanghua Xiao. 2023. Multi-
+task entity linking with supervision from a taxon-
+omy. Knowledge and Information Systems, 65:4335
+– 4358.
+Ye-Yi Wang, Li Deng, and Alex Acero. 2005. Spoken
+language understanding. IEEE Signal Processing
+Magazine, 22(5):16–31.
+Wei Zhu Wenjing Yue and Xiaoling Wang. 2023.
+Tcmeb:
+Performance evaluation of large lan-
+guage models based on traditional chinese medicine
+benchmarks.
+https://github.com/ywjawmw/
+ShenNong-TCM-Evaluation-BenchMark.
+Thomas Wolf, Lysandre Debut, Victor Sanh, Julien
+Chaumond, Clement Delangue, Anthony Moi, Pier-
+ric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz,
+and Jamie Brew. 2019. Huggingface’s transformers:
+State-of-the-art natural language processing. CoRR,
+abs/1910.03771.
+
+Zhirong Wu, Yuanjun Xiong, Stella X. Yu, and Dahua
+Lin. 2018. Unsupervised feature learning via non-
+parametric instance discrimination. 2018 IEEE/CVF
+Conference on Computer Vision and Pattern Recog-
+nition, pages 3733–3742.
+Congying Xia, Chenwei Zhang, Xiaohui Yan, Yi Chang,
+and Philip S. Yu. 2018. Zero-shot user intent de-
+tection via capsule neural networks.
+In Proceed-
+ings of the 2018 Conference on Empirical Methods
+in Natural Language Processing, Brussels, Belgium,
+October 31 - November 4, 2018, pages 3090–3099.
+Association for Computational Linguistics.
+Tianfang Xie, Tianjing Li, Wei Zhu, Wei Han, and
+Yi Zhao. 2024.
+Pedro: Parameter-efficient fine-
+tuning with prompt dependent representation modifi-
+cation. arXiv preprint arXiv:2409.17834.
+Yi Xin, Siqi Luo, Haodi Zhou, Junlong Du, Xiao-
+hong Liu, Yue Fan, Qing Li, and Yuntao Du. 2024.
+Parameter-efficient fine-tuning for pre-trained vision
+models: A survey. ArXiv, abs/2402.02242.
+Lingling Xu, Haoran Xie, Si-Zhao Joe Qin, Xiaohui
+Tao, and Fu Lee Wang. 2023. Parameter-efficient
+fine-tuning methods for pretrained language mod-
+els:
+A critical review and assessment.
+ArXiv,
+abs/2312.12148.
+Puyang Xu and Ruhi Sarikaya. 2013. Convolutional
+neural network based triangular CRF for joint intent
+detection and slot filling. In 2013 IEEE Workshop on
+Automatic Speech Recognition and Understanding,
+Olomouc, Czech Republic, December 8-12, 2013,
+pages 78–83. IEEE.
+Hang Yan, Tao Gui, Junqi Dai, Qipeng Guo, Zheng
+Zhang, and Xipeng Qiu. 2021. A unified generative
+framework for various NER subtasks. In Proceed-
+ings of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International
+Joint Conference on Natural Language Processing,
+ACL/IJCNLP 2021, (Volume 1: Long Papers), Virtual
+Event, August 1-6, 2021, pages 5808–5822. Associa-
+tion for Computational Linguistics.
+Ellen Yi-Ge, Jiechao Gao, Wei Han, and Wei Zhu.
+2024.
+Drum: Learning demonstration retriever
+for large multi-modal models.
+arXiv preprint
+arXiv:2412.07619.
+Huiming Yin, Kun Wang, Ruyu Yang, Yanfang Tan,
+Qiang Li, Wei Zhu, and Suzi Sung. 2024. A ma-
+chine learning model for predicting acute exacerba-
+tion of in-home chronic obstructive pulmonary dis-
+ease patients. Computer Methods and Programs in
+Biomedicine, 246:108005.
+Dong Yu, Shizhen Wang, and Li Deng. 2010. Sequential
+labeling using deep-structured conditional random
+fields. IEEE J. Sel. Top. Signal Process., 4(6):965–
+973.
+Wenjing Yue, Xiaoling Wang, Wei Zhu, Ming Guan,
+Huanran Zheng, Pengfei Wang, Changzhi Sun, and
+Xin Ma. 2024.
+Tcmbench:
+A comprehensive
+benchmark for evaluating large language models
+in traditional chinese medicine.
+arXiv preprint
+arXiv:2406.01126.
+Jingfan Zhang, Yi Zhao, Dan Chen, Xing Tian, Huanran
+Zheng, and Wei Zhu. 2024. Milora: Efficient mixture
+of low-rank adaptation for large language models
+fine-tuning. arXiv preprint arXiv:2410.18035.
+Jingfang Zhang, Ming Tan, Pengyu Dai, and Wei-Guo
+Zhu. 2023a.
+Leco: Improving early exiting via
+learned exits and comparison-based exiting mech-
+anism. In Annual Meeting of the Association for
+Computational Linguistics.
+Juyuan Zhang, Jiechao Gao, Wenwen Ouyang, Wei Zhu,
+and Hui Yi Leong. 2025a. Time-llama: Adapting
+large language models for time series modeling via
+dynamic low-rank adaptation. In Proceedings of the
+63rd Annual Meeting of the Association for Com-
+putational Linguistics (Volume 4: Student Research
+Workshop), pages 1145–1157.
+Juyuan Zhang, Wei Zhu, and Jiechao Gao. 2025b.
+Adapting large language models for time series
+modeling via a novel parameter-efficient adaptation
+method. arXiv preprint arXiv:2502.13725.
+Xiaodong Zhang and Houfeng Wang. 2016. A joint
+model of intent determination and slot filling for spo-
+ken language understanding. In Proceedings of the
+Twenty-Fifth International Joint Conference on Artifi-
+cial Intelligence, IJCAI 2016, New York, NY, USA, 9-
+15 July 2016, pages 2993–2999. IJCAI/AAAI Press.
+Xinpeng Zhang, Ming Tan, Jingfan Zhang, and Wei
+Zhu. 2023b. Nag-ner: a unified non-autoregressive
+generation framework for various ner tasks. In An-
+nual Meeting of the Association for Computational
+Linguistics.
+Yuming Zhang, Xiangxiang Gao, Wei Zhu, and Xiaol-
+ing Wang. 2023c. Fastner: Speeding up inferences
+for named entity recognition tasks. In International
+Conference on Advanced Data Mining and Applica-
+tions.
+Yuming Zhang, Peng Wang, Ming Tan, and Wei-Guo
+Zhu. 2023d. Learned adapters are better than man-
+ually designed adapters. In Annual Meeting of the
+Association for Computational Linguistics.
+Zhen Zhang, Hao Huang, and Kai Wang. 2020. Using
+deep time delay neural network for slot filling in spo-
+ken language understanding. Symmetry, 12(6):993.
+Zhen Zhang, Wei Zhu, Jinfan Zhang, Peng Wang, Rize
+Jin, and Tae-Sun Chung. 2022. PCEE-BERT: Ac-
+celerating BERT inference via patient and confident
+early exiting. In Findings of the Association for Com-
+putational Linguistics: NAACL 2022, pages 327–338,
+Seattle, United States. Association for Computational
+Linguistics.
+
+Zhexi Zhang, Wei Zhu, Junchi Yan, Peng Gao, and
+Guowang Xie. 2021. Automatic student network
+search for knowledge distillation. 2020 25th Inter-
+national Conference on Pattern Recognition (ICPR),
+pages 2446–2453.
+Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang,
+Xiaolei Wang, Yupeng Hou, Yingqian Min, Beichen
+Zhang, Junjie Zhang, Zican Dong, Yifan Du, Chen
+Yang, Yushuo Chen, Zhipeng Chen, Jinhao Jiang,
+Ruiyang Ren, Yifan Li, Xinyu Tang, Zikang Liu,
+Peiyu Liu, Jian-Yun Nie, and Ji-Rong Wen. 2023. A
+Survey of Large Language Models. arXiv e-prints,
+page arXiv:2303.18223.
+Yi Zhao, Qinghua Yao, Wei Zhu, et al. 2026. Shaplora:
+Allocation of low-rank adaption on large language
+models via shapley value inspired importance estima-
+tion. arXiv preprint arXiv:2601.17921.
+Huanran Zheng, Wei Zhu, Pengfei Wang, and Xiaol-
+ing Wang. 2023. Candidate soups: Fusing candi-
+date results improves translation quality for non-
+autoregressive translation. ArXiv, abs/2301.11503.
+Huanran Zheng,
+Wei Zhu,
+and Xiaoling Wang.
+2024a. Chimera model of candidate soups for non-
+autoregressive translation. In International Confer-
+ence on Database Systems for Advanced Applica-
+tions, pages 416–425. Springer.
+Huanran Zheng, Wei Zhu, and Xiaoling Wang. 2024b.
+Nat4at: Using non-autoregressive translation makes
+autoregressive translation faster and better. In Pro-
+ceedings of the ACM on Web Conference 2024, pages
+4181–4192.
+Huanran Zheng, Wei Zhu, and Xiaoling Wang. 2024c.
+Sca: Selective compression attention for efficiently
+extending the context window of large language mod-
+els. In Findings of the Association for Computational
+Linguistics: EMNLP 2024, pages 6166–6178.
+Shuai Zheng, Sadeep Jayasumana, Bernardino Romera-
+Paredes, Vibhav Vineet, Zhizhong Su, Dalong Du,
+Chang Huang, and Philip H. S. Torr. 2015. Condi-
+tional random fields as recurrent neural networks. In
+2015 IEEE International Conference on Computer
+Vision, ICCV 2015, Santiago, Chile, December 7-13,
+2015, pages 1529–1537. IEEE Computer Society.
+Xiaofeng Zhou, Yuan Ni, Guotong Xie, Wei Zhu, Cai
+Chen, Tianhao Wang, and Zhigang Pan. 2019. Anal-
+ysis of the health information needs of diabetics in
+china. In MEDINFO 2019: Health and Wellbeing
+e-Networks for All, pages 487–491. IOS Press.
+Wei Zhu. 2021a. Autonlu: Architecture search for sen-
+tence and cross-sentence attention modeling with re-
+designed search space. In Natural Language Process-
+ing and Chinese Computing: 10th CCF International
+Conference, NLPCC 2021, Qingdao, China, October
+13–17, 2021, Proceedings, Part I 10, pages 155–168.
+Springer.
+Wei Zhu. 2021b. AutoRC: Improving BERT based rela-
+tion classification models via architecture search. In
+Proceedings of the 59th Annual Meeting of the Asso-
+ciation for Computational Linguistics and the 11th
+International Joint Conference on Natural Language
+Processing: Student Research Workshop, pages 33–
+43, Online. Association for Computational Linguis-
+tics.
+Wei Zhu. 2021c.
+H-bert: Enhancing chinese pre-
+trained models with attention to hownet. In ISWC
+(Posters/Demos/Industry).
+Wei Zhu. 2021d. Leebert: Learned early exit for bert
+with cross-level optimization. In Proceedings of the
+59th Annual Meeting of the Association for Compu-
+tational Linguistics and the 11th International Joint
+Conference on Natural Language Processing (Vol-
+ume 1: Long Papers), pages 2968–2980.
+Wei Zhu. 2021e. Mvp-bert: Multi-vocab pre-training
+for chinese bert. In Annual Meeting of the Associa-
+tion for Computational Linguistics.
+Wei Zhu. 2026a. Acl: Aligned contrastive learning
+improves bert and multi-exit bert fine-tuning. arXiv
+preprint arXiv:2602.03563.
+Wei Zhu. 2026b. Evaluating chatgpt on medical infor-
+mation extraction tasks: Performance, explainability
+and beyond. arXiv preprint arXiv:2601.21767.
+Wei Zhu. 2026c.
+Mrag:
+Benchmarking retrieval-
+augmented generation for bio-medicine.
+arXiv
+preprint arXiv:2601.16503.
+Wei Zhu. 2026d.
+Mrag:
+Benchmarking retrieval-
+augmented generation for bio-medicine.
+arXiv
+preprint arXiv:2601.21767.
+Wei Zhu. 2026e. Pursuing best industrial practices for
+retrieval-augmented generation in the medical do-
+main. arXiv preprint arXiv:2602.03368.
+Wei Zhu and Daniel Cheung. 2021. Lex-bert: Enhanc-
+ing bert based ner with lexicons.
+arXiv preprint
+arXiv:2101.00396.
+Wei Zhu, Yilong He, Ling Chai, Yuanchun Fan, Yuan Ni,
+Guo Tong Xie, and Xiaoling Wang. 2021a. paht_nlp
+@ mediqa 2021: Multi-grained query focused multi-
+answer summarization. In Workshop on Biomedical
+Natural Language Processing.
+Wei Zhu, Wenfeng Li, Xing Tian, Pengfei Wang, Xi-
+aoling Wang, Jin Chen, Yuanbin Wu, Yuan Ni, and
+Guotong Xie. 2024a. Text2mdt: extracting medical
+decision trees from medical texts. arXiv preprint
+arXiv:2401.02034.
+Wei Zhu, Wenfeng Li, Xiaoling Wang, Wendi Ji, Yuan-
+bin Wu, Jin Chen, Liang Chen, and Buzhou Tang.
+2023a. Extracting decision trees from medical texts:
+An overview of the text2dt track in chip2022. In
+Health Information Processing. Evaluation Track Pa-
+pers, pages 89–102, Singapore. Springer Nature Sin-
+gapore.
+
+Wei Zhu, Yuan Ni, Xiaoling Wang, and Guotong Xie.
+2021b. Discovering better model architectures for
+medical query understanding. In Proceedings of the
+2021 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies: Industry Papers, pages
+230–237, Online. Association for Computational Lin-
+guistics.
+Wei Zhu, Yuan Ni, Guo Tong Xie, Xiaofeng Zhou,
+and Cai Chen. 2019a. The dr-kgqa system for au-
+tomatically answering medication related questions
+in chinese. 2019 IEEE International Conference on
+Healthcare Informatics (ICHI), pages 1–6.
+Wei Zhu, Yuan Ni, Guotong Xie, Xiaofeng Zhou, and
+Cai Chen. 2019b. The dr-kgqa system for automati-
+cally answering medication related questions in chi-
+nese. In 2019 IEEE International Conference on
+Healthcare Informatics (ICHI), pages 1–6. IEEE.
+Wei Zhu and Ming Tan. 2023. SPT: Learning to se-
+lectively insert prompts for better prompt tuning.
+In Proceedings of the 2023 Conference on Empir-
+ical Methods in Natural Language Processing, pages
+11862–11878, Singapore. Association for Computa-
+tional Linguistics.
+Wei Zhu, Aaron Xuxiang Tian, Congrui Yin, Yuan
+Ni, Xiaoling Wang, and Guotong Xie. 2024b. Iapt:
+Instruction-aware prompt tuning for large language
+models. arXiv preprint arXiv:2405.18203.
+Wei Zhu, Peifeng Wang, Yuan Ni, Guo Tong Xie, and
+Xiaoling Wang. 2023b. Badge: Speeding up bert
+inference after deployment via block-wise bypasses
+and divergence-based early exiting. In Annual Meet-
+ing of the Association for Computational Linguistics.
+Wei Zhu, Peng Wang, Xiaoling Wang, Yuan Ni, and
+Guotong Xie. 2023c. Acf: aligned contrastive fine-
+tuning for language and vision tasks. In ICASSP
+2023-2023 IEEE International Conference on Acous-
+tics, Speech and Signal Processing (ICASSP), pages
+1–5. IEEE.
+Wei Zhu, Xiaoling Wang, Mosha Chen, and Buzhou
+Tang. 2023d. Overview of the promptcblue shared
+task in chip2023. ArXiv, abs/2312.17522.
+Wei Zhu, Xiaoling Wang, Yuan Ni, and Guotong Xie.
+2021c. Autotrans: Automating transformer design
+via reinforced architecture search. In Natural Lan-
+guage Processing and Chinese Computing, pages
+169–182, Cham. Springer International Publishing.
+Wei Zhu, Xiaoling Wang, Yuan Ni, and Guotong Xie.
+2021d. GAML-BERT: Improving BERT early exit-
+ing by gradient aligned mutual learning. In Proceed-
+ings of the 2021 Conference on Empirical Methods
+in Natural Language Processing, pages 3033–3044,
+Online and Punta Cana, Dominican Republic. Asso-
+ciation for Computational Linguistics.
+Wei Zhu, Xiaoling Wang, Huanran Zheng, Mosha Chen,
+and Buzhou Tang. 2023. PromptCBLUE: A Chinese
+Prompt Tuning Benchmark for the Medical Domain.
+arXiv e-prints, page arXiv:2310.14151.
+Wei Zhu, Xiaofeng Zhou, Keqiang Wang, Xun Luo,
+Xiepeng Li, Yuan Ni, and Guotong Xie. 2019c. Panlp
+at mediqa 2019: Pre-trained language models, trans-
+fer learning and knowledge distillation. In Proceed-
+ings of the 18th BioNLP Workshop and Shared Task,
+pages 380–388.
+Yuhui Zuo, Wei Zhu, and Guoyong GUET Cai. 2022.
+Continually detection, rapidly react: Unseen rumors
+detection based on continual prompt-tuning.
+In
+Proceedings of the 29th International Conference
+on Computational Linguistics, pages 3029–3041,
+Gyeongju, Republic of Korea. International Com-
+mittee on Computational Linguistics.

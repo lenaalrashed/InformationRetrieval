@@ -1,0 +1,2972 @@
+Can one size fit all?: Measuring Failure in Multi-Document Summarization
+Domain Transfer
+Alexandra DeLucia and Mark Dredze
+Center for Language and Speech Processing
+Johns Hopkins University
+{aadelucia,mdredze}@jhu.edu
+Abstract
+Abstractive multi-document summarization
+(MDS) is the task of automatically summariz-
+ing information in multiple documents, from
+news articles to conversations with multiple
+speakers.
+The training approaches for cur-
+rent MDS models can be grouped into four ap-
+proaches: end-to-end with special pre-training
+(“direct”), chunk-then-summarize, extract-then-
+summarize, and inference with GPT-style mod-
+els. In this work, we evaluate MDS models
+across training approaches, domains, and di-
+mensions (reference similarity, quality, and fac-
+tuality), to analyze how and why models trained
+on one domain can fail to summarize docu-
+ments from another (News, Science, and Con-
+versation) in the zero-shot domain transfer set-
+ting. We define domain-transfer “failure” as
+a decrease in factuality, higher deviation from
+the target, and a general decrease in summary
+quality. In addition to exploring domain trans-
+fer for MDS models, we critically examine the
+behavior of various automatic evaluation met-
+rics, including their inter-correlations and the
+performance of LLM-as-a-judge approaches,
+in these transfer settings.
+1
+Introduction
+Multi-document summarization (MDS) is an ex-
+tended task of summarization, where the goal is to
+represent the key ideas from multiple documents
+in a single new document or paragraph. Current
+MDS systems (models) are trained and evaluated
+on data from a single domain, such as news, but
+there have been no robust studies on how models
+trained on these domains transfer, or perform, on
+different domains. While the overarching goal of
+MDS models is to condense information, models
+trained on one type of summary (e.g., news) often
+fail to transfer successfully to other domains (e.g.,
+science) due to the unique nature of how summaries
+across different domains are written.
+Domain-Transfer Example
+Ground-Truth A couple of the responses
+to this post are either
+satirical or sarcastic. ...
+News-based
+Might you be a little nervous
+about playing a video game
+for free? you’re not alone.
+...
+Science-based @cite @cite have both
+mentioned that the reason for
+the lack of a sub is due to
+Microsoft’s refusal to allow
+sub-free games on Xbox. ...
+Figure 1: Excerpt generations two types of multi-
+document summarization models (SummN and Con-
+voSumm), trained on different datasets (Multi-News+
+and Multi-XScience), and both evaluated on a conver-
+sation summarization task (ConvoSumm-Reddit). The
+ROUGE-LSum of the generations to the Ground-Truth
+are 0.13 and 0.12, respectively, and UniEval-Relevancy
+scores of 0.78 and 0.3, respectively.
+Recent MDS system surveys compare different
+models either on a single domain (e.g., conversa-
+tion/dialogue (Zhang et al., 2021; Mullick et al.,
+2024) or focus on MDS corpora biases (Wolhandler
+et al., 2022a; Dey et al., 2020). While Zhang et al.
+(2021) found that retrieve-then-summarize models
+are best according to ROUGE, Mullick et al. (2024)
+did not find a clear pattern in model performance
+across a variety of metrics. Few works explore the
+zero-shot domain transfer ability of MDS systems,
+but Zhang et al. (2021) did find that pre-training
+on news datasets can transfer well to conversation.
+However, Fabbri et al. (2021a) a zero-shot model
+from news to conversation had lower performance
+than on conversation alone.
+An example is in Figure 1, where two models,
+one trained on Multi-News+ (Choi et al., 2024; Fab-
+bri et al., 2019) and the other on Multi-XScience
+(Lu et al., 2020) are evaluated on a sample from
+arXiv:2503.15768v2 [cs.CL] 30 Jul 2025
+
+ConvoSumm-Reddit (Fabbri et al., 2021a). The
+difference in writing style is immediately appar-
+ent: the news-trained model has a blogger-like
+style, the science-trained model inserts citations,
+and both are completely different from the ex-
+pected style of the Reddit conversation summary.
+The difference in style is also captured by simi-
+larity metrics ROUGE (Lin, 2004) and UniEval-
+Relevance (Zhong et al., 2022)–while the ROUGE
+scores, which capture word overlap, only differ by
+a few points, the semantic-based, trained Relevance
+scores vary widely.
+While ConvoSumm-Reddit summaries are writ-
+ten to represent multiple points of view, other ways
+to represent online discourse is through an over-
+all topic-based summary or detailed utterance-by-
+utterance summary. All types would “condense”
+the same conversation but at varying levels of gran-
+ularity, style, and word choice. Similarly, sum-
+maries for other domains also vary in incorporated
+information and style.
+Figure 1 highlights the three axes of domain
+transfer for MDS systems: 1) domain of the train-
+ing data, 2) type of model, and 3) evaluation met-
+rics. While there are popular benchmarks for sum-
+marization, including the notable SummEval (Fab-
+bri et al., 2021b), few are for multi-document sum-
+marization, and most datasets focus on the news
+domain.
+We choose three high-quality human-
+written datasets to represent News (Multi-News
+(Fabbri et al., 2019)), Science (Multi-XScience
+(Lu et al., 2020)), and Conversation (ConvoSumm-
+Reddit (Fabbri et al., 2021a)) domains.
+Regarding the type of model, while there are
+many models for summarization, the types of mod-
+els for abstract multi-document summarization
+are end-to-end with special pre-training (“direct”),
+chunk-then-summarize, extract-then-summarize,
+and direct with large language model (LLM) de-
+coders. There are many models within each type
+(Mullick et al., 2024) and for greater in-depth analy-
+ses, we choose one, strong representative model of
+each kind. We focus on neural, transformer models
+and omit extractive comparisons due to previous
+work demonstrating the stronger performance of
+neural models (Fabbri et al., 2021b).
+Similarly, while there are many evaluation met-
+rics for generated text, which each have their
+strengths and weaknesses (He et al., 2023; von
+Däniken et al., 2022; Fabbri et al., 2021b), we
+group commonly used metrics into three categories:
+1) similarity to summary reference (ground-truth),
+2) overall quality (e.g., fluency), and 3) grounded-
+ness in the source documents. We find that:1
+• LLMs (e.g., Llama 3.1) demonstrate robust
+quality and factuality in domain transfer with
+minimal performance change, and their out-
+puts are less influenced by few-shot exam-
+ples compared to the stronger stylistic bias
+observed in smaller, fine-tuned models;
+• While no single source domain (News, Sci-
+ence, or Conversation) proves universally su-
+perior for general transfer, the stylistic nature
+of summaries learned during training signifi-
+cantly impacts cross-domain performance;
+• Lexical similarity metrics (e.g., ROUGE,
+MoverScore) show weak correlation with se-
+mantic relevance (e.g., UniEval-Relevance)
+and other quality dimensions;
+• Source-dependent non-reference metrics face
+scaling challenges moving from single-
+document summarization to multi-;
+• Trained multi-dimensional evaluators exhibit
+intra- and inter-correlations with each other
+and within dimensions;
+• The number of source documents surprisingly
+shows weak and inconsistent correlations with
+factuality and coherence metrics in domain-
+transfer settings across different model archi-
+tectures;
+2
+Domain Transfer of Multi-Document
+Summarization
+While there is in-depth work on analyzing sum-
+marization and MDS systems and corpora (Zhang
+et al., 2021; Mullick et al., 2024; Fabbri et al.,
+2021b; Dey et al., 2020), there is no systematic
+evaluation of how each model type performs when
+applied out-of-domain and how the automatic eval-
+uation metrics can over- or under-represent model
+performance. We draw from existing models and
+tools to explore the intricacies of domain transfer
+with MDS models and their evaluation methods.
+The main dimensions of our analyses are domain
+(i.e., dataset), model type, and evaluation metrics.
+See Figure 2 for summary.
+2.1
+Summarization Dataset Domains
+News is a common domain for summarization
+datasets (Hermann et al., 2015; Fabbri et al.,
+2019; Jiang and Dreyer, 2024; Choi et al., 2024;
+1All code and models will be released upon publication.
+
+Figure 2: Summary of all the domains (datasets), multi-document summarization (MDS) model types, and evaluation
+metrics analyzed in this work. The “Relevance” metric is in both Ground-Truth Similarity and Overall Quality
+groups because the UniEval (UE) and Prometheus (P) definitions are different (see Figures 10 and 11 for details).
+Gholipour Ghalandari et al., 2020; Litkowski and
+Road, 2004) There are datasets for other domains
+like scientific articles (Lu et al., 2020) and con-
+versation (Fabbri et al., 2021a; Gliwa et al., 2019;
+Chen et al., 2021). We select a single, high-quality
+multi-document dataset with human-written sum-
+maries to represent each domain. All documents
+and summaries are in English.
+Conversation.
+We use the Reddit subset of the re-
+leased data from ConvoSumm (Fabbri et al., 2021a)
+(ConvoSumm-Reddit). Since the summaries were
+written by paid crowdsource workers, this dataset
+is significantly smaller than the news and science
+datasets, with only 500 entries.
+News.
+Multi-News+ (Choi et al., 2024), an auto-
+matically cleaned version of Multi-News (Fabbri
+et al., 2019), is a news-based MDS dataset fea-
+turing human-written summaries from Newser.2.
+Multi-News+ contains 44,668/5,585/5,584 entries
+in the train/validation/test sets.
+Science.
+Representing the Science domain, the
+entries in Multi-XScience pair a related works sec-
+tion of an academic paper with 1) its abstract and
+2newser.com
+2) the abstracts from cited work. The 40,528 pa-
+pers were collected from arXiv and the Microsoft
+Academic Graph (MAG) (Lu et al., 2020). Since
+the paper dump was from pre-2020, we assume all
+writing on arXiv is human-generated.
+2.2
+Multi-Document Summarization Models
+Current high-performing fine-tuned abstractive
+summarization methods can be grouped into four
+approaches: summary-specific pre-training (Zhang
+et al., 2020a; Xiao et al., 2022; Peper et al.,
+2024), incremental summarization (“chunk-then-
+summarize”) (Zhang et al., 2022), extracting claims
+or viewpoints (“extract-then-summarize”) (Fabbri
+et al., 2021a; Ernst et al., 2022; Ouyang et al.,
+2023), and fine-tuning or few-shot summarization
+with large pre-trained models (Mullick et al., 2024).
+These groupings have been used in prior work (Mul-
+lick et al., 2024).
+Modified Pretraining.
+Prior work has shown
+that fine-tuning a language model specifically pre-
+trained with summary-focused objectives improves
+downstream performance over non-specialized
+models (Xiao et al., 2022; Zhang et al., 2020a;
+Peper et al., 2024).
+Zhang et al. (2020a) first
+introduced this concept of summary-specific pre-
+
+training, and it was later augmented to the
+multi-document case (Xiao et al., 2022; Peper
+et al., 2024). We select PRIMERA to represent
+this group. PRIMERA is Longformer-Encoder-
+Decoder model initialized from BART-Large (Belt-
+agy et al., 2020) and pre-trained with an Entity
+Pyramid objective on a large news corpora (Xiao
+et al., 2022). While PELMS (Peper et al., 2024)
+adjusts the pre-training strategy to improve upon
+PRIMERA, we omit comparison to this model be-
+cause it also uses a data filtering step, which over-
+laps with the extract-then-summarize approach.
+Chunk-then-summarize.
+Another approach to
+MDS is incremental summarization of documents,
+as done with SummN (Zhang et al., 2022).
+SummN first segments the source documents and
+target summary and creates mappings between the
+source and target segments (via ROUGE max sim-
+ilarity), which and trains a separate BART-Large-
+CNN model (Zhang et al., 2021) each “coarse”
+stages before the final “fine-grained” stage which
+produces the end summary.
+Extract-then-summarize.
+A different approach
+to the long-context problem of MDS systems is
+to first extract the salient portions of the docu-
+ments before summarizing them. The main mod-
+els in this category are COMPO (Ouyang et al.,
+2023), ProCluster (Ernst et al., 2022), and Convo-
+Summ (Fabbri et al., 2021a),. COMPO is specif-
+ically tailored toward conversational summariza-
+tion and provides summaries based on extracted
+sub-components (topics and actions) within the
+dialogue. ProCluster extracts “propositions” in
+documents, clusters them, and then summarizes
+the clusters. ConvoSumm first filters sentences
+from documents to only the “claims” and then
+summarizes the claims. A variation of the extract-
+then-summarize pipeline is attribute-then-generate
+(Slobodkin et al., 2024) which requires multiple
+steps of content selection, sentence planning, and
+sentence-by-sentence generation. We chose Convo-
+Summ over other extract-then-summarize models
+due to its applicability to many domains and non-
+overlap with different approaches with clustering
+or sentence-planning steps.
+Pre-trained LLM.
+While the above models are
+strong MDS systems, they are all the size of BART-
+Large (336M params.). A growing trend across
+natural language processing research has been to
+fine-tune or adapt large, pre-trained decoder lan-
+guage models (LLMs) through in-context learning.
+We select Llama-3.1-8B-Instruct to represent this
+approach due to its strong performance on a variety
+of tasks (Dubey et al., 2024).
+2.3
+Summarization Evaluation
+Most MDS papers and their surveys use off-the-
+shelf automatic evaluation metrics without dis-
+cussing drawbacks. Summarization metrics usually
+measure one or more of the following attributes:
+similarity to a ground-truth summary, overall qual-
+ity, and factuality. While many MDS systems are
+evaluated with manual annotations, we focus on
+automatic evaluation in this work.
+Similarity to Ground Truth.
+Most text evalua-
+tion metrics compare the model output to a known,
+quality summary or ground truth (i.e., reference).
+The most common metric for evaluating summary
+quality is ROUGE (Lin, 2004) but is better viewed
+as a similarity metric since it is the token recall
+of the generated summary based on the reference
+(i.e., ground-truth). The complement of ROUGE
+is BLEU (Papineni et al., 2002), which measures
+precision instead of recall of generated summaries.
+Other metrics in the spirit of ROUGE/BLEU are
+semantic-based instead of lexical, which are more
+robust to passages with similar meanings but dif-
+ferent word choices. The most popular version is
+BERTScore (Zhang et al., 2020b), which maps to-
+kens from the generation to the reference before
+calculating overlap. An alternative is MoverScore,
+an “optimized” version of BERTScore which uses
+soft token alignments from the hypothesis to the
+reference instead of a hard 1:1 mapping, allowing
+for a greater reward for semantically similar gener-
+ated text.
+Other similarity metrics are sub-“dimensions” of
+a trained multi-dimensional evaluator, like UniEval
+(Zhong et al., 2022). UniEval is a T5-Large model
+fine-tuned on synthetically augmented datasets for
+positive and negative examples of different “dimen-
+sions” of summary attributes (fluency, relevance,
+coherence, consistency) (Zhong et al., 2022). The
+UniEval-Relevance dimension is a similarity met-
+ric that compares the reference and generation as a
+whole instead of per token.
+Overall Quality.
+Not all desired summary qual-
+ities depend on a reference; some are intrinsic
+or rely on the source documents. Intrinsic met-
+rics include fluency (i.e., well-written and gram-
+matical), coherence (i.e., overall flow), and the
+
+summarization-specific metrics of compression ra-
+tio (i.e., length of source documents compared to
+length of the summary) and source coverage (i.e.,
+how well the summary represents the source doc-
+uments). UniEval measures both fluency and co-
+herence. UniEval-Fluency is based solely on the
+generation, and UniEval-Coherence measures the
+coherence of the generation with respect to the
+source.
+Similar to UniEval, Prometheus (Kim et al.,
+2024) is another multi-dimensional evaluator, but
+is a general-purpose feedback model that can judge
+any model output according to a provided rubric.
+In this respect, Prometheus is essentially a distilled
+“LLM-as-a-Judge” model (Zheng et al., 2023). For
+a more up-to-date automatic evaluation method,
+we use Prometheus to grade the summaries on the
+following criteria, drawn from SummEval (Fabbri
+et al., 2021b): Relevance, Coherence, and Fluency.
+An important note is that despite the same met-
+ric names, the definitions from SummEval differ
+slightly from those in UniEval.
+To measure compression ratio, we include both
+Compression-Sentence, which compares the ra-
+tio of the number of sentences in the summary to
+those in the source documents, and Compression-
+Word, which compares the ratio of the number of
+words in the summary to those in the source doc-
+uments (Koh et al., 2022). For source coverage
+(Wolhandler et al., 2022a), we developed a prompt
+for Prometheus, Prometheus-Coverage.
+Factuality.
+A growing concern with generated
+text is the possibility of hallucinations and non-
+faithfulness to the source material (Min et al.,
+2023).
+While objective factuality is important
+for the safety of LLMs (e.g., knowing that boil-
+ing water is hot), for MDS we typically assume
+that the source documents are factually correct
+and that a summary is only factual if its claims
+match the claims from the source. This definition
+of “factually” is better described as grounding in
+the source text. We measure summary factuality
+with UniEval-Consistency, a single-dimensional
+evaluator trained to measure the factual consis-
+tency of generated text to the source (as opposed to
+continuously trained as with UniEval-Fluency and
+UniEval-Coherence), Prometheus-Consistency,
+and Prometheus-Factuality.
+The Prometheus-
+Consistency prompt is drawn from SummEval,
+and the Prometheus-Factuality prompt is from the
+Prometheus repository.
+We include ROUGE ([0, 1]), MoverScore
+([−1, 1]), Compression Ratio, and multiple di-
+mensions of UniEval ([0, 1]) and Prometheus
+({1, 2, 3, 4, 5}) in our analysis as representations
+for similarity to ground truth, factuality, and over-
+all quality metrics. While BARTScore (Yuan et al.,
+2021) measures many of the same dimensions as
+UniEval, we chose UniEval because it is better cor-
+related with human evaluation (Zhong et al., 2022)
+and the potential bias of BARTScore to model gen-
+erations, since most of the models are BART-based
+(“self bias”) (He et al., 2023).
+3
+Experimental Setup
+Our goal is to explore the intricacies of domain
+transfer with multi-document summarization mod-
+els and their evaluation methods. The main di-
+mensions of our analyses are different datasets
+(i.e., domains), models, and evaluation metrics
+(Figure 2). We chose 3 dataset domains (News,
+Science, Conversation), 4 model types (end-to-
+end/direct), chunk-then-summarize, extract-then-
+summarize, and pre-trained LLMs), and 15 metrics
+for a total of 180 points of analysis (Section 2).
+3.1
+Model Training
+The hyperparameters for each model and dataset
+combination are in Appendix B. Each model was
+trained on each dataset, and we refer to them as
+ModelName-Domain, e.g., ConvoSumm fine-tuned
+on Multi-News+ is ConvoSumm-News.
+PRIMERA.
+As input, the source documents are
+delineated with a special <doc-sep> token, and the
+model’s global attention is set on those tokens. To
+handle examples with source documents that are
+too long for the context window, we follow the
+author’s code and evenly truncate the documents
+to fit. We used the authors’ released PRIMERA-
+MultiXScience model and trained PRIMERA-
+Convo and PRIMERA-News with the released
+code.3
+SummN.
+We use a 3 course-stage process for
+all datasets. A separate model is trained for each
+coarse stage, leading to N + 1, or 4 fine-tuned
+BART models for each training dataset. An impor-
+tant note is due to the setup of summarizing chunks,
+there are no too-long context issues as with direct
+3While there is a PRIMERA model trained on Multi-News,
+we trained a new one on Multi-News+.
+
+models like PRIMERA and all source documents
+are considered by the model.
+ConvoSumm.
+There are multiple versions of
+ConvoSumm but we select ConvoSumm-argument-
+filtered (“arg-filtered”) due to its comparable per-
+formance to the more complex argument-graph
+version.
+The argument filtration model is a
+BERT model fine-tuned on annotated data from
+the Change My View community on Reddit (i.e.,
+conversation, AMPERSAND (Chakrabarty et al.,
+2019)) and annotated persuasive essays on a variety
+of topics (Stab and Gurevych, 2017)). A BART-
+Large model with an expanded context window
+(2048) is fine-tuned on the extracted claims.
+Llama 3.1.
+Unlike the other models, we do not
+fine-tune Llama 3.1 8B-Instruct.4 To compare to
+the domain-transfer experiments, we provide an
+example from the training set to the model, i.e.,
+for News-Convo, two randomly selected examples
+from Multi-News+ is provided to Llama and then
+the model is prompted to summarize an example
+from ConvoSumm. We also include a zero-shot
+version which does not provide a complete example
+to Llama, only the instruction.
+3.2
+Evaluation Details
+ROUGE scores have been known to vary depending
+on the implementation used. We use the Hugging-
+Face wrapper for the Google Research implemen-
+tation.5 We report ROUGE-1 (R1) and ROUGE-
+L-Sum (RL-Sum) to follow prior work. For the
+other evaluation metrics, MoverScore and multi-
+ple dimensions from UniEval, we use the trained
+models as they are without modification. For eval-
+uation with Prometheus, we use Prometheus2-
+BGB-8x7B 6 as an absolute judge with dimension-
+specific rubrics we based off the definitions from
+SummEval (Fabbri et al., 2021b). See Appendix C
+for details. Due to the intense compute required
+for Prometheus, we sampled 100 items from each
+dataset for all Prometheus-based metrics.
+4
+Results
+We analyze the results in the framework of our three
+axes: dataset domain, model type, and evaluation
+4https://huggingface.co/meta-llama/Llama-3.
+1-8B-Instruct
+5https://huggingface.co/spaces/
+evaluate-metric/rouge
+6https://huggingface.co/prometheus-eval/
+prometheus-bgb-8x7b-v2.0
+metric.7 See Appendix E for the detailed per-model
+and dataset results. To study evaluation metrics,
+we analyze the performance of the ground-truth
+dataset. Complete summary examples from each
+model are in Appendix Figures 12 to 16.
+4.1
+MDS Model Generalizability
+To study trends specific to each model type, we
+aggregated the metrics across all the datasets (Ta-
+ble 1). We also look at correlations between metrics
+in Appendix Figure 8. Instead of judging perfor-
+mance by the raw metrics, we look at the rela-
+tive change in performance from the in-domain
+setting to the out-of-domain setting (e.g., train-
+ing on ConvoSumm-Reddit and testing on Multi-
+XScience). The zero-shot baseline with Llama 3.1
+is compared to the in-context Llama 3.1 perfor-
+mance for each dataset. A positive ∆shows a per-
+formance gain and a negative ∆is a performance
+loss as compared to the model’s scores on the in-
+domain data.
+Llama 3.1 outperforms all fine-tuned smaller
+models in quality and factuality metrics.
+Across all datasets in the in-domain setting, Llama
+generates the most factual and highest-quality sum-
+maries according to the automatic metrics. This
+trend holds during domain transfer, with minimal
+change in performance (+1 to +4). The excep-
+tion to the higher performance trend is with the
+compression metrics and lexical-similarity met-
+rics. Llama has the lowest compression, similar
+to PRIMERA, as summaries are only 55% com-
+pressed.
+Zero-shot performance is the same as in-context
+learning with Llama 3.1.
+Surprisingly, Llama
+has a similar performance at generating sum-
+maries with (in-context learning, ICL) or with-
+out being shown an example (zero-shot).
+The
+Llama-generated summaries change very little
+when shown examples versus when no examples
+are provided (Appendix Figures 15 and 16). This
+indicates a strong bias to its pre-training versus
+“learning” from the example. These results could
+differ with the addition of more examples (at the
+expense of a smaller context window available for
+the source documents) or a larger model.
+Not all domains benefit from Extract-then-
+Summarize models.
+The first step in the extract-
+then-summarize model ConvoSumm is to filter out
+7The domain-transfer analysis is in Appendix D.
+
+ConvoSumm
+PRIMERA
+SummN
+Llama 3.1
+Llama 3.1
+(0-shot)
+Avg. ∆
+Avg. ∆
+Avg. ∆
+Avg. ∆
+Avg. ∆
+Factuality
+Consistency (UE)
+0.67
+-2%
+0.82
+0%
+0.65
++3%
+0.86
+0%
+0%
+Factuality (P)
+2.04
+-16%
+1.79
++3%
+2.02
+-6%
+3.23
+0%
+0%
+Consistency (P)
+2.14
+-15%
+1.89
++1%
+2.08
+-7%
+3.40
++1%
+0%
+Ground-Truth
+Similarity
+Relevancy (UE)
+0.66
+-3%
+0.48
++6%
+0.66
+-19%
+0.92
+0%
+0%
+ROUGE-1
+0.35
+-27%
+0.27
++12%
+0.35
+-30%
+0.29
++10%
+0%
+ROUGE-LSum
+0.20
+-28%
+0.14
++6%
+0.20
+-28%
+0.17
++4%
++1%
+MoverScore
+0.10
+-86%
+0.06
+-332%
+0.10
+-88%
+0.10
++35%
+-2%
+Quality
+Relevancy (P)
+2.36
+-15%
+2.18
++3%
+2.33
+-6%
+3.53
++1%
++1%
+Fluency (UE)
+0.79
+-5%
+0.69
++2%
+0.76
+0%
+0.94
+0%
+0%
+Fluency (P)
+2.30
+-21%
+1.67
++9%
+2.26
+-5%
+3.97
+0%
+0%
+Coherence (UE)
+0.60
+-14%
+0.70
++2%
+0.63
+-2%
+0.95
+0%
+0%
+Coherence (P)
+2.31
+-20%
+1.63
++8%
+2.31
+-11%
+3.95
+0%
+0%
+Comp.-Sent
+0.71
++7%
+0.66
++1%
+0.69
++9%
+0.64
++4%
+0%
+Comp.-Word
+0.74
++1%
+0.55
++2%
+0.70
+-1%
+0.55
++2%
+0%
+Coverage (P)
+1.93
+-12%
+1.83
++3%
+1.95
+-6%
+3.03
++1%
+0%
+Table 1: Multi-document summarization (MDS) model performance and relative performance aggregated by model
+when trained and tested on the same domain (left) and different domains (right, ∆), respectively. A relative change
+of over 1 is possible with MoverScore because of its [−1, 1] range. Llama (0-shot) is compared to Llama with
+in-domain examples.
+sentences that are not identified as claims by a
+small, fine-tuned model. This step removes 35%
+of sentences on average from each ConvoSumm-
+Reddit example, 51% from Multi-News, but less
+than 1% from Multi-XScience. This is intuitive
+since there would be more filler sentences in con-
+versations and news articles, but less so in scientific
+publications.
+Chunk-then-summarize is the only approach
+guaranteed to fit all source documents.
+With all
+models, including Llama 3.1 with a 131K context
+window, there were issues fitting all source docu-
+ments for every example comfortably in the context
+windows. As mentioned in Section 3, PRIMERA
+“handles” this issue by evenly dividing the context
+window among the source documents and truncat-
+ing the ends. The assumption that the beginning of
+documents is more important than the end does not
+hold for all domains and has only been identified in
+News (Dey et al., 2020). While ConvoSumm was
+able to fit all source documents from ConvoSumm-
+Reddit, it did have to truncate documents from 25
+samples in Multi-XScience and 699 samples from
+MultiNews. PRIMERA, with a context window
+double the size of ConvoSumm (2K vs 4K), was
+able to fit all Conversation and Science samples,
+but truncated 835 Multi-News examples. Llama
+only had issues with 3 samples from Multi-News.
+The number of source documents does not have
+strong correlations with other metrics.
+Surpris-
+ingly, the number of source documents is weakly
+and inconsistently correlated with factuality and
+coherence metrics (−0.1 to −0.5). This is different
+than expected, as model performance is expected to
+decrease with longer context and more information
+to process.
+All models are fluent.
+Unsurprisingly, all mod-
+els have high fluency scores (0.70+) since all mod-
+els are of size BART-Large and above. While flu-
+ency is still an important attribute to check, it might
+not be as important as it once was.
+Word-based similarity metrics are not corre-
+lated with Relevancy.
+While UniEval-Relevancy
+measures the similarity between a generated and
+reference summary (“Is this summary relevant to
+the reference?”), it does not correlate with the se-
+mantic and lexical metrics like MoverScore and
+ROUGE (−0.1 to 0.1). Whereas MoverScore and
+ROUGE are highly correlated (0.6 to 0.8).
+4.2
+Evaluation of Evaluation
+To isolate patterns of the evaluation metrics, we
+look at the automated metric values on the ground-
+truth reference datasets (Appendix Table 3) and
+their correlations (Figure 3). See Appendix E for
+detailed correlation figures.
+
+Figure 3: Pearson correlations across the ground-truth
+for all evaluated datasets. The black squares section off
+intra-correlations within Prometheus and UniEval, and
+the red square highlights the correlations between them.
+UniEval and Prometheus have a weak to
+moderate correlation.
+Over the three datasets,
+the UniEval and Prometheus metrics have weak
+to moderate correlations (0.3 to 0.5).
+While
+Prometheus is 60x larger than UniEval (T5-Large),
+a stronger positive correlation is expected when
+they are evaluating the same quality (e.g., fluency).
+The extreme outlier is UniEval-Relevance, which
+has poor to no correlation with any other metric
+(0.0 to 0.2).
+Metric names are not consistent across evalu-
+ators and benchmarks.
+The definition of “rel-
+evance” differs between UniEval and SummEval,
+“Is this summary relevant to the reference?” versus
+“How well does the summary capture the key points
+of the documents?”. This discrepancy explains the
+0.0 correlation between UniEval-Relevance and
+Prometheus-Relevance. The other metrics have
+similar definitions and are more correlated, as noted
+above. See Appendix Figures 10 and 11 for dimen-
+sion definitions.
+Multi-dimensional evaluators are slightly intra-
+correlated.
+Within Prometheus, the dimensions
+have slight (0.4) to moderate (0.7) correlations with
+each other, specifically coherence, consistency, and
+factuality (0.6 to 0.7). The UniEval dimensions are
+less intra-correlated, (0.0 to 0.4). This discrepancy
+in intra-correlation could indicate that Prometheus
+has difficulty evaluating along a single dimension
+and instead allows various quality aspects to impact
+the assigned score. This issue persisted despite
+adding instructions only to evaluate the desired
+dimension (see Appendix C).
+Non-reference metrics do not scale well to
+the multi-document setting.
+Evaluating for at-
+tributes that depend on the source documents
+(e.g., Consistency) is most affected by the long-
+document nature of multi-document summariza-
+tion. The options are either to 1) truncate the docu-
+ments, which can greatly alter the scores depending
+on which documents are included, or 2) calculate
+the metric for every source document and aggre-
+gate the scores. More work is needed to determine
+whether truncating or aggregating per-document
+scores over- or under-estimates model performance.
+As for the now-popular “LLM-as-a-Judge” mod-
+els, like Prometheus, while they have less of a
+context-window issue, they have a higher computa-
+tional cost. The reference-based metrics (primarily
+similarity-based) are not affected by scale because
+they only compare the ground-truth and generated
+summaries.
+5
+Discussion and Conclusion
+In most work that surveys or proposes multi-
+document summarization (MDS) systems, there
+is little overlap between the analysis of model per-
+formance and the shortcomings of popularly used
+summarization evaluation metrics. We bridged this
+gap through experiments and analysis of not only
+the zero-shot domain transfer ability of MDS sys-
+tems but also a critical examination of their eval-
+uation methodologies. We analyzed three compo-
+nents of the MDS pipeline for domain transfer: 1)
+the domain of the training data, 2) the model type,
+and 3) the common evaluation metrics, including
+their inter-correlations and the nuances of LLM-as-
+a-judge approaches.
+In conclusion, this work underscores the intricate
+relationship between MDS model architectures, the
+stylistic properties of data domains, and the evalua-
+tion metrics used to gauge performance. For mod-
+els, a reduced stylistic bias and the ability to handle
+extensive context are beneficial for domain trans-
+fer. For evaluation, our findings strongly advocate
+for a multi-faceted approach, exercising caution
+with lexical metrics for advanced models, and a
+keen awareness of the specific definitions, poten-
+tial biases, scaling limitations, and inter-correlation
+patterns of even sophisticated trained evaluators.
+Future research should continue to develop more
+robust and reliable evaluation strategies that are sen-
+sitive to the nuances of abstractive summarization
+across diverse domains and model capabilities.
+
+Limitations
+Despite the rise in popularity of large, pre-trained
+decoder models, most fine-tuned multi-document
+summarization models are on the scale of a few
+hundred million parameters, e.g., BART-Large. We
+did not analyze the effect of model size or scale
+concerning summarization performance or domain
+transfer abilities.
+Another limitation is our focus on English, as all
+of the datasets and learned metrics (i.e., UniEval),
+were in English or trained on English data.
+Ethical Considerations
+We did not evaluate the model output and training
+datasets for absolute factuality (i.e., correctness
+with respect to the world) or harmful language. We
+leave these tasks to future work or the incorporation
+of an additional step for model safety.
+AI Assistants were used in the preparation of
+this work, specifically for paper revision, table for-
+matting, and figure editing.
+Acknowledgements
+References
+Catarina G Belém, Pouya Pezeshkpour, Hayate Iso, Seiji
+Maekawa, Nikita Bhutani, and Estevam Hruschka.
+2025. From single to multi: How LLMs hallucinate
+in multi-document summarization. In Findings of the
+Association for Computational Linguistics: NAACL
+2025, pages 5276–5309, Albuquerque, New Mexico.
+Association for Computational Linguistics.
+Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2020.
+Longformer: The Long-Document Transformer.
+Tuhin Chakrabarty, Christopher Hidey, Smaranda Mure-
+san, Kathy McKeown, and Alyssa Hwang. 2019.
+AMPERSAND: Argument mining for PERSuAsive
+oNline discussions. In Proceedings of the 2019 Con-
+ference on Empirical Methods in Natural Language
+Processing and the 9th International Joint Confer-
+ence on Natural Language Processing (EMNLP-
+IJCNLP), pages 2933–2943, Hong Kong, China. As-
+sociation for Computational Linguistics.
+Yulong Chen, Yang Liu, and Yue Zhang. 2021. Di-
+alogSum challenge: Summarizing real-life scenario
+dialogues. In Proceedings of the 14th International
+Conference on Natural Language Generation, pages
+308–313, Aberdeen, Scotland, UK. Association for
+Computational Linguistics.
+Juhwan Choi, JungMin Yun, Kyohoon Jin, and Young-
+Bin Kim. 2024. Multi-news+: Cost-efficient dataset
+cleansing via LLM-based data annotation. In Pro-
+ceedings of the 2024 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 15–29,
+Miami, Florida, USA. Association for Computational
+Linguistics.
+Alvin Dey, Tanya Chowdhury, Yash Kumar Atri, and
+Tanmoy Chakraborty. 2020. Corpora evaluation and
+system bias detection in multi-document summariza-
+tion. In Findings of the Association for Computa-
+tional Linguistics: EMNLP 2020, pages 2830–2840,
+Online. Association for Computational Linguistics.
+Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey,
+Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman,
+Akhil Mathur, Alan Schelten, Amy Yang, Angela
+Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang,
+Archi Mitra, Archie Sravankumar, Artem Korenev,
+Arthur Hinsvark, Arun Rao, Aston Zhang, and 514
+others. 2024. The Llama 3 Herd of Models.
+Ori Ernst, Avi Caciularu, Ori Shapira, Ramakanth Pa-
+sunuru, Mohit Bansal, Jacob Goldberger, and Ido
+Dagan. 2022. Proposition-level clustering for multi-
+document summarization.
+In Proceedings of the
+2022 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies, pages 1765–1779, Seat-
+tle, United States. Association for Computational
+Linguistics.
+Alexander Fabbri, Irene Li, Tianwei She, Suyi Li, and
+Dragomir Radev. 2019. Multi-news: A large-scale
+multi-document summarization dataset and abstrac-
+tive hierarchical model. In Proceedings of the 57th
+Annual Meeting of the Association for Computational
+Linguistics, pages 1074–1084, Florence, Italy. Asso-
+ciation for Computational Linguistics.
+Alexander Fabbri, Faiaz Rahman, Imad Rizvi, Borui
+Wang, Haoran Li, Yashar Mehdad, and Dragomir
+Radev. 2021a. ConvoSumm: Conversation summa-
+rization benchmark and improved abstractive sum-
+marization with argument mining. In Proceedings
+of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International
+Joint Conference on Natural Language Processing
+(Volume 1: Long Papers), pages 6866–6880, Online.
+Association for Computational Linguistics.
+Alexander R. Fabbri, Wojciech Kry´sci´nski, Bryan Mc-
+Cann, Caiming Xiong, Richard Socher, and Dragomir
+Radev. 2021b. SummEval: Re-evaluating summa-
+rization evaluation. Transactions of the Association
+for Computational Linguistics, 9:391–409.
+Demian
+Gholipour
+Ghalandari,
+Chris
+Hokamp,
+Nghia The Pham, John Glover, and Georgiana Ifrim.
+2020. A large-scale multi-document summarization
+dataset from the Wikipedia current events portal.
+In Proceedings of the 58th Annual Meeting of the
+Association for Computational Linguistics, pages
+1302–1308, Online. Association for Computational
+Linguistics.
+Bogdan Gliwa, Iwona Mochol, Maciej Biesek, and Alek-
+sander Wawer. 2019. SAMSum corpus: A human-
+annotated dialogue dataset for abstractive summa-
+rization. In Proceedings of the 2nd Workshop on
+
+New Frontiers in Summarization, pages 70–79, Hong
+Kong, China. Association for Computational Linguis-
+tics.
+Tianxing He, Jingyu Zhang, Tianle Wang, Sachin
+Kumar, Kyunghyun Cho, James Glass, and Yulia
+Tsvetkov. 2023. On the blind spots of model-based
+evaluation metrics for text generation. In Proceed-
+ings of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 12067–12097, Toronto, Canada. Association
+for Computational Linguistics.
+Karl Moritz Hermann, Tomas Kocisky, Edward Grefen-
+stette, Lasse Espeholt, Will Kay, Mustafa Suleyman,
+and Phil Blunsom. 2015. Teaching Machines to Read
+and Comprehend. In Advances in Neural Information
+Processing Systems, volume 28. Curran Associates,
+Inc.
+Xiang Jiang and Markus Dreyer. 2024. CCSum: A
+Large-Scale and High-Quality Dataset for Abstrac-
+tive News Summarization. In Proceedings of the
+2024 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies (Volume 1: Long Pa-
+pers), pages 7306–7336, Mexico City, Mexico. Asso-
+ciation for Computational Linguistics.
+Seungone Kim,
+Juyoung Suk,
+Shayne Longpre,
+Bill Yuchen Lin, Jamin Shin, Sean Welleck, Graham
+Neubig, Moontae Lee, Kyungjae Lee, and Minjoon
+Seo. 2024. Prometheus 2: An open source language
+model specialized in evaluating other language mod-
+els. In Proceedings of the 2024 Conference on Empir-
+ical Methods in Natural Language Processing, pages
+4334–4353, Miami, Florida, USA. Association for
+Computational Linguistics.
+Huan Yee Koh, Jiaxin Ju, Ming Liu, and Shirui Pan.
+2022. An Empirical Survey on Long Document Sum-
+marization: Datasets, Models, and Metrics. ACM
+Comput. Surv., 55(8):154:1–154:35.
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying
+Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gon-
+zalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+Memory Management for Large Language Model
+Serving with PagedAttention. In Proceedings of the
+29th Symposium on Operating Systems Principles,
+SOSP ’23, pages 611–626, New York, NY, USA.
+Association for Computing Machinery.
+Chin-Yew Lin. 2004. ROUGE: A package for auto-
+matic evaluation of summaries. In Text Summariza-
+tion Branches Out, pages 74–81, Barcelona, Spain.
+Association for Computational Linguistics.
+Kenneth C Litkowski and Gue Road. 2004. Summariza-
+tion Experiments in DUC 2004. Proceedings of the
+Document Understanding Conference.
+Yao Lu, Yue Dong, and Laurent Charlin. 2020. Multi-
+XScience: A large-scale dataset for extreme multi-
+document summarization of scientific articles. In
+Proceedings of the 2020 Conference on Empirical
+Methods in Natural Language Processing (EMNLP),
+pages 8068–8074, Online. Association for Computa-
+tional Linguistics.
+Sewon Min, Kalpesh Krishna, Xinxi Lyu, Mike Lewis,
+Wen-tau Yih, Pang Koh, Mohit Iyyer, Luke Zettle-
+moyer, and Hannaneh Hajishirzi. 2023. FActScore:
+Fine-grained Atomic Evaluation of Factual Precision
+in Long Form Text Generation. In Proceedings of the
+2023 Conference on Empirical Methods in Natural
+Language Processing, pages 12076–12100, Singa-
+pore. Association for Computational Linguistics.
+Ankan Mullick, Ayan Kumar Bhowmick, Raghav R,
+Ravi Kokku, Prasenjit Dey, Pawan Goyal, and Niloy
+Ganguly. 2024. Long dialog summarization: An
+analysis. Preprint, arXiv:2402.16986.
+Siru Ouyang, Jiaao Chen, Jiawei Han, and Diyi Yang.
+2023. Compositional data augmentation for abstrac-
+tive conversation summarization. In Proceedings
+of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 1471–1488, Toronto, Canada. Association for
+Computational Linguistics.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic evalu-
+ation of machine translation. In Proceedings of the
+40th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 311–318, Philadelphia,
+Pennsylvania, USA. Association for Computational
+Linguistics.
+Joseph Peper, Wenzhao Qiu, and Lu Wang. 2024.
+PELMS: Pre-training for Effective Low-Shot Multi-
+Document Summarization. In Proceedings of the
+2024 Conference of the North American Chapter of
+the Association for Computational Linguistics: Hu-
+man Language Technologies (Volume 1: Long Pa-
+pers), pages 7652–7674, Mexico City, Mexico. Asso-
+ciation for Computational Linguistics.
+Aviv Slobodkin, Eran Hirsch, Arie Cattan, Tal Schuster,
+and Ido Dagan. 2024. Attribute First, then Generate:
+Locally-attributable Grounded Text Generation. In
+Proceedings of the 62nd Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 3309–3344, Bangkok, Thailand.
+Association for Computational Linguistics.
+Christian Stab and Iryna Gurevych. 2017. Parsing argu-
+mentation structures in persuasive essays. Computa-
+tional Linguistics, 43(3):619–659.
+Pius von Däniken, Jan Deriu, Don Tuggener, and Mark
+Cieliebak. 2022. On the Effectiveness of Automated
+Metrics for Text Generation Systems. In Findings
+of the Association for Computational Linguistics:
+EMNLP 2022, pages 1503–1522, Abu Dhabi, United
+Arab Emirates. Association for Computational Lin-
+guistics.
+Ruben Wolhandler, Arie Cattan, Ori Ernst, and Ido Da-
+gan. 2022a. How “multi” is multi-document summa-
+rization? In Proceedings of the 2022 Conference on
+
+Empirical Methods in Natural Language Processing,
+pages 5761–5769, Abu Dhabi, United Arab Emirates.
+Association for Computational Linguistics.
+Ruben Wolhandler, Arie Cattan, Ori Ernst, and Ido Da-
+gan. 2022b. How “Multi” is Multi-Document Sum-
+marization? In Proceedings of the 2022 Conference
+on Empirical Methods in Natural Language Process-
+ing, pages 5761–5769, Abu Dhabi, United Arab Emi-
+rates. Association for Computational Linguistics.
+Wen Xiao, Iz Beltagy, Giuseppe Carenini, and Arman
+Cohan. 2022. PRIMERA: Pyramid-based masked
+sentence pre-training for multi-document summariza-
+tion. In Proceedings of the 60th Annual Meeting of
+the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), pages 5245–5263, Dublin,
+Ireland. Association for Computational Linguistics.
+Weizhe Yuan, Graham Neubig, and Pengfei Liu. 2021.
+BARTScore: Evaluating generated text as text gener-
+ation. In Advances in Neural Information Processing
+Systems.
+Jingqing Zhang, Yao Zhao, Mohammad Saleh, and Peter
+Liu. 2020a. PEGASUS: Pre-training with Extracted
+Gap-sentences for Abstractive Summarization. In
+Proceedings of the 37th International Conference
+on Machine Learning, pages 11328–11339. PMLR.
+ISSN: 2640-3498.
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q.
+Weinberger, and Yoav Artzi. 2020b. BERTScore:
+Evaluating Text Generation with BERT.
+Yusen Zhang, Ansong Ni, Ziming Mao, Chen Henry Wu,
+Chenguang Zhu, Budhaditya Deb, Ahmed Awadallah,
+Dragomir Radev, and Rui Zhang. 2022. Summn: A
+multi-stage summarization framework for long input
+dialogues and documents. In Proceedings of the 60th
+Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1592–
+1604, Dublin, Ireland. Association for Computational
+Linguistics.
+Yusen Zhang, Ansong Ni, Tao Yu, Rui Zhang, Chen-
+guang Zhu, Budhaditya Deb, Asli Celikyilmaz,
+Ahmed Hassan Awadallah, and Dragomir Radev.
+2021. An exploratory study on long dialogue sum-
+marization: What works and what‘s next. In Find-
+ings of the Association for Computational Linguis-
+tics: EMNLP 2021, pages 4426–4433, Punta Cana,
+Dominican Republic. Association for Computational
+Linguistics.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin,
+Zhuohan Li, Dacheng Li, Eric Xing, Hao Zhang,
+Joseph E. Gonzalez, and Ion Stoica. 2023. Judging
+LLM-as-a-Judge with MT-Bench and Chatbot Arena.
+Ming Zhong, Yang Liu, Da Yin, Yuning Mao, Yizhu
+Jiao, Pengfei Liu, Chenguang Zhu, Heng Ji, and
+Jiawei Han. 2022.
+Towards a unified multi-
+dimensional evaluator for text generation. In Pro-
+ceedings of the 2022 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 2023–
+2038, Abu Dhabi, United Arab Emirates. Association
+for Computational Linguistics.
+
+A
+Dataset Details
+We include three MDS datasets: Multi-News+
+(Choi et al., 2024), Multi-XScience (Lu et al.,
+2020)), and ConvoSumm-Reddit (Fabbri et al.,
+2021a). We keep the original train, validation, and
+test splits as the original papers for all datasets. See
+Figures 4 to 6 for an example from each dataset
+and Table 2 for summary statistics.
+Multi-News+.
+This
+dataset
+has
+37,057/4,576/4,648 examples for train,
+vali-
+dation, and test sets, respectively. We keep the
+NEWLINE_CHAR symbol in the documents.
+Multi-XScience.
+The Multi-XScience dataset
+had many examples with missing source docu-
+ments. In addition to skipping those with no source
+documents, we also removed non “multi” exam-
+ples which had less than two source documents,
+resulting in 11523/1937/1901 examples for train,
+validation, and test sets, respectively. We skipped
+18846/3129/3192 examples from train/val/test sets
+with less than two source documents (i.e., abstracts)
+and 20023/3383/3403 examples from train/val/test
+with completely missing source documents. We
+also replace all document-specific citations cite_5
+with a more generalizable cite.
+ConvoSumm.
+While ConvoSumm features mul-
+tiple conversation datasets, we focus on Reddit.
+Similar to the original work, we flatten comment
+threads as individual source documents, resulting
+in 201/50/250 examples for train, validation, and
+test sets, respectively. We keep the |NEWLINE|
+symbols in the documents.
+B
+Training Details
+Unless specified otherwise, each model was trained
+on a single Nvidia A100 GPU with 80GB of mem-
+ory. The training hyperparameters for PRIMERA,
+SummN, and ConvoSumm-arg-filtered are in Ta-
+bles 6 to 8, respectively. Below are the prompts
+and details for running Llama for the zero-shot and
+in-context 1-shot comparisons.
+PRIMERA
+The
+authors’
+released
+mod-
+els
+were
+from
+HuggingFace
+fine-tuned
+on
+Multi-XScience
+(https://huggingface.
+co/allenai/PRIMERA-multixscience)
+and
+MultiNews
+(https://huggingface.
+co/allenai/PRIMERA-multinews).
+The
+authors’
+code
+is
+on
+GitHub
+(https:
+//github.com/allenai/PRIMER).
+Llama 3.1 8B-Instruct.
+Due to the large size of
+Llama 8B, we hosted it as a service with vLLM on
+4 Nvidia A100 80GB GPUs (Kwon et al., 2023).8
+We followed model examples on how to interact
+for the summarization task (Table 5).
+C
+Evaluation Details
+Multi-dimensional analyses with Prometheus.
+We developed rubrics for Prometheus based on
+definitions set forth by prior work. We altered the
+definitions slightly for the multi-document use case.
+For all criteria, i.e., description for model feedback,
+we use the same score rubric except for Factuality
+and Coverage:
+Score 1: Very poor
+Score 2: Poor
+Score 3: Barely acceptable
+Score 4: Good
+Score 5: Very Good
+The prompt format is in Figure 9 and the rubrics
+are in Figure 10.
+The rubric for Coverage, inspired by Wolhandler
+et al. (2022b):
+Score 1: The summary misses most salient infor-
+mation and/or fails to draw from many or all
+of the source documents.
+Score 2: The summary includes some salient in-
+formation, but frequently omits key points or
+fails to adequately represent all source docu-
+ments.
+Score 3: The summary covers a good portion of
+the salient information and represents most
+source documents, though some important de-
+tails or content from some documents may be
+missing or underrepresented.
+Score 4: The summary incorporates most salient
+information from all source documents, with
+only minor omissions of less critical details,
+and adequately represents all documents.
+Score 5: The summary comprehensively and accu-
+rately captures all salient information from all
+source documents, providing a well-rounded
+representation that integrates content from all
+sources effectively.
+The rubric for Factuality, taken from the
+Prometheus code repository:
+Score 1: The model’s responses are mostly incor-
+rect or based on unfounded information.
+8https://docs.vllm.ai
+
+Score 2: The model sometimes provides factually
+correct responses, but inaccuracies are com-
+mon.
+Score 3: The model generally provides factually
+correct information, though some errors occur.
+Score 4: The model often provides factually accu-
+rate information with only occasional minor
+errors.
+Score 5: The model consistently provides re-
+sponses that are factually correct and well-
+supported by evidence.
+D
+MDS Domain Generalizability
+We compare the results from training and testing
+on a single domain to training on a domain and
+testing on the others (“From”), and training on
+other domains and testing on the domain (“To”).
+“Ref” refers to the results when running the metrics
+on the ground-truth data. See Table 3.
+Models trained on ConvoSumm-Reddit trans-
+fer well to other domains.
+On average, models
+trained on ConvoSumm-Reddit and tested on the
+News and Science datasets see minimal changes in
+performance across quality and ground-truth sim-
+ilarity metrics. The exception to this trend is the
+large decrease in MoverScore, which is more sen-
+sitive to a performance drop of a hundredth of a
+decimal due to its often low scores (e.g., 0.05).9
+Transferring from Multi-News+ leads to a de-
+crease in factuality.
+Compared to transferring
+from the other datasets, out-of-domain summaries
+generated with a model trained on Multi-News+
+contain more factual errors (8-11% more). This is
+most likely due to the large style bias of smaller
+models, which tend to hallucinate quotes (see Fig-
+ure 13 for an example). This is different from the
+findings of (Belém et al., 2025), who found that
+models (LLMs) hallucinate more on conversation
+data than news data.
+Most metrics are impacted by models’ bias to
+the style of the training dataset.
+The style of
+source documents and summaries differ greatly
+in each dataset. The ConvoSumm-Reddit exam-
+ple from Figures 4 and 6 shows the stark differ-
+ence in style between the types of summaries in
+ConvoSumm-Reddit and those from Multi-News+.
+This difference in style explains the performance
+loss from Conversation and News domains, as the
+9We discuss MoverScore further in Section 4.2.
+summary wording would be completely different
+and penalized by the ground-truth similarity met-
+rics (−31 to −9% and −92 to +2%, respectively).
+We confirm prior work’s results that smaller gener-
+ative models have more style bias to their training
+data, as shown by the large changes in ground-truth
+similarity and compression ratios.10
+E
+Raw Results
+The domain-transfer results in Table 1 show the
+summarized relative performance of the models.
+The detailed performance across domains and mod-
+els are in Table 4.
+10Compression is a style metric because some datasets have
+more condensed summaries than others.
+
+Example from Multi-News+
+Source
+Documents
+Washington ( ap ) — as a crucial second sign-up season gears
+up, the obama administration said sunday that healthcare.gov
+is stable and working well, a far cry from last year’s frozen
+computer screens and frustrated customers. Health and human
+services secretary sylvia burwell smiles while answering a
+reporters question following her tour of the greater prince
+william community health center, evergreen terrace site, in
+manassas,... ( associated press ) health and human services
+secretary sylvia burwell gestures while answering a reporters
+question following her tour of the greater prince william
+community health center, evergreen terrace site, in manassas,...
+( associated press ) health and human services secretary sylvia
+m. Burwell said she expects " strong and healthy growth " for
+2015. About 7 million people are signed up, and burwell expects
+to grow that by 2 million more or so. The congressional budget
+office has projected a total of 13 million enrolled for 2015,
+and some see the administration as trying to lower expectations.
+Burwell told nbc’s " meet the press " that 100,000 people had
+submitted new applications this weekend via the federal website
+serving 37 states. That’s a big difference from last year, when
+only a handful of customers managed to enroll on the first day.
+Burwell also said that a half-million people who already have
+coverage through the program were able to log into their accounts
+this time. There were reports saturday that returning customers
+had problems, but some of that may have been confusion trying
+to remember user names and passwords. Administration spokesman
+aaron albright said sunday he had not seen any indication of
+problems. Burwell said call centers have taken 100,000 calls,
+another indication of consumer interest. President barack obama
+noted the improvements. " healthcare.gov works really well now,
+" he said. Healthcare.gov is an online marketplace that offers
+subsidized private coverage to people who don’t have health
+insurance on the job. Because of political opposition and
+Getty burwell: 100,000 new obamacare applications secretary of
+health and human services sylvia mathews burwell said on sunday
+100,000 people submitted new applications for obamacare in the
+first days of the second open enrollment period. Speaking on
+nbc’s "meet the press, " burwell offered an update to the numbers
+provided saturday when she said 23,000 applied in the first eight
+hours of the new open enrollment period. Story continued below
+in addition to new applicants, 500,000 customers were able
+to log on to healthcare.gov, and 1 million people have gone
+"window shopping " to compare insurance plans and prices over
+the past week. The numbers offer a stark contrast to the first
+enrollment period a year ago when healthcare.gov launched with
+severe technical problems that prevented people from applying.
+Authors:
+Summary
+After last year’s dismal debut healthcare.gov is feeling much
+better now, and is busily connecting americans with health care
+plans as the second sign-up period opened yesterday, health
+and human services secretary sylvia burwell said today. The
+site took in 100,000 new applications in its first 24 hours,
+reports politico, saw 500,000 log in to their accounts, and 1
+million more went " window-shopping " for plans. Call centers
+
+Example from Multi-XScience
+Source Documents
+Despite
+the huge
+amount
+of recent
+research
+efforts
+on entity
+resolution
+(matching)
+there
+has not
+yet been a
+comparative
+evaluation
+on the
+relative
+effectiveness
+and
+efficiency
+of
+alternate
+approaches.
+We
+therefore
+present
+such an
+evaluation
+of
+existing
+implementations
+on
+challenging
+real-world
+match
+tasks. We
+consider
+approaches
+both
+with and
+without
+using
+machine
+learning
+to find
+suitable
+parameterization
+and
+combination
+of
+similarity
+functions.
+. . .
+This
+tutorial
+provides a
+
+Example from ConvoSumm-Reddit
+Source Documents
+Title: Hand from tonight. Subreddit: poker Playing at my
+local pub league. Villian is loose aggressive. Sorry if
+this is bad formatting just quickly whipped it up for your
+opinions.
+Button: ( 30000)
+SB: Villian: (50000) . . .
+Shove pre but I imagine this is the sort of game where you
+get told off for doing that
+Summary
+A lot of commenters debate the semantics and word choice
+of another comment. Some commenters say that the poster
+should shove even though other players will not like that
+move very much. Other commenters discuss the differences of
+some poker terminology.
+Figure 6: Example from the ConvoSumm-Reddit dataset.
+# Examples
+# Source Docs.
+Summary Length
+Avg. Doc. Length
+ConvoSumm (Reddit)
+Test
+250
+14.42 (5.55)
+57.78 (12.04)
+53.02 (26.60)
+Train
+201
+14.98 (6.28)
+58.32 (12.95)
+49.46 (26.38)
+Val
+50
+16.74 (7.21)
+59.18 (14.99)
+52.88 (27.29)
+MultiNews+
+Test
+4648
+2.53 (0.88)
+230.94 (69.57)
+226.07 (64.15)
+Train
+37057
+2.55 (0.91)
+233.54 (69.98)
+224.30 (64.96)
+Val
+4576
+2.51 (0.86)
+231.45 (69.64)
+226.59 (63.35)
+MultiXScience
+Test
+1901
+3.55 (1.95)
+106.35 (41.60)
+195.32 (48.01)
+Train
+11523
+3.58 (2.05)
+106.82 (42.14)
+197.03 (47.91)
+Val
+1937
+3.55 (1.99)
+104.03 (41.38)
+196.98 (48.84)
+Table 2: Statistics for each dataset used in this work: ConvoSumm-Reddit, Multi-News+, and Multi-XScience. The
+number of tokens in the (ground truth) summary and documents are measured with the BART tokenizer. Since
+we remove examples with missing information, our numbers might not match those in the original dataset papers
+(Appendix A).
+
+(a) ConvoSumm-Reddit
+(b) Multi-News+
+(c) Multi-XScience
+Figure 7: Pearson correlation between metrics on the test ground-truth (reference) for the evaluated datasets.
+ConvoSumm-Reddit
+Multi-News+
+Multi-XScience
+From ∆(%)
+To ∆(%)
+Ref.
+From ∆(%)
+To ∆(%)
+Ref.
+From ∆(%)
+To ∆(%)
+Ref.
+Factuality
+Cons. (UE)
+0.74
++11%
+-9%
+0.71
+0.80
+-5%
++8%
+0.70
+0.72
+-5%
++1%
+0.55
+Fact. (P)
+2.25
++11%
+-21%
+3.07
+2.46
+-20%
++10%
+2.84
+2.11
+-5%
+-1%
+1.82
+Cons. (P)
+2.42
++5%
+-18%
+3.06
+2.62
+-21%
++11%
+3.16
+2.09
++1%
+-7%
+1.86
+Ground-Truth
+Similarity
+Rel. (UE)
+0.69
+-1%
+-15%
+0.99
+0.73
+0%
+-17%
+0.98
+0.63
+-29%
++5%
+0.99
+R1
+0.26
++13%
+-30%
+-1.00
+0.42
+-46%
++28%
+-1.00
+0.26
++6%
+-21%
+-1.00
+RLSum
+0.17
+-1%
+-22%
+-1.00
+0.21
+-37%
++11%
+-1.00
+0.15
++3%
+-20%
+-1.00
+MoverScore
+0.05
+-238%
+-98%
+1.00
+0.17
+-80%
+-110%
+1.00
+0.05
+-36%
+-107%
+1.00
+Quality
+Rel. (P)
+2.62
++5%
+-18%
+3.23
+2.81
+-15%
++8%
+3.39
+2.37
+-4%
+-2%
+2.78
+Fluency (UE)
+0.85
++2%
+-5%
+0.90
+0.76
++4%
+-4%
+0.76
+0.77
+-9%
++7%
+0.66
+Fluency (P)
+2.69
++7%
+-16%
+3.30
+2.79
+-21%
++11%
+2.75
+2.17
++2%
+-5%
+1.53
+Coh. (UE)
+0.73
++6%
+-7%
+0.73
+0.81
+-3%
+-3%
+0.75
+0.62
+-13%
++2%
+0.43
+Coh. (P)
+2.60
++6%
+-19%
+3.39
+2.89
+-24%
++12%
+3.70
+2.17
++2%
+-7%
+1.51
+Comp.-Sent
+9.01
++45%
+-72%
+12.03
+2.74
+-44%
++19%
+2.08
+4.07
+-42%
++18%
+6.10
+Comp.-Word
+7.18
++13%
+-24%
+8.63
+2.47
+-18%
++8%
+1.98
+4.40
+-8%
++4%
+5.92
+Table 3: Multi-document summarization (MDS) model performance and relative performance aggregated by
+domain when trained and tested on the same domain, and the relative change (∆) when transferred to other domains
+(From), and vice-versa (To). A relative change of over 1 is possible with MoverScore because of its [−1, 1] range.
+For all metrics other than Compression, a higher score is better. Metrics measured by UniEval and Prometheus are
+marked by (UE) and (P), respectively.
+
+(a) ConvoSumm
+(b) SummN
+(c) Llama 3.1 8B
+(d) PRIMERA
+Figure 8: Pearson correlation between metrics across all datasets for each model in the domain-transfer setting.
+
+Domain
+Factuality
+Ground-Truth Similarity
+Quality
+Train
+Test
+C(UE)
+F(P)
+C(P)
+R(UE)
+R1
+RLS
+MS
+R(P)
+Fl(UE)
+Fl(P)
+Co(UE)
+Co(P)
+Cov(P)
+C.Sent
+C.Word
+ConvoSumm
+Convo
+News+
+0.75
+1.83
+1.90
+0.51
+0.24
+0.14
+0.00
+2.08
+0.91
+2.02
+0.57
+1.94
+1.68
+-4.31
+-7.54
+Convo
+Science
+0.67
+1.95
+1.97
+0.61
+0.23
+0.14
+0.02
+2.27
+0.91
+2.22
+0.58
+2.03
+1.76
+-5.17
+-9.23
+News+
+Convo
+0.68
+1.59
+1.78
+0.75
+0.23
+0.13
+0.01
+1.97
+0.70
+1.72
+0.78
+1.74
+1.77
+-3.62
+-2.51
+News+
+Science
+0.69
+1.77
+1.76
+0.70
+0.23
+0.13
+0.04
+2.13
+0.81
+1.79
+0.71
+1.87
+1.89
+-2.31
+-2.32
+Science
+Convo
+0.44
+1.22
+1.26
+0.26
+0.22
+0.15
+-0.01
+1.34
+0.60
+1.27
+0.26
+1.29
+1.25
+-9.32
+-7.78
+Science
+News+
+0.66
+1.81
+1.87
+0.26
+0.30
+0.16
+0.04
+2.10
+0.64
+1.65
+0.30
+1.70
+1.69
+-3.37
+-3.99
+PRIMERA
+Convo
+News+
+0.83
+1.97
+2.08
+0.41
+0.38
+0.18
+0.13
+2.38
+0.63
+2.04
+0.71
+1.94
+2.01
+-1.99
+-1.28
+Convo
+Science
+0.84
+1.96
+1.95
+0.61
+0.23
+0.12
+0.06
+2.38
+0.79
+1.82
+0.73
+1.79
+1.94
+-2.23
+-1.59
+News+
+Convo
+0.82
+1.34
+1.53
+0.40
+0.19
+0.11
+-0.01
+1.76
+0.67
+1.36
+0.72
+1.26
+1.52
+-5.29
+-3.17
+News+
+Science
+0.82
+2.03
+1.96
+0.65
+0.23
+0.12
+0.06
+2.40
+0.82
+1.92
+0.74
+1.83
+2.04
+-2.40
+-1.61
+Science
+Convo
+0.80
+1.43
+1.49
+0.41
+0.19
+0.11
+-0.02
+1.77
+0.64
+1.34
+0.67
+1.28
+1.58
+-4.46
+-2.61
+Science
+News+
+0.78
+1.96
+2.07
+0.44
+0.38
+0.18
+0.13
+2.33
+0.62
+1.95
+0.68
+1.94
+1.99
+-2.42
+-1.51
+SummN
+Convo
+News+
+0.90
+2.71
+2.64
+0.64
+0.23
+0.14
+0.01
+2.75
+0.89
+2.92
+0.82
+2.74
+2.18
+-5.47
+-8.28
+Convo
+Science
+0.77
+2.51
+2.36
+0.72
+0.21
+0.13
+0.01
+2.48
+0.92
+2.61
+0.88
+2.27
+1.99
+-7.72
+-11.28
+News+
+Convo
+0.67
+1.44
+1.58
+0.71
+0.22
+0.13
+0.00
+1.95
+0.70
+1.74
+0.73
+1.58
+1.67
+-3.45
+-2.16
+News+
+Science
+0.64
+1.57
+1.54
+0.67
+0.21
+0.12
+0.03
+2.15
+0.77
+1.63
+0.68
+1.68
+1.83
+-1.39
+-1.26
+Science
+Convo
+0.39
+1.13
+1.21
+0.33
+0.21
+0.14
+-0.04
+1.26
+0.63
+1.37
+0.33
+1.25
+1.26
+-6.52
+-4.14
+Science
+News+
+0.65
+1.95
+2.04
+0.33
+0.31
+0.17
+0.04
+2.36
+0.69
+2.05
+0.35
+2.07
+1.90
+-3.14
+-3.58
+Llama 3.1
+Convo
+News+
+0.87
+3.24
+3.56
+0.92
+0.40
+0.21
+0.16
+3.64
+0.94
+4.11
+0.95
+3.98
+3.02
+-2.31
+-1.79
+Convo
+Science
+0.88
+3.32
+3.47
+0.91
+0.24
+0.15
+0.08
+3.58
+0.94
+4.06
+0.97
+4.00
+3.23
+-1.39
+-1.29
+News+
+Convo
+0.82
+3.01
+3.23
+0.94
+0.22
+0.15
+0.05
+3.43
+0.94
+3.99
+0.96
+3.92
+2.96
+-3.88
+-1.36
+News+
+Science
+0.88
+3.38
+3.45
+0.92
+0.24
+0.15
+0.09
+3.61
+0.93
+4.03
+0.98
+4.00
+3.19
+-1.30
+-1.26
+Science
+Convo
+0.82
+3.17
+3.21
+0.94
+0.22
+0.15
+0.06
+3.47
+0.93
+3.94
+0.96
+3.92
+2.91
+-4.00
+-1.46
+Science
+News+
+0.87
+3.25
+3.54
+0.94
+0.40
+0.22
+0.16
+3.64
+0.95
+4.07
+0.95
+3.98
+2.93
+-2.15
+-1.69
+Llama 3.1 (0-shot)
+zero-shot
+Convo
+0.83
+3.12
+3.31
+0.94
+0.22
+0.15
+0.05
+3.44
+0.93
+4.01
+0.96
+3.87
+2.79
+-3.74
+-1.40
+zero-shot
+News+
+0.88
+3.26
+3.41
+0.93
+0.41
+0.22
+0.16
+3.57
+0.94
+4.04
+0.94
+4.00
+3.02
+-2.07
+-1.64
+zero-shot
+Science
+0.87
+3.42
+3.52
+0.93
+0.24
+0.16
+0.08
+3.47
+0.93
+4.06
+0.98
+3.96
+3.29
+-1.38
+-1.30
+Table 4: Multi-document summarization (MDS) model performance when trained and tested on the different
+domains. Results are on the test splits of each dataset. For all metrics, a greater score is better.
+
+Prometheus Evaluator Prompt
+System
+You are a fair judge assistant tasked with providing clear,
+objective feedback based on specific criteria, ensuring each
+assessment reflects the absolute standards set for performance.
+Assistant
+###Task Description:
+An instruction (might include an Input inside it), a response to
+evaluate, a reference answer that gets a score of 5, and a score
+rubric representing a evaluation criteria are given.
+1. Write a detailed feedback that assess the quality of the
+response strictly based on the given score rubric, not
+evaluating in general.
+2. After writing a feedback, write a score that is an integer
+between 1 and 5. You should refer to the score rubric.
+3. The output format should look as follows: "(write a feedback
+for criteria) [RESULT] (an integer number between 1 and 5)"
+4. Please do not generate any other opening, closing, and
+explanations.
+###The instruction to evaluate:
+You are a multi-document summarizer. When given a list of
+DOCUMENTS, you provide a SUMMARY that incorporates all of the
+documents. Write a summary that incorporates all of the following
+documents:
+### DOCUMENTS
+{all source documents}
+###Response to evaluate:
+{model-generated summary}
+###Reference Answer (Score 5):
+{ground-truth summary}
+###Score Rubrics:
+{rubric}
+###Feedback:
+Figure 9: The formatting is from Kim et al. (2024), and the instructions and rubric are from Figure 10.
+
+Evaluation Criteria for Prometheus
+Factuality
+Is the model’s summary factually correct and well-supported by
+the DOCUMENTS?
+Relevance
+How well does the summary capture the key points of the
+documents? Consider whether all and only the important aspects
+are contained in the summary. Only evaluate the summary for
+relevance. Do not penalize the summary for issues that are
+outside the scope of relevance.
+Consistency
+How consistent are the facts in the summary with the facts
+in the original documents? Consider whether the summary does
+reproduce all facts accurately and does not make up untrue
+information. Do not use your own knowledge, and consider the
+documents as truth. Only evaluate the summary for consistency.
+Do not penalize the summary for issues that are outside the
+scope of consistency.
+Fluency
+What is the quality of individual sentences, are they
+well-written and grammatically correct? Consider the quality of
+individual sentences.Only evaluate the summary for fluency. Do
+not penalize the summary for issues that are outside the scope
+of fluency.
+Coherence
+What is the quality of all sentences collectively? How well
+do they fit together, and do they sound natural? Consider the
+quality of the summary as a whole. Only evaluate the summary
+for coherence. Do not penalize the summary for issues that are
+outside the scope of coherence.
+Coverage
+Does the model’s summary incorporate salient information from
+all the documents? Do not penalize the summary for issues that
+are outside the scope of coverage.
+Figure 10: Evaluation dimensions provided to Prometheus (Kim et al., 2024). The criteria for Relevance, Consistency,
+Fluency, and Coherence are drawn from SummEval (Fabbri et al., 2021b). We added the italicized text to the prompt
+to improve Prometheus performance.
+Evaluation Criteria for UniEval (Summarization)
+Relevance
+Is this summary relevant to the reference?
+Consistency
+Is this claim consistent with the document?
+Fluency
+Is this a fluent paragraph?
+Coherence
+Is this a coherent summary to the document?
+Figure 11: Evaluation dimensions for UniEval (Zhong et al., 2022). Only Relevance requires access to a reference
+summary.
+
+Llama 3.1 Instruct Prompt Templates
+Zero-shot
+<|begin_of_text|><|start_header_id|>user<|end_header_id|>
+Write a summary that incorporates all of the following documents:
+Document: {source document 1}
+. . .
+Document: {source document n}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+In-context Learning
+<|begin_of_text|><|start_header_id|>user<|end_header_id|>
+Write a summary that incorporates all of the following documents:
+Document: {source document 1}
+. . .
+Document: {source document n}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+{target summary}
+<|begin_of_text|><|start_header_id|>user<|end_header_id|>
+Write a summary that incorporates all of the following documents:
+Document: {source document 1}
+. . .
+Document: {source document n}
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+Table 5: Prompt templates for Llama 3.1 8B Instruct for the zero-shot (top) and single-shot in-context learning tasks
+(bottom).
+
+Stage
+Setting
+Multi-News+
+ConvoSumm-Reddit
+Multi-XScience
+General
+total number of updates
+30000
+5000
+-
+warmup updates
+500
+200
+-
+learning rate
+3e-5
+-
+-
+max input sequence
+1024
+-
+-
+max tokens (in batch)
+2048
+-
+-
+update frequency
+4
+-
+-
+patience
+2
+-
+-
+label smoothing
+0.1
+-
+-
+dropout
+0.1
+-
+-
+attention dropout
+0.1
+-
+-
+weight decay
+0.01
+-
+-
+optimizer
+Adam
+betas=(0.9,
+0.999), eps=1e-8
+-
+-
+LR scheduler
+polynomial decay
+-
+-
+Gradient clipping
+0.1
+-
+-
+Stage 1
+max input sequence
+1024
+-
+-
+beam
+1
+-
+-
+length penalty
+1
+-
+-
+max length
+450
+-
+-
+min length
+0
+-
+-
+no-repeat-ngram-size
+3
+-
+-
+temperature
+0.9
+-
+-
+Stage 2
+max input sequence
+1024
+-
+-
+beam
+1
+-
+-
+length penalty
+1
+-
+-
+max length
+550
+-
+-
+min length
+0
+-
+-
+no-repeat-ngram-size
+3
+-
+-
+temperature
+0.9
+-
+-
+Stage 3
+max input sequence
+1024
+-
+-
+beam
+1
+-
+-
+length penalty
+1
+-
+-
+max length
+900
+1024
+-
+min length
+0
+-
+-
+no-repeat-ngram-size
+3
+-
+-
+temperature
+0.9
+-
+-
+Table 6: Training details for SummN on all datasets. Weights initialized from BART-Large-CNN. An entry of “-”
+indicates the same setting as the previous column.
+
+Setting
+Multi-News+
+ConvoSumm-Reddit
+Multi-XScience*
+max input sequence
+4096
+4096
+4096
+total number of steps
+30K
+5K
+20K
+warmup steps
+1K
+200
+2K
+optimizer
+Adam
+Adam
+Adam
+learning rate
+3e-5
+3e-5
+3e-5
+batch size
+16
+16
+16
+seed
+0
+42
+0
+label smoothing
+0.1
+0.1
+0.1
+max length
+1024
+1024
+1024
+min length
+0
+0
+0
+beam
+1
+1
+1
+Table 7: Training details for PRIMERA on all datasets. Models marked with (*) were trained by (Xiao et al., 2022)
+and only available training information is filled in. Weights initialized from BART-Large.
+Setting
+Multi-News+
+ConvoSumm-Reddit*
+Multi-XScience
+max input sequence
+2048
+2048
+2048
+max tokens (in batch)
+2048
+-
+-
+update frequency
+1
+1
+1
+total number of updates
+30000
+200
+200
+warmup updates
+500
+20
+20
+learning rate
+3e-5
+3e-5
+3e-5
+label smoothing
+0.1
+0.1
+0.1
+dropout
+0.1
+-
+-
+attention dropout
+0.1
+-
+-
+weight decay
+0.01
+-
+-
+optimizer
+Adam
+betas=(0.9,
+0.999), eps=1e-8
+-
+-
+LR scheduler
+polynomial decay
+-
+-
+Gradient clipping
+0.1
+-
+-
+max length
+1024
+1024
+1024
+min length
+0
+0
+0
+beam
+1
+1
+1
+length penalty
+1
+1
+1
+Table 8: Training details for ConvoSumm on all datasets. Models marked with (*) were trained by (Fabbri et al.,
+2021a) and only available training information is filled in. Weights initialized from BART-Large. An entry of “-”
+indicates the same setting as the previous column.
+
+Generated Summaries: PRIMERA Models
+Multi-XScience
+Comp-Word: 3.06
+R-LSum: 0.16
+Fact. (P): 2.00
+Fact. (U): 0.80
+Fluency (P): 2.00
+Fluency (U): 0.53
+Washington ( ap ) — as a crucial second sign-up season gears up, the
+obama administration said sunday that healthcare.gov is stable and
+working well, a far cry from last year’s frozen computer screens and
+frustrated customers. Health and human services secretary sylvia burwell
+smiles while answering a reporters question following her tour of the
+greater prince william community health center, evergreen terrace
+site, in manassas,... ( associated press ) health and human service
+secretary syLVia burrell gestures while answeringa reporters question
+after her tour... ( associated Press ) health care secretary sylvia
+burwwind is an employee of the federal government who works to make
+healthcare.... (associated press ) Getty.Getty burwell: 100,000 new
+obamacare applications secretary of health and h... (Associated press )
+healthcare.hgov is an online marketplace that offers subsidized private
+coverage to people who don’t have health insurance on the job.Because of
+political opposition and the
+ConvoSumm
+Comp-Word: 2.04
+R-LSum: 0.18
+Fact. (P): 2.00
+Fact. (U): 0.91
+Fluency (P): 2.00
+Fluency (U): 0.67
+Washington ( ap ) — as a crucial second sign-up season gears up, the
+obama administration said sunday that healthcare.gov is stable and
+working well, a far cry from last year’s frozen computer screens and
+frustrated customers. Health and human services secretary sylvia
+burwell smiles while answering a reporters question following her
+tour of the greater prince william community health center, evergreen
+terrace site, in manassas,... ( associated press ) health and human
+rights secretary sylivia burforth gestures while answering her tour in
+the greater Prince william Community health center during the first
+days of the second open enrollment period.Health and Human Services
+Secretary Sylvia Mathews Burwell also said a half-million people who
+already have coverage through the program were able to log into their
+accounts this time, compared to last year when thousands struggled
+to do so.Burwell said call centers have taken 100,000 calls, another
+indication of consumer interest.President barack obama noted the
+improvements.Healthcare.gov’s numbers were down slightly from last
+season’s first open enrollment.Officials said last year many people would
+not sign up because of the website problems.Aaron Albright, an Obama
+administration spokesman, said health and Human services’ healthcare.org
+site " is accessible for anyone seeking to access the site" and the
+agency has been "redesigned and upgraded" for this year.Last week, the
+site’s status improved significantly.Reuters contributed to this report..
+MultiNews+
+Comp-Word: 2.80
+R-LSum: 0.19
+Fact. (P): 3.00
+Fact. (U): 0.83
+Fluency (P): 3.00
+Fluency (U): 0.74
+Washington ( ap ) — as a crucial second sign-up season gears up, the
+obama administration said sunday that healthcare.gov is stable and
+working well, a far cry from last year’s frozen computer screens and
+frustrated customers. Health and human services secretary sylvia burwell
+smiles while answering a reporters question following her tour of the
+greater prince william community health center, evergreen terrace site,
+in manassas,... ( associated press ) health and humanservices secretary
+syvla m. Burwell gestures while answering the reporters question after
+her tour on the greater Prince william Community Health Center, Evergreen
+Terrace site in Manassas, Va. ( associated Press ) health care.gov
+website in Washington, D.C. ( Associated Press ) In an interview with
+NBC, Burwell said: "Healthcare.gov works really well now," adding that
+"in addition to new applicants," 500,000 people were able to log on
+to healthcare.com this week, and 1 million people have gone "window
+shopping" to compare insurance plans and prices over the past week.
+Figure 12: Example generated summaries from PRIMERA models for a Multi-News+ example. Source documents
+and ground-truth reference summary are in Figure 4.
+
+Generated Summaries: SummN Models
+MultiXScience
+Comp-Word: 6.86
+R-LSum: 0.20
+Fact. (P): 2.00
+Fact. (U): 0.93
+Fluency (P):
+3.00
+Fluency (U):
+0.80
+The secretary of health and human services reported that
+100,000 people submitted new applications for Obamacare in
+the first days of the second open enrollment period @cite
+. The secretary also said that call centers have taken
+100,00 calls, another indication of consumer interest. The
+administration has projected a total of 13 million enrolled
+for 2015, and some see the administration as trying to lower
+expectations.
+ConvoSumm
+Comp-Word: 6.04
+R-LSum: 0.21
+Fact. (P): 3.00
+Fact. (U): 0.97
+Fluency (P):
+3.00
+Fluency (U):
+0.96
+The secretary of health and human services said that 100,000
+people submitted new applications for Obamacare in the first
+days of the second open enrollment period. She also said
+that a half-million people who already have coverage through
+the program were able to log into their accounts this time.
+The numbers offer a stark contrast to the first enrollment
+period a year ago when healthcare.gov launched with severe
+technical problems that prevented people from applying.
+MultiNews+
+Comp-Word: 3.91
+R-LSum: 0.24
+Fact. (P): 2.00
+Fact. (U): 0.44
+Fluency (P):
+3.00
+Fluency (U):
+0.76
+The second open enrollment period for obamacare’s 2015
+enrollment period kicked off today, and the administration
+says it’s already seeing a big jump in applications. Health
+and human services secretary sylvia burwell told meet the
+press that 100,000 people applied for coverage on the
+federal website this weekend, up from 23,000 on the first
+day last year, reports politico. " healthcare.gov works
+really well now, " said burwell. The administration expects
+" strong and healthy growth " for 2015, she said, adding
+that 7 million people have signed up so far, and she expects
+that number to grow by 2 million more. The congressional
+budget office has projected a total of 13 million enrolled
+for 2015.
+Figure 13: Example generated summaries from SummN models for a Multi-News+ example. Source documents
+and ground-truth reference summary are in Figure 4.
+
+Generated Summaries: ConvoSumm Models
+MultiXScience
+Comp-Word: 8.55
+R-LSum: 0.19
+Fact. (P): 3.00
+Fact. (U): 0.21
+Fluency (P): 1.00
+Fluency (U): 0.62
+@cite @cite , the secretary of health and human
+services @cites said that 100,000 people submitted new
+applications for obamacare in the first days of the
+second open enrollment period. @ccite also said that a
+half-million people who already have coverage through
+the program were able to log into their accounts this
+time.
+ConvoSumm-Reddit
+Comp-Word: 14.61
+R-LSum: 0.08
+Fact. (P): 1.00
+Fact. (U): 0.88
+Fluency (P): 2.00
+Fluency (U): 0.96
+Most commentators say that the website is stable and
+working well. One commentator says that the number
+of new applicants is a good sign. Another commentator
+says the website looks good.
+MultiNews+
+Comp-Word: 2.44
+R-LSum: 0.20
+Fact. (P): 3.00
+Fact. (U): 0.92
+Fluency (P): 3.00
+Fluency (U): 0.82
+Health and human services secretary sylvia burwell
+says healthcare.gov is stable and working well, a
+far cry from last year’s frozen computer screens
+and frustrated customers. Burwell told nbc’s meet
+the press that 100,000 people had submitted new
+applications this weekend via the federal website
+serving 37 states. That’s a big difference from last
+week, when only a handful of customers managed to
+enroll on the first day. Bur Well also said that a
+half-million people who already have coverage through
+the program were able to log into their accounts
+this time. There were reports saturday that returning
+customers had problems, but some of that may have been
+confusion trying to remember user names and passwords.
+Administration spokesman aaron albright said sunday he
+had not seen any indication of problems. Bur well said
+she expects " strong and healthy growth " for 2015.
+About 7 million people are signed up, and burwell
+expects to grow that by 2 million more or so. The
+congressional budget office has projected a total
+of 13 million enrolled for 2015, and some see the
+administration as trying to lower expectations.
+Figure 14: Example generated summaries from ConvoSumm models for a Multi-News+ example. Source documents
+and ground-truth reference summary are in Figure 4.
+
+Generated Summary: Llama 3.1 Zero-Shot
+Zero-Shot
+Comp-Word: 3.00
+R-LSum: 0.25
+Fact. (P): 4.00
+Fact. (U): 0.86
+Fluency (P):
+4.00
+Fluency (U):
+0.96
+As the second sign-up season for healthcare under the
+Obama administration gears up, officials report significant
+improvements over last year’s struggles. According to Health
+and Human Services Secretary Sylvia Burwell, approximately 7
+million people are currently signed up, with an expectation
+to grow by 2 million more or so. This year’s enrollment
+progress is a stark contrast to last year’s frozen computer
+screens and frustrated customers. In the first days of the
+current enrollment period, 100,000 new applications have
+been submitted via the federal website, healthcare.gov,
+which serves 37 states. An additional 500,000 existing
+customers were able to access their accounts, and 1 million
+individuals have explored insurance plans and prices on the
+website. President Barack Obama has noted the improvement,
+stating that "healthcare.gov works really well now." The
+administration expects "strong and healthy growth" for 2015,
+with a projected total of 13 million enrolled, surpassing
+the previous year’s enrollment figures.
+Figure 15: Example generated summary from the Zero-Shot model for a Multi-News+ example. Source documents
+and ground-truth reference summary are in Figure 4.
+
+Generated Summaries: In-Context Learning (ICL) with Llama 3.1 Models
+ConvoSumm-Reddit
+Comp-Word: 3.06
+R-LSum: 0.31
+Fact. (P): 4.00
+Fact. (U): 0.83
+Fluency (P): 5.00
+Fluency (U): 0.96
+As the second sign-up season for healthcare under the Obama
+administration gears up, officials are reporting significant improvements
+in the stability and functionality of healthcare.gov. Health and Human
+Services Secretary Sylvia Burwell has stated that the website is now
+working well, with over 100,000 new applications submitted in the first
+weekend, compared to just a handful of customers who managed to enroll
+last year. Additionally, approximately 500,000 customers were able to
+log into their existing accounts, and over 1 million people have begun
+"window shopping" to compare insurance plans and prices. These numbers
+are in stark contrast to the technical difficulties and frustrations
+experienced during the first enrollment period, and suggest a strong and
+healthy growth for the program in 2015, with the Congressional Budget
+Office projecting a total of 13 million enrolled. President Barack Obama
+has also noted the improvements, stating that healthcare.gov now works
+"really well."
+Multi-XScience
+Comp-Word: 2.45
+R-LSum: 0.27
+Fact. (P): 3.00
+Fact. (U): 0.90
+Fluency (P): 4.00
+Fluency (U): 0.96
+As the second sign-up season for healthcare under the Obama
+administration gears up, officials are reporting significant improvements
+in the stability and functionality of healthcare.gov. Health and Human
+Services Secretary Sylvia Burwell has stated that the website is now
+working well, in stark contrast to last year’s technical issues that
+plagued enrollment efforts. According to Burwell, over 100,000 new
+applications have been submitted via the federal website, serving 37
+states, since the beginning of the second open enrollment period. This is
+a significant increase from last year, when only a handful of customers
+managed to enroll on the first day.
+Additionally, over 500,000 existing customers have been able to log
+into their accounts, and 1 million people have gone "window shopping"
+to compare insurance plans and prices over the past week. The numbers
+suggest a high level of consumer interest and a continued growth in
+enrollment. The Congressional Budget Office has projected a total of 13
+million enrolled for 2015, and Burwell expects to reach this goal or come
+close. President Barack Obama has also noted the improvements, stating
+that "healthcare.gov works really well now."
+MultiNews+
+Comp-Word: 2.49
+R-LSum: 0.25
+Fact. (P): 3.00
+Fact. (U): 0.94
+Fluency (P): 4.00
+Fluency (U): 0.96
+As the second sign-up season for the Affordable Care Act (ACA) kicks
+off, the Obama administration is reporting significant improvements in
+the healthcare.gov website. Health and Human Services Secretary Sylvia
+Burwell has stated that the website is stable and working well, in stark
+contrast to last year’s technical issues that frustrated customers.
+Despite some initial concerns about returning customers experiencing
+problems logging into their existing accounts, Burwell has reported that
+500,000 people were able to access their accounts on the website.
+In the first weekend of the new open enrollment period, 100,000 new
+applications were submitted through healthcare.gov, with an additional
+100,000 calls made to call centers. Additionally, 1 million people have
+gone "window shopping" to compare insurance plans and prices over the
+past week. These numbers represent a significant increase from last
+year’s enrollment period, where only a handful of customers managed
+to enroll on the first day. Burwell has expressed confidence in the
+website’s ability to handle the increased traffic, stating that she
+expects "strong and healthy growth" for 2015, with 13 million people
+projected to enroll through the website.
+Figure 16: Example generated summaries from In-Context Learning (ICL) models for a Multi-News+ example.
+Source documents and ground-truth reference summary are in Figure 4.

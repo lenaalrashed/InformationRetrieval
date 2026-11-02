@@ -1,0 +1,2089 @@
+Loss-Based Active Learning for Neural Abstractive Summarization
+Michail Ioannou, Tatiana Passali, George Michalopoulos, Grigorios Tsoumakas
+School of Informatics
+Aristotle University of Thessaloniki
+Greece
+mioannoug@csd.auth.gr, scpassali@csd.auth.gr,
+georgemi@microsoft.com, greg@csd.auth.gr
+Abstract
+Fine-tuning abstractive summarization models
+requires high-quality annotated data. However,
+obtaining such corpora is expensive and time-
+consuming, as it requires human annotators to
+read and comprehend long documents to create
+accurate summaries. Active learning mitigates
+this issue by selecting only the most informa-
+tive instances for annotation, allowing models
+to achieve competitive results with significantly
+fewer labels. However, the application of ac-
+tive learning to summarization remains under-
+explored, and existing studies often suffer from
+instability and significant computational bottle-
+necks. To overcome these challenges, we pro-
+pose LOBSTER (LOss-BaSed acTivE leaRn-
+ing), a novel active learning framework de-
+signed specifically for abstractive summariza-
+tion. LOBSTER improves performance by pri-
+oritizing unlabeled instances semantically simi-
+lar to the model’s current high-loss training ex-
+amples, enabling the model to explicitly correct
+its specific weaknesses. Our empirical evalua-
+tion across three benchmark datasets and two
+summarization backbone models demonstrates
+that LOBSTER consistently matches or outper-
+forms current state-of-the-art approaches while
+achieving a query selection speedup of up to
+665×.
+1
+Introduction
+Abstractive summarization generates concise sum-
+maries by producing novel words and phrases
+rather than directly copying from the source (See
+et al., 2017; Zhang et al., 2020a). State-of-the-
+art performance has been achieved by pre-trained
+large language models (LLMs) (Lewis et al., 2020;
+Zhang et al., 2020a; Zaheer et al., 2020), based
+on the Transformers architecture (Vaswani et al.,
+2017). Nevertheless, fine-tuning LLMs for abstrac-
+tive summarization is costly, since producing high-
+quality summaries requires human annotators to
+carefully read the full document and identify im-
+portant information (Tsvigun et al., 2022; Perlitz
+et al., 2023).
+Active learning addresses this challenge by it-
+eratively selecting the most informative examples
+for annotation. This enables models to achieve
+strong performance with fewer training instances,
+thereby reducing the overall cost of obtaining la-
+beled data (Settles, 2012). While recent efforts
+to apply active learning to abstractive summariza-
+tion have shown promise, existing methods suffer
+from critical limitations. Uncertainty-based strate-
+gies are computationally demanding and tend to
+select outliers, as these instances often exhibit high
+uncertainty (Gidiotis and Tsoumakas, 2024). Con-
+versely, diversity-based approaches can be unstable
+since they may overemphasize dense regions of the
+data space (Tsvigun et al., 2022), and more recent
+methods rely on external LLM systems, which can
+introduce additional cost and dependency (Li et al.,
+2024).
+This work introduces a novel technique that
+strikes a balance between summarization perfor-
+mance and computational efficiency. We demon-
+strate that the cross-entropy loss of current labeled
+examples provides a useful signal for guiding the
+model toward the specific data it requires to im-
+prove. Building on this insight, we present LOB-
+STER (LOss-BaSed acTivE leaRning), a method
+that integrates density-based diversity with a mech-
+anism that projects the hardness of labeled ex-
+amples to unlabeled ones based on their seman-
+tic similarity. Our experiments demonstrate that
+LOBSTER matches or surpasses state-of-the-art
+performance while being significantly faster than
+uncertainty-based strategies and more stable than
+methods relying solely on diversity. To the best of
+our knowledge, we are the first to use sequence-
+to-sequence cross-entropy loss of labeled data to
+guide the selection of unlabeled data in abstractive
+summarization.
+The main contributions of this work are as fol-
+arXiv:2608.25881v1 [cs.CL] 26 Aug 2026
+
+lows:
+• We propose a hybrid selection strategy that
+explicitly targets the weaknesses of the current
+model while maintaining data diversity.
+• We conduct extensive experiments across
+three benchmark datasets and two model back-
+bones, demonstrating the effectiveness of
+LOBSTER while highlighting the inherent in-
+stability of diversity-based methods and the
+high latency of uncertainty-based strategies.
+• We present a detailed data efficiency analy-
+sis revealing the surprising competitiveness
+of random sampling, under large annotation
+budgets.
+2
+Related Work
+2.1
+Abstractive Summarization
+The introduction of neural sequence-to-sequence
+models (Sutskever et al., 2014) and the attention
+mechanism (Bahdanau et al., 2015) established the
+foundations for modern abstractive summarization.
+Building on these advances, the Transformer archi-
+tecture (Vaswani et al., 2017) enabled large-scale
+pre-trained language models such as BART (Lewis
+et al., 2020), T5 (Raffel et al., 2020) and PEGA-
+SUS (Zhang et al., 2020a), which set the state of the
+art. Recent work introduced model adaptations for
+long or multi-document inputs (Khanna et al., 2022;
+Xiao et al., 2022), while instruction-tuned LLMs
+demonstrated strong few-shot and zero-shot capa-
+bilities across various tasks, including abstractive
+summarization, without task-specific fine-tuning
+(Achiam et al., 2023; Chung et al., 2024).
+2.2
+Active Natural Language Generation
+Within the field of NLP, active learning has been
+extensively studied and applied to discriminative
+tasks such as text classification (Ein-Dor et al.,
+2020; Margatina et al., 2021; Yu et al., 2022) and
+sequence tagging (Shen et al., 2017; Radmard et al.,
+2021). However, its application to generative tasks
+has received comparatively little attention (Perlitz
+et al., 2023). Existing active learning approaches
+for natural language generation are mainly catego-
+rized into uncertainty-based, diversity-based, and
+hybrid methods (Zhang et al., 2022).
+Uncertainty-based methods.
+These methods se-
+lect examples for annotation where the model is
+least confident in its predictions (Settles, 2012).
+Gidiotis and Tsoumakas (2022) leverage Bayesian
+approximation to model uncertainty, by adapting
+the Monte Carlo BLEU variance metric (Xiao et al.,
+2020) to summarization. They subsequently ap-
+ply this uncertainty estimation framework to active
+learning via their Bayesian Active Summarization
+(BAS) approach (Gidiotis and Tsoumakas, 2024).
+Documents with the highest variance are selected
+for annotation, and the model is iteratively retrained
+on the labeled set. Empirical results indicate that
+this approach achieves performance comparable to
+full-data training with only a few hundred examples
+under specific experimental settings. Despite these
+gains, however, purely uncertainty-based strate-
+gies in abstractive summarization can be sensitive
+to data quality, often remaining susceptible to se-
+lecting noisy or uninformative examples (Tsvigun
+et al., 2022; Li et al., 2024).
+Diversity-based methods.
+The goal of these
+methods is to select examples that are both diverse
+with respect to the labeled set while being repre-
+sentative of the data distribution (Kim et al., 2006).
+Tsvigun et al. (2022) propose In-Domain Diversity
+Sampling (IDDS), which selects instances that dif-
+fer from the labeled set while still remaining close
+to the unlabeled pool, balancing diversity with do-
+main relevance. Building on this idea, Li et al.
+(2024) introduce LLM-Determined Curriculum Ac-
+tive Learning (LDCAL), which leverages LLMs
+to rate instance difficulty and guide training. They
+also propose certainty gain maximization, a com-
+plementary strategy that selects instances whose
+distribution aligns closely with the overall data.
+Hybrid methods.
+Recent work has shown that
+combining uncertainty and diversity methods, can
+outperform uncertainty-only and diversity-only
+methods in multiple settings (Azeemi et al., 2025;
+Giouroukis et al., 2025). Azeemi et al. (2025)
+introduce Hybrid Uncertainty and Diversity Sam-
+pling (HUDS), a hybrid strategy for neural ma-
+chine translation that combines normalized nega-
+tive log-likelihood for uncertainty with cosine dis-
+tance from cluster centroids for diversity. For ab-
+stractive summarization, Diversity and Uncertainty
+Active Learning (DUAL) (Giouroukis et al., 2025)
+first selects a compact, diverse yet representative
+subset via IDDS, and then measures uncertainty
+within that subset using BAS.
+
+3
+Methodology
+Under cross-entropy training, high-loss examples
+tend to generate larger gradients and thus dominate
+parameter updates, a property reflected in hard ex-
+ample mining (Shrivastava et al., 2016) and boost-
+ing methods (Freund and Schapire, 1997). We ex-
+ploit this property in the active learning setting by
+directing supervision toward unlabeled instances
+that are semantically aligned with high-loss train-
+ing samples, concentrating annotation budget in
+regions where parameter updates have greater im-
+pact. Our core hypothesis is that an active learning
+strategy can improve performance by prioritizing
+unlabeled instances that are semantically similar to
+the model’s current high-loss training samples. By
+explicitly targeting the unlabeled semantic counter-
+parts of these hard examples, the model is driven
+to correct its specific weaknesses.
+To achieve this, we introduce LOBSTER (LOss-
+BaSed acTivE leaRning), a 3-stage sample acquisi-
+tion strategy that first identifies high-loss examples
+in the labeled set, then applies density-based fil-
+tering to construct a representative candidate pool,
+and finally selects samples that are semantically
+similar to the difficult instances without the need
+for the expensive autoregressive decoding used by
+uncertainty methods. The complete workflow of
+the LOBSTER strategy is illustrated in Figure 1.
+3.1
+Problem Formulation
+We define the active learning task for abstractive
+text summarization as follows. Let U represent the
+large unlabeled pool of documents, and L represent
+the initial small labeled set. At each active learning
+cycle t, an acquisition function utilizes the current
+model θt to select a batch of B instances from U
+to be annotated. The goal is to maximize summa-
+rization performance on a held-out test set while
+minimizing the total number of annotated samples.
+3.2
+Loss-Based Active Learning
+LOBSTER is a hybrid active learning method that
+combines loss-guided sampling with IDDS in or-
+der to maximize performance. It consists of three
+stages which we introduce below.
+Stage 1: Loss-Based Hard Example Selection.
+Unlike classification tasks, where errors correspond
+to strict binary failures, difficulty in abstractive
+summarization is better reflected by generation loss.
+High-loss examples are therefore more likely to
+correspond to error-prone regions of the data dis-
+tribution. The first stage of LOBSTER aims to
+diagnose these regions. Unlike uncertainty sam-
+pling, which estimates uncertainty on unlabeled
+data, we explicitly measure generation difficulty on
+the labeled data. We first compute the token-level
+cross-entropy loss for all samples in the current
+labeled set L. For a given source document x and
+target summary y of length T, the loss is defined
+as the average negative log-likelihood over the se-
+quence:
+L(x, y) = −1
+T
+T
+X
+t=1
+log P(yt | y<t, x; θ)
+(1)
+We then identify the set of hard examples, H, de-
+fined as the top-k examples with the highest loss:
+H = {xi ∈L | L(xi, yi) ≥τk}
+(2)
+where τk corresponds to the loss of the k-th exam-
+ple in L when sorted by loss in descending order.
+This acts as a dynamic threshold that adapts to the
+model’s current performance, rather than a fixed
+predefined threshold. These high-loss instances
+serve as semantic anchors, representing the specific
+linguistic patterns or domains where the model is
+currently underperforming.
+Stage 2: Representative Candidate Filtering.
+We observed that retrieving candidates purely via
+embedding similarity to the hard example set fre-
+quently produced clusters of highly correlated,
+near-duplicate examples. Therefore, we employ
+IDDS (Tsvigun et al., 2022) as a diversity-aware
+pre-filter to ensure the candidate pool covers broad,
+representative regions of the data distribution. Cru-
+cially, this mitigates the risk of selecting noisy out-
+liers (a common failure mode in uncertainty-based
+active learning (Tsvigun et al., 2022)). Further-
+more, while density-based methods are known to
+oversample dense regions when used as a final se-
+lector (Li et al., 2024), we avoid this issue by using
+IDDS strictly to construct a large candidate pool
+(Urep ≫B) rather than for final budget allocation.
+Filtering is separated from the final selection in
+Stage 3, ensuring the candidate pool is representa-
+tive and distinct from already labeled data, effec-
+tively mitigating the risks of both outlier selection
+and dense-region oversampling.
+Stage 3: Semantic Hardness Projection.
+The
+core contribution of LOBSTER is the explicit tar-
+geting of high-loss regions, i.e., difficult regions
+
+IDDS
+Filtering
+Labeled Training Set
+Semantic Hardness Projection
+Top-B
+Selection
+Hard Example Set
+Loss Calculation
+Unlabeled Data Pool
+Representative Pool
+Top-B
+Candidates
+Human Annotator
+0.31
+0.47
+0.27
+0.42
+0.33
+0.23
+0.18
+0.51
+0.36
+0.43
+0.11
+0.62
+Stage 1: Loss-based Hard Example Selection
+Stage 2: Representative Candidate Filtering
+Stage 3: Semantic Hardness Projection
+Figure 1: The three-stage pipeline of LOBSTER. (1) Loss-based Hard Example Selection identifies “Hard
+Example” set H (red squares) via high cross-entropy loss to serve as semantic anchors. (2) Representative
+Candidate Filtering uses IDDS to distill a pool of representative candidates (green circles) from the unlabeled set
+U. (3) Semantic Hardness Projection computes the Max-Similarity Score S(xu) (Eq. 3) using Sentence-BERT
+embeddings. This helps to identify a “semantic twin” for each hard example, forming the final Top-B batch for
+annotation.
+of the data. We assume that the optimal sample to
+annotate is the semantic twin of a known hard ex-
+ample. Under this assumption, documents that are
+semantically close to high-loss labeled examples
+are likely to provide informative supervision for
+improving the model.
+For every document xu in the representative can-
+didate pool Urep, we compute a maximum similar-
+ity score S(xu) against the set of hard examples
+H using Sentence-BERT (Reimers and Gurevych,
+2019) embeddings ϕ(·):
+S(xu) = max
+xh∈H
+ ϕ(xu) · ϕ(xh)
+∥ϕ(xu)∥∥ϕ(xh)∥
+
+(3)
+Crucially, we use the max operator rather than
+the average. We do not want documents that are
+broadly related to the hard example set, rather we
+are searching for instances that are similar to spe-
+cific hard examples. The final batch is constructed
+by selecting the top B candidates with the highest
+S(xu).
+4
+Experimental Setup
+4.1
+Datasets
+Following standard benchmarks in the field, we
+evaluated our active summarization models us-
+ing three widely used datasets representing di-
+verse summarization styles.
+AESLC contains
+short emails with their subject lines as summaries
+(Zhang and Tetreault, 2019). XSum contains BBC
+news articles with their single-sentence summaries,
+requiring high-level abstraction (Narayan et al.,
+2018). Finally, the CNN/DailyMail dataset consists
+of news articles accompanied by multi-sentence,
+bullet-point summaries, providing a benchmark
+for longer-form abstractive summarization (Her-
+mann et al., 2015; Nallapati et al., 2016; See et al.,
+2017). Table 2 in Appendix A reports the size of the
+training and test sets, alongside the average token
+lengths for both source documents and reference
+summaries. All datasets consist entirely of English
+text. We cleaned all datasets by removing noisy in-
+stances, such as empty strings and duplicates. Addi-
+tionally, we filtered the XSum and CNN/DailyMail
+datasets by excluding documents with fewer than
+10 tokens and summaries with fewer than 3 tokens.
+Finally, due to the high computational cost of the
+uncertainty-based baselines across multiple active
+learning cycles, we evaluated our models on a ran-
+dom subset of 1,000 instances from the test sets.
+
+4.2
+Active Learning Setup
+We follow the standard active learning framework
+used in prior studies (Siddhant and Lipton, 2018;
+Shelmanov et al., 2021). We initialize each cycle
+with a randomly sampled seed set of 10 annotated
+instances, which enables model-dependent strate-
+gies to obtain initial acquisition scores. At each
+iteration, the top 10 examples from the unlabeled
+pool U are selected according to the acquisition
+strategy and added to the labeled pool L with their
+ground-truth summaries. We then fine-tune the
+summarization model from scratch on L and eval-
+uate it on the held-out test set. The process is
+repeated for 15 iterations, resulting in a total an-
+notation budget of 150 instances, and results are
+averaged over 5 independent runs.
+4.3
+Baselines
+We compare our approach against the following
+baselines and state-of-the-art active summarization
+methods: random sampling, IDDS (Tsvigun et al.,
+2022), BAS (Gidiotis and Tsoumakas, 2024), and
+DUAL (Giouroukis et al., 2025). As discussed
+in Section 2, these methods represent a diverse
+spectrum of strategies, including diversity-based,
+uncertainty-based, and hybrid approaches. To en-
+sure a fair comparison with previous studies, we
+used the code provided by the respective authors.
+4.4
+Implementation Details
+We use BART-base (Lewis et al., 2020) and
+PEGASUS-large (Zhang et al., 2020a) as the sum-
+marization backbones.
+Hyperparameters were
+tuned on a small randomly sampled subset of the
+Gigaword dataset (Graff et al., 2003). All exper-
+iments were conducted using the HuggingFace
+Transformers library, with model-specific hyper-
+parameters reported in Table 3 in Appendix A. All
+experiments were conducted on a Google Cloud
+Platform (GCP) virtual machine equipped with an
+NVIDIA L4 GPU. Our code is publicly available
+at GitHub.
+4.5
+Evaluation Metrics
+We evaluate summary quality using both lexical
+overlap and semantic similarity metrics. For lexical
+overlap, we compute ROUGE scores (Lin, 2004),
+including ROUGE-1, ROUGE-2, and ROUGE-L,
+which measure unigram overlap, bigram overlap,
+and longest common subsequence overlap, respec-
+tively. For semantic similarity, we additionally use
+BERTScore (Zhang et al., 2020b), which leverages
+pre-trained contextual embeddings to measure the
+alignment in meaning between generated and refer-
+ence summaries. Although we report all ROUGE
+variants, our analysis primarily focuses on ROUGE-
+1 and BERTScore, as they provide complementary
+measures of lexical content preservation and se-
+mantic similarity. We also note that ROUGE-2 and
+ROUGE-L follow trends consistent with ROUGE-1
+across all experiments.
+5
+Results Analysis
+5.1
+Performance Comparison
+We evaluate the summarization performance of
+LOBSTER against four strategies across three
+benchmark datasets and two backbone architec-
+tures. Figures 2 and 3 illustrate the ROUGE-1
+and BERTScore learning curves, respectively, on
+the test set across active learning iterations, where
+solid lines represent the mean score across 5 ran-
+dom seeds and shaded regions indicate the standard
+deviation. The full results at the final annotation
+budget are reported in Appendix B.
+Competitive Effectiveness.
+Our analysis indi-
+cates that the efficacy of active learning strategies
+is often context-dependent, varying significantly
+across different datasets, metrics, and architectures.
+For example, regarding ROUGE-1 scores on the
+CNN/DM dataset, BAS achieves the top perfor-
+mance with the PEGASUS model. Conversely,
+on the XSum dataset using the BART backbone,
+DUAL emerges as the strongest performer. These
+dataset- and model-specific variations are similarly
+observed when evaluating semantic quality with
+BERTScore. This variability suggests that standard
+active learning approaches are not universally op-
+timal and are sensitive to the interaction between
+model architecture and summarization style. How-
+ever, LOBSTER exhibits strong results, deliver-
+ing performance that is consistently competitive
+with or superior to state-of-the-art baselines across
+these diverse experimental conditions. Specifically,
+on highly abstractive benchmarks such as XSum,
+LOBSTER achieves very strong scores with the
+PEGASUS backbone, outperforming or matching
+computationally expensive uncertainty-based ap-
+proaches like BAS and DUAL. To further assess
+the reliability of these observations at the final an-
+notation budget, we conducted paired permutation
+tests between LOBSTER and each baseline method
+across all datasets and backbone architectures. As
+
+25
+50
+75
+100
+125
+150
+Number of Examples
+10.0
+12.5
+15.0
+17.5
+20.0
+22.5
+25.0
+27.5
+Rouge-1
+DUAL
+Random
+IDDS
+LOBSTER
+BAS
+(A) BART on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+25
+26
+27
+28
+29
+30
+31
+32
+33
+Rouge-1
+(B) BART on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+36.5
+37.0
+37.5
+38.0
+38.5
+39.0
+39.5
+40.0
+Rouge-1
+(C) BART on CNN/DM
+25
+50
+75
+100
+125
+150
+Number of Examples
+8
+10
+12
+14
+16
+18
+20
+22
+24
+Rouge-1
+(D) PEGASUS on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+30
+32
+34
+36
+38
+40
+42
+44
+Rouge-1
+(E) PEGASUS on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+36.0
+36.5
+37.0
+37.5
+38.0
+38.5
+39.0
+39.5
+40.0
+Rouge-1
+(F) PEGASUS on CNN/DM
+Figure 2: Number of labeled instances vs. ROUGE-1. Comparison of active strategies using BART and PEGASUS
+backbones on AESLC, XSum, and CNN/DM datasets.
+reported in Table 5, several comparisons yield sta-
+tistically significant differences (p < 0.05), indi-
+cating that the observed performance variations are
+statistically meaningful in specific experimental
+settings.
+Addressing the Cold Start Problem.
+A key
+finding is LOBSTER’s ability to correct the in-
+herent weaknesses of the model. Although LOB-
+STER builds upon the IDDS framework, it demon-
+strates superior performance. While IDDS is gen-
+erally competitive, it exhibits notable instability
+in our experiments, particularly on the CNN/DM
+dataset and on AESLC with PEGASUS. As seen
+in Figures 2C, 2D, and 2F and their correspond-
+ing BERTScore plots, IDDS suffers from a severe
+“cold start” problem, lagging significantly behind
+all other methods during the initial acquisition cy-
+cles. This initial instability is particularly criti-
+cal because the core premise of active learning is
+to maximize performance under strict annotation
+budgets. Furthermore, the BERTScore evaluation
+confirms that this lag is not just a failure to pre-
+dict exact n-grams, but a drop in actual seman-
+tic understanding. In contrast, LOBSTER demon-
+strates more stable performance throughout the ac-
+tive learning process, as it avoids the initial cold
+start problem that IDDS faces.
+5.2
+Computational Efficiency
+While LOBSTER demonstrates competitive results
+in all different scenarios, its primary contribution
+lies in its computational efficiency. Table 1 com-
+pares the average runtime (in seconds) for a single
+active learning selection iteration across different
+strategies, datasets and models.
+Table 1: Average runtime (in seconds) for instance se-
+lection, for one active learning iteration, across different
+strategies. Comparison across backbones and datasets.
+Avg. Selection Time (s)
+Model
+Dataset
+BAS
+DUAL
+IDDS
+LOBSTER
+BART-base
+AESLC
+46.1
+38.7
+0.02
+0.6
+XSum
+66.6
+63.7
+0.4
+0.8
+CNN/DM
+70.2
+69.2
+0.3
+0.8
+PEGASUS-large
+AESLC
+221.1
+113.6
+0.01
+1.0
+XSum
+390.0
+267.6
+0.4
+1.5
+CNN/DM
+1064.2
+699.4
+0.4
+1.6
+Scalability and Runtime Analysis.
+Strategies
+relying on autoregressive decoding (e.g., BAS,
+DUAL) become prohibitively expensive as model
+and dataset sizes increase.
+These approaches
+estimate uncertainty by generating multiple dis-
+tinct summaries for each candidate document via
+multiple stochastic forward passes (Monte Carlo
+dropout). Because these passes must be repeated
+at each active learning iteration to reassess the un-
+labeled pool, the computational overhead grows
+
+considerably with larger datasets and model scales.
+These strategies exhibit poor scalability, becom-
+ing increasingly impractical as model architectures
+scale up or as generation complexity increases.
+In contrast, LOBSTER adopts a deterministic
+approach that shifts the computational burden from
+the expansive unlabeled pool to the much smaller
+labeled set. After the training phase, we compute
+the per-example cross-entropy loss using teacher
+forcing, which allows parallelized forward passes
+that are significantly faster than autoregressive
+token-by-token generation. Furthermore, LOB-
+STER replaces repeated model inference with ef-
+ficient vector similarity computations in the em-
+bedding space, avoiding the expensive autoregres-
+sive bottleneck entirely and ensuring scalability
+for large-scale document pools and high-parameter
+models.
+As demonstrated in Table 1, LOBSTER consis-
+tently and significantly outperforms both BAS and
+DUAL in terms of computational efficiency (we
+omit random sampling as its selection overhead
+is negligible). For example, with BART-Base on
+AESLC, LOBSTER reduces selection time to just
+0.6 seconds, compared to 46.1 seconds for BAS
+and 38.7 seconds for DUAL. This efficiency gap
+widens as the model and document length increase;
+on CNN/DM with PEGASUS-Large, BAS and
+DUAL require 1064.2 and 699.4 seconds respec-
+tively, whereas LOBSTER completes the selection
+in only 1.6 seconds. This shows that LOBSTER
+achieves a speedup of 665× over BAS and 437×
+over DUAL in this configuration, effectively reduc-
+ing the selection latency from nearly 18 minutes
+to near real-time (approaching the near-zero over-
+head of the model-agnostic IDDS) and enabling
+LOBSTER’s viability for large-scale summariza-
+tion applications. Crucially, LOBSTER achieves
+this near-zero latency without sacrificing the high
+summarization quality of uncertainty-based meth-
+ods or suffering the cold-start instability of density-
+based baselines like IDDS.
+5.3
+Ablation Studies
+5.3.1
+Impact of Loss-Based Hard Example
+Selection
+To investigate the contribution of the loss-based
+hard example selection mechanism (Stage 1), we
+replaced the high-loss example selection with a
+random selection strategy. Specifically, instead of
+selecting the top-k examples with the highest gen-
+eration loss from the labeled set L, we randomly
+sampled k examples as semantic anchors. The
+subsequent stages of LOBSTER, including density-
+based pre-filtering and semantic hardness projec-
+tion, remained unchanged. This ablation evaluates
+whether selecting high-loss examples provides an
+advantage over random anchor selection. As il-
+lustrated in Figure 5, on CNN/DM, LOBSTER
+outperforms the random-anchor variant across both
+BART and PEGASUS, suggesting that high-loss
+examples provide more effective semantic anchors
+for this dataset. In contrast, the performance gap
+on AESLC and XSum is relatively small, although
+standard LOBSTER maintains a slight advantage.
+This can be attributed to the fact that CNN/DM
+contains longer documents and summaries, mak-
+ing loss-guided example selection more benefi-
+cial. Since similar trends were observed across
+both ROUGE and BERTScore metrics, we report
+the BERTScore curves, which provide a comple-
+mentary semantic evaluation of the generated sum-
+maries.
+5.3.2
+Ablation Study: Impact of IDDS
+To isolate the contribution of the density-based pre-
+filtering (Stage 2), we removed the representative
+candidate pool (Urep) and applied the semantic
+hardness projection (Stage 3) directly to the en-
+tire unlabeled pool (U). We evaluated this ablation
+on AESLC and XSum to assess robustness across
+different summarization styles.
+Visualization of Semantic Collapse
+To visual-
+ize the behavior of the selection mechanism (Stage
+3) without filtering, we applied PCA to Sentence-
+BERT embeddings. Figure 6 plots selected samples
+(red) against the unlabeled pool (blue), revealing
+a critical failure mode: without IDDS, LOBSTER
+becomes concentrated in specific embedding re-
+gions. This reduces exploration of the data distribu-
+tion and leads to redundant selections, particularly
+in datasets such as AESLC and XSum that con-
+tain many semantically similar examples. In con-
+trast, pre-filtering with IDDS mitigates this issue by
+constructing a representative candidate pool (Urep)
+that preserves broader coverage of the unlabeled
+distribution before semantic hardness projection.
+This diversity constraint prevents the selection pro-
+cess from repeatedly focusing on local clusters,
+enabling more informative use of the annotation
+budget.
+
+5.4
+Data Efficiency Setup
+In preliminary experiments with a 150-sample bud-
+get, several configurations failed to reach 90% of
+full-dataset performance. Since such a small an-
+notation budget is often unrealistic in practical set-
+tings, we expanded the budget for these underper-
+forming setups (BART/AESLC, PEGASUS/AESLC,
+and BART/XSum) to 2,000 samples (B = 100 over
+20 iterations). Configurations already achieving the
+90% target (e.g., CNN/DM) required no expansion.
+Figure 4 and Appendix C detail the convergence
+rates and sample requirements needed to reach the
+90% performance threshold, alongside a compre-
+hensive runtime analysis of the selection process.
+The Competitiveness of Random Sampling
+Ta-
+ble 7 in Appendix C reveals that the performance
+gap between random sampling and active learn-
+ing methods narrows as the annotation budget in-
+creases. In several configurations, particularly on
+AESLC and XSum, random sampling matches or
+surpasses sophisticated active learning strategies.
+For example, in the BART-base/XSum setup, ran-
+dom sampling reaches the 90% threshold using
+only 1,600 samples, outperforming all other ap-
+proaches. IDDS fails to reach this threshold in half
+of the evaluated scenarios, while BAS succeeds
+on the PEGASUS-large/CNN/DM setup at the cost
+of prohibitive computational latency. LOBSTER
+reaches the target in 5 out of 6 configurations, pro-
+viding a balance between reliability and efficiency.
+This competitive behavior of random sampling at
+larger annotation budgets can be attributed to the
+relatively consistent structure of standard summa-
+rization benchmarks. As the annotation budget
+increases, larger uniformly sampled subsets are
+increasingly likely to capture the underlying docu-
+ment distribution, naturally reducing the advantage
+of more complex acquisition strategies. Conse-
+quently, active learning frameworks provide the
+greatest benefit under strict low-budget constraints,
+such as our primary 150-instance setting, where
+careful instance selection is critical for maximizing
+annotation efficiency.
+5.5
+Comparison with Modern LLMs
+Given the increasing adoption of instruction-tuned
+large language models for summarization, we com-
+pare models fine-tuned using examples selected by
+LOBSTER (at a 150-instance annotation budget)
+against a zero-shot Llama-3-8B-Instruct baseline.
+As shown in Table 6 in Appendix C, LOBSTER
+remains highly competitive and, in several cases,
+outperforms the zero-shot LLM across both lex-
+ical (ROUGE) and semantic (BERTScore) met-
+rics. These findings demonstrate that carefully
+selecting only 150 informative training examples
+through active learning is sufficient for a com-
+pact encoder-decoder model to achieve competi-
+tive summarization performance. Beyond accuracy,
+this approach offers important practical advantages,
+as such models typically require substantially less
+memory and lower inference latency than multi-
+billion-parameter autoregressive LLMs and, when
+deployed locally, avoid the recurring token costs
+associated with API-based LLM services.
+6
+Conclusions and Future Work
+This work demonstrated that the cross-entropy loss
+of labeled examples can serve as an effective ac-
+quisition signal for active learning in abstractive
+summarization. By identifying the model’s high-
+loss examples from the labeled set, our approach
+targets the specific areas where the model struggles.
+Building on this, we select the unlabeled “seman-
+tic twins” of those high-loss cases so the model is
+explicitly guided to correct its specific weaknesses.
+Furthermore, we showed that using a density-based
+pre-filter (IDDS) to find a representative candidate
+pool before final selection prevents semantic col-
+lapse. Extensive evaluation across three bench-
+mark datasets and two backbone architectures con-
+firms that LOBSTER matches or outperforms state-
+of-the-art baselines while remaining significantly
+faster. Finally, our data efficiency analysis indicates
+that random sampling remains surprisingly compet-
+itive under large annotation budgets. As the budget
+increases, random selection captures enough of the
+underlying data distribution to yield strong sum-
+marization performance. As future work, we plan
+to explore the applicability of LOBSTER to other
+sequence-to-sequence generation tasks beyond ab-
+stractive summarization, as well as its adaptation
+to modern LLMs.
+Limitations
+While our study demonstrates promising results, a
+few limitations remain. Our experiments are lim-
+ited to English-language datasets (AESLC, XSum,
+and CNN/DailyMail), and therefore the effective-
+ness of LOBSTER for other languages remains
+unexplored. Languages with different morphol-
+ogy, syntax, or summarization styles may influence
+
+the behavior of embedding similarity and active
+learning selection strategies. Second, although we
+evaluate using both lexical (ROUGE) and semantic
+(BERTScore) metrics, automatic evaluation met-
+rics may not fully capture aspects such as factual
+consistency, coherence, and overall summary qual-
+ity. In addition, LOBSTER assumes that semantic
+similarity in the Sentence-BERT embedding space
+provides a useful proxy for transferring hardness
+from labeled to unlabeled examples. Although our
+empirical results support this design choice, investi-
+gating alternative retrieval spaces or jointly learned
+task-specific embeddings remains an important di-
+rection for future work. Finally, our experiments
+simulate human annotation by retrieving ground-
+truth summaries from existing datasets rather than
+collecting new human annotations, which may not
+fully reflect real-world annotation scenarios.
+Ethical Considerations
+This work focuses on improving the efficiency
+of active learning for abstractive text summariza-
+tion. The proposed method does not introduce
+new datasets, but it relies on pre-trained language
+models and existing benchmark corpora, which
+may contain biases present in their original training
+data. As a result, biases in the underlying mod-
+els or datasets could influence the selection of in-
+stances during the active learning process and may
+propagate to downstream summarization systems.
+Future work could explore bias-aware acquisition
+strategies or incorporate fairness constraints when
+selecting samples for annotation.
+References
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama
+Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altenschmidt, Sam Altman,
+Shyamal Anadkat, and 1 others. 2023. GPT-4 techni-
+cal report. arXiv preprint arXiv:2303.08774.
+Abdul Hameed Azeemi, Ihsan Ayyub Qazi, and
+Agha Ali Raza. 2025. To label or not to label: Hy-
+brid active learning for neural machine translation. In
+Proceedings of the 31st International Conference on
+Computational Linguistics, pages 3071–3082, Abu
+Dhabi, UAE. Association for Computational Linguis-
+tics.
+Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Ben-
+gio. 2015.
+Neural machine translation by jointly
+learning to align and translate. In Proceedings of the
+3rd International Conference on Learning Represen-
+tations (ICLR).
+Hyung Won Chung, Le Hou, Shayne Longpre, Barret
+Zoph, Yi Tay, William Fedus, Yunxuan Li, Xuezhi
+Wang, Mostafa Dehghani, Siddhartha Brahma, Al-
+bert Webson, Shixiang Shane Gu, Zhuyun Dai, Mirac
+Suzgun, Xinyun Chen, Aakanksha Chowdhery, Alex
+Castro-Ros, Marie Pellat, Kevin Robinson, and 16
+others. 2024. Scaling instruction-finetuned language
+models.
+Journal of Machine Learning Research,
+25(70):1–53.
+Liat Ein-Dor, Alon Halfon, Ariel Gera, Eyal Shnarch,
+Lena Dankin, Leshem Choshen, Marina Danilevsky,
+Ranit Aharonov, Yoav Katz, and Noam Slonim. 2020.
+Active Learning for BERT: An Empirical Study. In
+Proceedings of the 2020 Conference on Empirical
+Methods in Natural Language Processing (EMNLP),
+pages 7949–7962, Online. Association for Computa-
+tional Linguistics.
+Yoav Freund and Robert E Schapire. 1997. A decision-
+theoretic generalization of on-line learning and an
+application to boosting. Journal of computer and
+system sciences, 55(1):119–139.
+Alexios Gidiotis and Grigorios Tsoumakas. 2022.
+Should we trust this summary? Bayesian abstrac-
+tive summarization to the rescue. In Findings of
+the Association for Computational Linguistics: ACL
+2022, pages 4119–4131, Dublin, Ireland. Association
+for Computational Linguistics.
+Alexios Gidiotis and Grigorios Tsoumakas. 2024.
+Bayesian active summarization. Computer Speech &
+Language, 83:101553.
+Petros Stylianos Giouroukis, Alexios Gidiotis, and
+Grigorios Tsoumakas. 2025. Dual: Diversity and
+uncertainty active learning for text summarization.
+Preprint, arXiv:2503.00867.
+David Graff, Junbo Kong, Ke Chen, and Kazuaki Maeda.
+2003. English gigaword. Linguistic Data Consor-
+tium, Philadelphia, 4(1):34.
+Karl Moritz Hermann, Tomáš Koˇciský, Edward Grefen-
+stette, Lasse Espeholt, Will Kay, Mustafa Suleyman,
+and Phil Blunsom. 2015. Teaching machines to read
+and comprehend. In Proceedings of the 29th Interna-
+tional Conference on Neural Information Processing
+Systems - Volume 1, NIPS’15, page 1693–1701, Cam-
+bridge, MA, USA. MIT Press.
+Urvashi Khanna, Samira Ghodratnama, Diego Mollá,
+and Amin Beheshti. 2022. Transformer-based mod-
+els for long document summarisation in financial
+domain. In Proceedings of the 4th Financial Narra-
+tive Processing Workshop @LREC2022, pages 73–
+78, Marseille, France. European Language Resources
+Association.
+Seokhwan Kim, Yu Song, Kyungduk Kim, Jeong-Won
+Cha, and Gary Geunbae Lee. 2006. MMR-based
+active machine learning for bio named entity recog-
+nition. In Proceedings of the Human Language Tech-
+nology Conference of the NAACL, Companion Vol-
+ume: Short Papers, pages 69–72, New York City,
+USA. Association for Computational Linguistics.
+
+Mike Lewis, Yinhan Liu, Naman Goyal, Marjan
+Ghazvininejad, Abdelrahman Mohamed, Omer Levy,
+Veselin Stoyanov, and Luke Zettlemoyer. 2020.
+BART: Denoising sequence-to-sequence pre-training
+for natural language generation, translation, and com-
+prehension. In Proceedings of the 58th Annual Meet-
+ing of the Association for Computational Linguistics,
+pages 7871–7880, Online. Association for Computa-
+tional Linguistics.
+Dongyuan Li, Ying Zhang, Zhen Wang, Shiyin Tan,
+Satoshi Kosugi, and Manabu Okumura. 2024. Active
+learning for abstractive text summarization via LLM-
+determined curriculum and certainty gain maximiza-
+tion. In Findings of the Association for Computa-
+tional Linguistics: EMNLP 2024, pages 8959–8971,
+Miami, Florida, USA. Association for Computational
+Linguistics.
+Chin-Yew Lin. 2004. ROUGE: A package for auto-
+matic evaluation of summaries. In Text Summariza-
+tion Branches Out, pages 74–81, Barcelona, Spain.
+Association for Computational Linguistics.
+Katerina Margatina, Giorgos Vernikos, Loïc Barrault,
+and Nikolaos Aletras. 2021. Active learning by ac-
+quiring contrastive examples. In Proceedings of the
+2021 Conference on Empirical Methods in Natural
+Language Processing, pages 650–663, Online and
+Punta Cana, Dominican Republic. Association for
+Computational Linguistics.
+Ramesh Nallapati, Bowen Zhou, Cicero dos Santos,
+Ça˘glar Gu˙lçehre, and Bing Xiang. 2016. Abstrac-
+tive text summarization using sequence-to-sequence
+RNNs and beyond.
+In Proceedings of the 20th
+SIGNLL Conference on Computational Natural Lan-
+guage Learning, pages 280–290, Berlin, Germany.
+Association for Computational Linguistics.
+Shashi Narayan, Shay B. Cohen, and Mirella Lapata.
+2018. Don’t give me the details, just the summary!
+topic-aware convolutional neural networks for ex-
+treme summarization. In Proceedings of the 2018
+Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 1797–1807, Brussels, Bel-
+gium. Association for Computational Linguistics.
+Yotam Perlitz, Ariel Gera, Michal Shmueli-Scheuer,
+Dafna Sheinwald, Noam Slonim, and Liat Ein-Dor.
+2023. Active learning for natural language gener-
+ation. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing,
+pages 9862–9877, Singapore. Association for Com-
+putational Linguistics.
+Puria Radmard, Yassir Fathullah, and Aldo Lipani. 2021.
+Subsequence based deep active learning for named
+entity recognition. In Proceedings of the 59th Annual
+Meeting of the Association for Computational Lin-
+guistics and the 11th International Joint Conference
+on Natural Language Processing (Volume 1: Long
+Papers), pages 4310–4321, Online. Association for
+Computational Linguistics.
+Colin Raffel, Noam Shazeer, Adam Roberts, Kather-
+ine Lee, Sharan Narang, Michael Matena, Yanqi
+Zhou, Wei Li, and Peter J. Liu. 2020. Exploring the
+limits of transfer learning with a unified text-to-text
+transformer. Journal of Machine Learning Research,
+21(140):1–67.
+Nils Reimers and Iryna Gurevych. 2019.
+Sentence-
+BERT: Sentence embeddings using Siamese BERT-
+networks. In Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natu-
+ral Language Processing (EMNLP-IJCNLP), pages
+3982–3992, Hong Kong, China. Association for Com-
+putational Linguistics.
+Abigail See, Peter J. Liu, and Christopher D. Manning.
+2017. Get to the point: Summarization with pointer-
+generator networks. In Proceedings of the 55th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1073–
+1083, Vancouver, Canada. Association for Computa-
+tional Linguistics.
+Burr Settles. 2012. Active Learning. Synthesis Lec-
+tures on Artificial Intelligence and Machine Learn-
+ing. Springer Cham, Cham. EBook published 31
+May 2022.
+Artem
+Shelmanov,
+Dmitri
+Puzyrev,
+Lyubov
+Kupriyanova, Denis Belyakov, Daniil Larionov,
+Nikita Khromov, Olga Kozlova, Ekaterina Artemova,
+Dmitry V. Dylov, and Alexander Panchenko. 2021.
+Active learning for sequence tagging with deep
+pre-trained
+models
+and
+Bayesian
+uncertainty
+estimates. In Proceedings of the 16th Conference
+of the European Chapter of the Association for
+Computational Linguistics: Main Volume, pages
+1698–1712, Online. Association for Computational
+Linguistics.
+Yanyao Shen, Hyokun Yun, Zachary Lipton, Yakov Kro-
+nrod, and Animashree Anandkumar. 2017. Deep
+active learning for named entity recognition.
+In
+Proceedings of the 2nd Workshop on Representa-
+tion Learning for NLP, pages 252–256, Vancouver,
+Canada. Association for Computational Linguistics.
+Abhinav Shrivastava, Abhinav Gupta, and Ross Gir-
+shick. 2016. Training region-based object detectors
+with online hard example mining. In Proceedings of
+the IEEE conference on computer vision and pattern
+recognition, pages 761–769.
+Aditya Siddhant and Zachary C. Lipton. 2018. Deep
+Bayesian active learning for natural language pro-
+cessing: Results of a large-scale empirical study.
+In Proceedings of the 2018 Conference on Empir-
+ical Methods in Natural Language Processing, pages
+2904–2909, Brussels, Belgium. Association for Com-
+putational Linguistics.
+Ilya Sutskever, Oriol Vinyals, and Quoc V Le. 2014.
+Sequence to sequence learning with neural networks.
+Advances in neural information processing systems,
+27.
+
+Akim Tsvigun, Ivan Lysenko, Danila Sedashov, Ivan
+Lazichny, Eldar Damirov, Vladimir Karlov, Artemy
+Belousov, Leonid Sanochkin, Maxim Panov, Alexan-
+der Panchenko, Mikhail Burtsev, and Artem Shel-
+manov. 2022. Active learning for abstractive text
+summarization. In Findings of the Association for
+Computational Linguistics: EMNLP 2022, pages
+5128–5152, Abu Dhabi, United Arab Emirates. As-
+sociation for Computational Linguistics.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing
+systems, 30.
+Tim Z. Xiao, Aidan N. Gomez, and Yarin Gal. 2020.
+Wat zei je?
+detecting out-of-distribution trans-
+lations with variational transformers.
+Preprint,
+arXiv:2006.08344.
+Wen Xiao, Iz Beltagy, Giuseppe Carenini, and Arman
+Cohan. 2022. PRIMERA: Pyramid-based masked
+sentence pre-training for multi-document summariza-
+tion. In Proceedings of the 60th Annual Meeting of
+the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), pages 5245–5263, Dublin,
+Ireland. Association for Computational Linguistics.
+Yue Yu, Lingkai Kong, Jieyu Zhang, Rongzhi Zhang,
+and Chao Zhang. 2022. AcTune: Uncertainty-based
+active self-training for active fine-tuning of pretrained
+language models. In Proceedings of the 2022 Con-
+ference of the North American Chapter of the As-
+sociation for Computational Linguistics: Human
+Language Technologies, pages 1422–1436, Seattle,
+United States. Association for Computational Lin-
+guistics.
+Manzil Zaheer, Guru Guruganesh, Avinava Dubey,
+Joshua Ainslie, Chris Alberti, Santiago Ontañón,
+Philip Pham, Anirudh Ravula, Qifan Wang, Li Yang,
+and Amr Ahmed. 2020. Big bird: Transformers for
+longer sequences. In Advances in Neural Information
+Processing Systems, volume 33, pages 17283–17297.
+Curran Associates, Inc.
+Jingqing Zhang, Yao Zhao, Mohammad Saleh, and Pe-
+ter Liu. 2020a. PEGASUS: Pre-training with ex-
+tracted gap-sentences for abstractive summarization.
+In Proceedings of the 37th International Conference
+on Machine Learning, volume 119 of Proceedings
+of Machine Learning Research, pages 11328–11339.
+PMLR.
+Rui Zhang and Joel Tetreault. 2019. This email could
+save your life: Introducing the task of email subject
+line generation. In Proceedings of the 57th Annual
+Meeting of the Association for Computational Lin-
+guistics, pages 446–456, Florence, Italy. Association
+for Computational Linguistics.
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q.
+Weinberger, and Yoav Artzi. 2020b. Bertscore: Eval-
+uating text generation with bert. In International
+Conference on Learning Representations.
+Zhisong Zhang, Emma Strubell, and Eduard Hovy. 2022.
+A survey of active learning for natural language pro-
+cessing. In Proceedings of the 2022 Conference on
+Empirical Methods in Natural Language Processing,
+pages 6166–6190, Abu Dhabi, United Arab Emirates.
+Association for Computational Linguistics.
+
+Appendix
+A
+Dataset Statistics and Model
+Hyperparameters
+In this section, we provide additional details re-
+garding the datasets and models used in our ex-
+periments. Table 2 reports dataset statistics, in-
+cluding the number of instances and the average
+lengths of source documents and summaries for
+both training and test splits. Table 3 provides the
+hyperparameters used for fine-tuning the backbone
+summarization models.
+Table 2: Statistics for the datasets used in this work. We
+report the number of instances (# Ins.) and the average
+length of source documents (Doc. len.) and summaries
+(Sum. len.) for both training and test splits.
+Dataset
+Subset
+# Ins.
+Doc. len.
+Sum. len.
+Gigaword
+Train
+200
+39.6
+11.2
+Test
+1K
+38.3
+10.4
+AESLC
+Train
+14,436
+115.3
+4
+Test
+1,906
+114.6
+4.1
+XSum
+Train
+204,045
+388.6
+23.1
+Test
+1K
+384.3
+23
+CNN/DM
+Train
+287,113
+692.4
+51.6
+Test
+1K
+676.1
+55.2
+Table 3: Hyperparameters used for fine-tuning the back-
+bone summarization models.
+Hyperparameter
+BART-base
+PEGASUS-large
+Learning Rate
+2e−5
+5e−5
+Batch Size (Train)
+16
+8
+Batch Size (Eval)
+32
+16
+Num. Epochs
+6
+4
+Optimizer
+AdamW
+AdamW
+Weight Decay
+0.028
+0.03
+Warmup Ratio
+0.1
+0.1
+Beam Size
+4
+4
+Min. Train Steps
+350
+200
+Grad. Accumulation
+1
+1
+In this work, we utilize standard public datasets
+(AESLC, XSum, CNN/DailyMail) and pre-trained
+models (e.g., BART, PEGASUS). These artifacts
+are established benchmarks within the NLP com-
+munity and are used for academic benchmarking
+and summarization evaluation. All datasets and
+models are used in accordance with their respective
+open-source licenses and research usage guidelines.
+Because our core contribution focuses on an algo-
+rithmic active learning strategy rather than novel
+dataset curation, we relied on the standard versions
+and original preprocessing of these datasets. Con-
+sequently, we did not perform additional data col-
+lection. We also did not apply further filtering
+for personally identifiable information or offensive
+content beyond the preprocessing steps already ap-
+plied by the original dataset creators.
+All experiments were conducted using publicly
+available implementations of the selected backbone
+models through the HuggingFace Transformers li-
+brary. Training and evaluation procedures follow
+standard fine-tuning practices for abstractive sum-
+marization models. Hyperparameters were selected
+based on preliminary tuning experiments and re-
+main consistent across all active learning strategies
+to ensure a fair comparison.
+To promote reproducibility, all code created for
+this study, including the full experimental pipeline
+and the implementation of the proposed active
+learning method, is provided anonymously solely
+for the intended purpose of peer-review.
+B
+Summarization Performance
+Table 4 reports summarization performance of all
+methods under a 150-instance annotation budget
+across AESLC, XSum, and CNN/DailyMail using
+ROUGE and BERTScore. Statistical significance
+tests between LOBSTER and baselines are reported
+in Table 5.
+C
+Detailed Data Efficiency Setup Results
+In this section, we provide additional results for the
+data efficiency analysis discussed in Section 5.4.
+Table 7 reports the number of annotated samples
+required for each method to reach 90% of the full
+dataset performance across different datasets and
+backbone models. Additionally, Table 8 presents
+the average runtime required for instance selection
+during a single active learning iteration, highlight-
+ing the computational efficiency of the compared
+strategies.
+These results are consistent with the trends dis-
+cussed in the main text. In particular, Table 7 high-
+lights the strong competitiveness of random sam-
+pling under larger annotation budgets, while LOB-
+STER also achieves strong and consistent perfor-
+mance across most setups. At the same time, LOB-
+STER provides a balance between performance re-
+liability and computational efficiency compared to
+uncertainty-based approaches, as shown in Table 8.
+
+Table 4: Summarization performance (ROUGE and rescaled BERTScore) with a 150-instance annotation budget.
+Results are reported as mean ± standard deviation. The best performance for each metric and dataset is highlighted
+in bold.
+Model
+Method
+ROUGE-1
+ROUGE-2
+ROUGE-L
+BERTScore
+Dataset: AESLC
+BART-base
+Random
+26.6±0.65
+13.2±0.65
+26.0±0.63
+13.51±0.57
+BAS
+26.5±0.17
+13.1±0.31
+25.8±0.24
+13.63±0.99
+IDDS
+27.0±0.32
+12.5±0.32
+25.4±0.31
+13.03±0.19
+DUAL
+26.9±0.86
+13.2±0.70
+26.0±0.85
+12.95±0.14
+LOBSTER
+27.1±0.88
+13.4±0.45
+26.3±0.80
+12.96±0.65
+PEGASUS-large
+Random
+21.1±0.54
+9.9±0.48
+20.0±0.55
+6.14±0.68
+BAS
+19.6±1.34
+9.0±0.86
+18.9±1.36
+4.82±1.36
+IDDS
+22.6±0.42
+11.0±0.34
+21.5±0.47
+7.70±0.59
+DUAL
+21.2±1.15
+10.1±0.47
+20.5±1.08
+6.29±0.90
+LOBSTER
+22.1±1.01
+10.9±0.61
+21.5±0.94
+7.66±0.55
+Dataset: XSum
+BART-base
+Random
+32.6±0.36
+10.7±0.38
+25.3±0.38
+37.27±0.35
+BAS
+32.3±0.15
+10.6±0.14
+25.1±0.23
+36.93±0.30
+IDDS
+32.6±0.14
+10.6±0.10
+25.0±0.17
+36.71±0.15
+DUAL
+32.9±0.17
+10.8±0.15
+25.6±0.14
+37.42±0.28
+LOBSTER
+32.5±0.21
+10.6±0.21
+25.3±0.28
+37.00±0.22
+PEGASUS-large
+Random
+43.4±0.37
+20.1±0.31
+34.9±0.50
+48.00±0.37
+BAS
+43.3±0.30
+20.2±0.33
+34.9±0.36
+47.71±0.40
+IDDS
+42.8±0.13
+19.6±0.12
+34.2±0.11
+47.28±0.24
+DUAL
+43.3±0.24
+20.3±0.30
+35.0±0.42
+47.74±0.38
+LOBSTER
+43.5±0.49
+20.3±0.49
+35.0±0.47
+47.72±0.35
+Dataset: CNN/DM
+BART-base
+Random
+39.5±0.24
+17.0±0.18
+26.3±0.18
+29.35±0.24
+BAS
+39.5±0.22
+17.0±0.19
+26.6±0.16
+29.42±0.18
+IDDS
+39.2±0.29
+16.5±0.18
+26.2±0.14
+29.40±0.18
+DUAL
+39.4±0.66
+17.1±0.37
+26.6±0.32
+29.44±0.85
+LOBSTER
+39.4±0.58
+17.0±0.48
+26.4±0.39
+29.37±0.20
+PEGASUS-large
+Random
+39.2±0.24
+17.0±0.15
+26.3±0.20
+26.40±0.15
+BAS
+39.4±0.32
+17.1±0.20
+26.2±0.17
+26.17±0.32
+IDDS
+38.8±0.33
+16.8±0.20
+26.2±0.20
+25.37±0.30
+DUAL
+39.2±0.37
+17.1±0.18
+26.4±0.21
+26.49±0.33
+LOBSTER
+39.2±0.43
+16.9±0.22
+26.2±0.20
+25.96±0.48
+
+Table 5: Paired permutation test p-values comparing LOBSTER against baseline methods at the 150-instance
+annotation budget for ROUGE-1 and BERTScore. An asterisk (*) indicates a statistically significant difference
+(p < 0.05). For significant results, arrows indicate whether LOBSTER scored significantly higher (↑) or lower (↓)
+than the baseline.
+LOBSTER vs. Baseline (p-value)
+Dataset
+Model
+DUAL
+Random
+IDDS
+BAS
+ROUGE-1
+AESLC
+BART-base
+0.1681
+0.4250
+0.0083∗↑
+0.0203∗↑
+PEGASUS-large
+<0.001∗↑
+<0.001∗↑
+0.5113
+<0.001∗↑
+XSum
+BART-base
+0.0224∗↓
+0.1649
+0.6326
+0.2942
+PEGASUS-large
+0.2192
+0.8924
+<0.001∗↑
+0.2532
+CNN/DM
+BART-base
+0.1807
+0.0722
+0.8836
+0.0106∗↓
+PEGASUS-large
+<0.001∗↓
+<0.001∗↓
+0.2663
+<0.001∗↓
+BERTScore
+AESLC
+BART-base
+0.3666
+0.0074∗↓
+0.3685
+0.0013∗↓
+PEGASUS-large
+<0.001∗↑
+<0.001∗↑
+0.9037
+<0.001∗↑
+XSum
+BART-base
+0.0150∗↓
+0.1250
+0.2651
+0.7348
+PEGASUS-large
+0.9361
+0.0946
+0.0338∗↑
+0.9475
+CNN/DM
+BART-base
+<0.001∗↓
+<0.001∗↑
+<0.001∗↓
+<0.001∗↓
+PEGASUS-large
+<0.001∗↓
+<0.001∗↓
+0.6113
+0.0100∗↓
+Table 6: Performance comparison of models fine-tuned using examples selected by LOBSTER (at a 150-instance
+annotation budget) against a zero-shot Llama-3-8B-Instruct baseline. Bold values indicate the best performance for
+each metric within each dataset.
+Dataset
+Setup
+ROUGE (1 / 2 / L)
+BERTScore
+AESLC
+Llama-3-8B-Instruct (Zero-shot)
+27.16 / 12.06 / 25.22
+11.61
+BART-base + LOBSTER
+27.10 / 13.40 / 26.30
+12.96
+PEGASUS-large + LOBSTER
+22.10 / 10.90 / 21.50
+7.66
+XSum
+Llama-3-8B-Instruct (Zero-shot)
+29.41 / 8.40 / 21.20
+29.13
+BART-base + LOBSTER
+32.50 / 10.60 / 25.30
+37.00
+PEGASUS-large + LOBSTER
+43.50 / 20.30 / 35.00
+47.72
+CNN/DM
+Llama-3-8B-Instruct (Zero-shot)
+39.39 / 15.61 / 24.72
+26.28
+BART-base + LOBSTER
+39.40 / 17.00 / 26.40
+29.37
+PEGASUS-large + LOBSTER
+39.20 / 16.90 / 26.20
+25.96
+Table 7: Data Efficiency Analysis: Number of annotated samples required to reach 90% of the full-dataset
+performance. Bold values indicate the winning strategy for each configuration, and a dash (—) indicates that the
+configuration failed to reach the 90% target.
+Model
+Dataset
+Active Learning
+LOBSTER
+DUAL
+BAS
+IDDS
+Rand.
+BART-base
+AESLC
+1900
+1900
+1300
+—
+2000
+XSum
+2000
+1700
+1700
+—
+1600
+CNN/DM
+50
+60
+110
+100
+100
+PEGASUS-large
+AESLC
+1800
+1800
+2000
+2000
+1800
+XSum
+80
+90
+80
+100
+80
+CNN/DM
+—
+—
+150
+—
+—
+
+Table 8: Data Efficiency Analysis: Average runtime (in seconds) for instance selection, for one active learning
+iteration, across different strategies. Comparison across backbones and datasets.
+Avg Selection time (s)
+Model
+Dataset
+BAS
+DUAL
+IDDS
+LOBSTER
+BART-base
+AESLC
+61.8
+366.2
+0.3
+3.9
+XSum
+96.1
+560.5
+2.8
+12.1
+CNN/DM
+70.2
+69.2
+0.3
+0.8
+PEGASUS-large
+AESLC
+164.6
+618.1
+0.3
+12.8
+XSum
+390.0
+267.6
+0.4
+1.5
+CNN/DM
+1064.2
+699.4
+0.4
+1.6
+25
+50
+75
+100
+125
+150
+Number of Examples
+-2.0
+0.0
+2.0
+4.0
+6.0
+8.0
+10.0
+12.0
+14.0
+BERTScore
+DUAL
+Random
+IDDS
+LOBSTER
+BAS
+(A) BART on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+28.5
+30.0
+31.5
+33.0
+34.5
+36.0
+37.5
+BERTScore
+(B) BART on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+25.2
+25.8
+26.4
+27.0
+27.6
+28.2
+28.8
+29.4
+30.0
+BERTScore
+(C) BART on CNN/DM
+25
+50
+75
+100
+125
+150
+Number of Examples
+-6.0
+-4.0
+-2.0
+0.0
+2.0
+4.0
+6.0
+8.0
+BERTScore
+(D) PEGASUS on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+30.0
+32.0
+34.0
+36.0
+38.0
+40.0
+42.0
+44.0
+46.0
+48.0
+BERTScore
+(E) PEGASUS on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+20.8
+21.6
+22.4
+23.2
+24.0
+24.8
+25.6
+26.4
+BERTScore
+(F) PEGASUS on CNN/DM
+Figure 3: Number of labeled instances vs. rescaled BERTScore. Comparison of active strategies using BART and
+PEGASUS backbones on AESLC, XSum, and CNN/DM datasets.
+
+500
+1000
+1500
+2000
+Number of Examples
+24.0
+25.0
+26.0
+27.0
+28.0
+29.0
+30.0
+31.0
+32.0
+33.0
+Rouge-1
+DUAL
+Random
+IDDS
+LOBSTER
+BAS
+90% Target
+(A) BART on AESLC
+500
+1000
+1500
+2000
+Number of Examples
+31.5
+32.0
+32.5
+33.0
+33.5
+34.0
+34.5
+35.0
+35.5
+36.0
+Rouge-1
+(B) BART on XSum
+30
+60
+90
+120
+150
+Number of Examples
+36.5
+37.0
+37.5
+38.0
+38.5
+39.0
+39.5
+40.0
+Rouge-1
+(C) BART on CNN/DM
+500
+1000
+1500
+2000
+Number of Examples
+19.5
+21.0
+22.5
+24.0
+25.5
+27.0
+28.5
+30.0
+31.5
+Rouge-1
+(D) PEGASUS on AESLC
+30
+60
+90
+120
+150
+Number of Examples
+30.0
+32.0
+34.0
+36.0
+38.0
+40.0
+42.0
+44.0
+Rouge-1
+(E) PEGASUS on XSum
+30
+60
+90
+120
+150
+Number of Examples
+36.0
+36.5
+37.0
+37.5
+38.0
+38.5
+39.0
+39.5
+40.0
+Rouge-1
+(F) PEGASUS on CNN/DM
+Figure 4: Number of labeled instances vs. ROUGE-1. Comparison of active learning strategies using BART and
+PEGASUS backbones on AESLC, XSum, and CNN/DM datasets. The dashed horizontal line in each subplot
+denotes the 90% performance threshold of the full-dataset baseline.
+25
+50
+75
+100
+125
+150
+Number of Examples
+-2.0
+0.0
+2.0
+4.0
+6.0
+8.0
+10.0
+12.0
+14.0
+BERTScore
+LOBSTER
+LOBSTER (Random Anchors)
+(A) BART on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+29.0
+30.0
+31.0
+32.0
+33.0
+34.0
+35.0
+36.0
+37.0
+BERTScore
+(B) BART on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+26.8
+27.2
+27.6
+28.0
+28.4
+28.8
+29.2
+29.6
+BERTScore
+(C) BART on CNN/DM
+25
+50
+75
+100
+125
+150
+Number of Examples
+-6.0
+-4.0
+-2.0
+0.0
+2.0
+4.0
+6.0
+8.0
+BERTScore
+(D) PEGASUS on AESLC
+25
+50
+75
+100
+125
+150
+Number of Examples
+34.5
+36.0
+37.5
+39.0
+40.5
+42.0
+43.5
+45.0
+46.5
+48.0
+BERTScore
+(E) PEGASUS on XSum
+25
+50
+75
+100
+125
+150
+Number of Examples
+22.0
+22.5
+23.0
+23.5
+24.0
+24.5
+25.0
+25.5
+26.0
+26.5
+BERTScore
+(F) PEGASUS on CNN/DM
+Figure 5: Number of labeled instances vs. BERTScore. Comparison of LOBSTER and the LOBSTER (Random
+Anchors) ablation using BART and PEGASUS backbones on AESLC, XSum, and CNN/DM datasets.
+
+ROUGE-1: 25.3
+(a) AESLC, without IDDS
+ROUGE-1: 27.1
+(b) AESLC, with IDDS
+ROUGE-1: 30.6
+(c) XSum, without IDDS
+ROUGE-1: 32.7
+(d) XSum, with IDDS
+Figure 6: Impact of IDDS on Selection Diversity (PCA visualization of selected instances). Comparison of the
+proposed LOBSTER method with IDDS versus the ablation without IDDS. The IDDS module prevents semantic
+collapse by filtering redundant candidates, leading to higher ROUGE-1 scores.

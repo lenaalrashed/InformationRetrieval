@@ -1,0 +1,1136 @@
+Reasoning Before Translation: Enhancing Legal Machine Translation with
+Structured Reasoning
+Aixiu An * 1 Michael Jungo * 2 Eloi Eynard 3 Mark Drenhaus 4 Andreas Fischer 2 Jean Hennebert 1
+S´ebastien Rumley 1
+Abstract
+Neural machine translation (NMT) in the legal
+domain is a linguistically and conceptually de-
+manding task, primarily due to the complexity
+of legal language and the high level of precision
+it requires. The recent emergence of reasoning-
+capable language models opens new possibilities
+for tackling such challenges. They add to a set of
+other previously proposed techniques to enhance
+the translation quality, which includes supervised
+fine-tuning and reinforcement learning.
+In this work, we perform a comparison be-
+tween these various approaches. More particu-
+larly, we evaluate small language models such as
+Qwen3.5 4B, Qwen3.5 9B, and Gemma 3
+12B enhanced with various re-training paradigms
+and compare their performances against frontier
+reasoning models. We focus on the Swiss le-
+gal system, which—with its unique multilingual
+statutes—offers a particularly challenging testbed
+for reasoning-augmented models.
+Our results
+show that the quality of small “base” models can
+be greatly enhanced, and that reinforcement learn-
+ing with verifiable rewards can be applied to NMT
+in the legal domain and surpasses the transla-
+tion quality of supervised fine-tuning. The per-
+formance of enhanced small models is close to
+the one of state-of-the-art reasoning models yet
+remains inferior. We also note that re-training
+paradigms yield diminishing returns as model
+size increase. The code and models are publicly
+available at https://github.com/aixiuxiuxiu/Legal-
+MT-SFT-RL.
+*Equal contribution 1iCoSys, University of Applied Sciences
+and Arts Western Switzerland, Fribourg, Switzerland 2AIBEX,
+University of Fribourg, Fribourg, Switzerland 3Neur.on, Fri-
+bourg, Switzerland 4Human-IST, University of Fribourg, Fribourg,
+Switzerland. Correspondence to: Aixiu An <aixiu.an@hefr.ch>,
+Michael Jungo <michael.jungo@unifr.ch>.
+Proceedings of the 43 rd International Conference on Machine
+Learning, Seoul, South Korea. PMLR 306, 2026. Copyright 2026
+by the author(s).
+1. Introduction
+Neural Machine Translation (NMT) has progressed rapidly
+alongside the development of large language models
+(LLMs), achieving substantial improvements in translation
+quality across many domains and language pairs (Kocmi &
+Federmann, 2023; Finkelstein et al., 2026). These advance-
+ments are particularly relevant in the context of multilingual
+legal translation, where precision, consistency, and preser-
+vation of legal meaning are critical. In Switzerland, the
+coexistence of German, French, Italian and Romansh as
+official languages, together with the multilingual nature of
+the Swiss legal system, creates a particularly challenging
+environment for NMT systems (Mart´ınez-Dom´ınguez et al.,
+2020; Canavese & Cadwell, 2024; Niklaus et al., 2025).
+Beyond multilingualism, legal texts themselves introduce
+additional challenges. They are characterized by specialized
+terminology, complex syntactic structures, and the formal
+register of legalese—a style of legal writing often marked by
+highly technical vocabulary, long and syntactically complex
+sentences, and precise but rigid formulations (Mattila, 2016;
+Tiersma, 2008; Mart´ınez et al., 2023). These linguistic fea-
+tures—combined with the need to preserve legal accuracy,
+nuance, and internal consistency—pose significant difficul-
+ties not only for human translators, but also for machine
+translation systems (e.g., Koehn & Knowles, 2017; Wies-
+mann, 2019), and continue to push the limits of even the
+most advanced NMT models.
+Recent work has demonstrated that LLMs, such as GPT,
+exhibit strong general-purpose translation capabilities with
+zero- and few-shot prompting (Hendy et al., 2023; Jiao et al.,
+2023). Building on these capabilities, some approaches have
+attempted to adapt small language models (SLMs) to the le-
+gal domain by fine-tuning them on domain-specific corpora
+(Niklaus et al., 2025). Such approaches are particularly rele-
+vant in legal and institutional contexts, where computational
+efficiency, deployment cost, data privacy, and on-premise
+inference constraints may limit the practical use of large
+proprietary models. While these methods yield improved
+performance over non-fine-tuned models, they often fall
+short of state-of-the-art LLMs in capturing the full linguis-
+tic complexity and precision required for high-quality legal
+1
+arXiv:2607.19181v1 [cs.CL] 21 Jul 2026
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+translation.
+More recently, advances in NMT have been significantly
+influenced by the emergence of Large Reasoning Models
+(LRMs), such as the GPT-O series and DeepSeek-R1 (Guo
+et al., 2025), which have opened new opportunities for
+addressing complex translation tasks (Liu et al., 2025).
+These models have demonstrated impressive performance
+on reasoning-intensive tasks such as mathematics (Ahn et al.,
+2024; Xia et al., 2025) and programming (El-Kishky et al.,
+2025; Zhao et al., 2025), highlighting their capacity to re-
+flect, reason, and iteratively refine their outputs. In the
+context of translation, LRMs extend their reasoning capa-
+bilities by treating translation as a dynamic inference pro-
+cess—enabling more accurate handling of context, cultural
+nuances, and syntactic complexity. For instance, their self-
+reflective mechanisms can be leveraged for error detection
+and correction during inference, allowing them to better
+handle ambiguous and linguistically demanding translation
+scenarios (Wang et al., 2024; Chen et al., 2025; Wu et al.,
+2025).
+In light of these developments, this paper explores how rea-
+soning can be leveraged to improve translation quality, with
+a particular focus on Swiss legal translation. We investigate
+both the impact of different training paradigms and the
+role of model scale in reasoning-based legal translation. In
+particular, we compare supervised fine-tuning (SFT) and
+reinforcement learning (RL) approaches across models of
+different sizes, ranging from 4B to 12B parameters, to better
+understand how reasoning capabilities interact with model
+capacity.
+In the SFT setting, we investigate two variants: Reason-
+ing SFT, where models are fine-tuned on translation pairs
+accompanied by intermediate reasoning steps; and Simple
+SFT, where models are trained solely on direct sentence-
+level translation pairs. We then compare these approaches
+with an RL setup based on Group Relative Policy Optimiza-
+tion (GRPO) (Shao et al., 2024) to evaluate the effectiveness
+of reasoning-augmented training strategies for legal transla-
+tion across different model scales.
+Specifically, we make the following three contributions:
+1. We conduct a systematic and detailed comparison of
+three approaches for integrating reasoning into trans-
+lation across different model families: (1) prompting
+large reasoning models, (2) Fine-tuning of small lan-
+guage models using intermediate reasoning steps, and
+(3) applying RL techniques to optimize model’s trans-
+lation.
+2. We release a new dataset of 40 000 legal translation
+pairs enriched with automatically generated intermedi-
+ate reasoning steps, produced using the DeepSeek-R1
+model. This dataset aims to support future research on
+reasoning-augmented translation in legal domains.
+3. We propose a GRPO training recipe, accompanied by a
+simple yet effective reward formulation tailored to legal
+translation tasks, which can serve as a blueprint for
+future work on domain-specific reinforcement learning
+in NMT.
+Our main findings are as follows: (a) While both SFT and
+RL improve translation quality, these effects are particu-
+larly pronounced for smaller models; (b) RL yields more
+substantial performance gains than SFT; (c) Reasoning-
+augmented SFT does not consistently outperform simple
+SFT; (d) Model size plays an important role, and among the
+evaluated smaller-scale models, GRPO-trained Gemma 3
+12B achieves the best performance for Swiss legal transla-
+tion. 1
+2. Related Work: Reasoning in Neural
+Machine Translation
+Recent studies have begun to leverage reasoning capabilities
+of language models to enhance NMT, with approaches rang-
+ing from multi-agent systems to reinforcement learning. For
+example, Wang et al. (2024) propose a multi-agent frame-
+work for translating figurative language, where a translator
+agent iteratively improves translations based on feedback
+from advisor and evaluator agents. Similarly, Wu et al.
+(2025) investigate reasoning-based prompting for MT and
+find that simple self-refinement strategies, such as asking the
+model to “translate again,” can outperform explicit chain-of-
+thought decomposition.
+Reinforcement learning for deep reasoning in MT is a rel-
+atively new area, but emerging studies reflect growing in-
+terest in its potential. A notable example is R1-T1 (He
+et al., 2025), which uses COMET scores (Rei et al., 2020)
+as reward signals and trains models via a modified REIN-
+FORCE++ algorithm (Hu et al., 2025). Building on this
+work, Wang et al. (2025) enhance reasoning-capable LLMs
+using RL, adopting the Group Relative Policy Optimiza-
+tion (GRPO) (Shao et al., 2024) as the training founda-
+tion. Rather than relying on predefined heuristic metrics,
+they employ an advanced LLM as a reward model, which
+evaluates both the translation output and the reasoning pro-
+cess using carefully designed prompt-based scoring criteria.
+More recently, Finkelstein et al. (2026) introduced the Trans-
+lateGemma model, which combines supervised fine-tuning
+with reinforcement learning, where the latter stage optimizes
+translation quality using an ensemble of reward models, in-
+cluding MetricX-QE (Juraska et al., 2024) and AutoMQM
+1The code is available in the GitHub repository https://
+github.com/aixiuxiuxiu/Legal-MT-SFT-RL
+2
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+(Fernandes et al., 2023).
+3. Experiments Setup
+3.1. Datasets
+Our experiments build upon the SwiLTra-Bench
+dataset (Niklaus et al., 2025), which is currently the largest
+publicly available dataset for legal translation in Switzer-
+land.
+The dataset spans five languages: the four offi-
+cial Swiss languages (German, French, Italian, and Ro-
+mansh) as well as English. For this study, we focus on
+the SwissLawTranslations (CH-Law-Trans) subset,
+which includes approximately 631k aligned translation pairs
+for training and 22.7k sentence pairs for evaluation.
+Training Dataset
+To construct a training dataset suitable
+for Reasoning SFT, we use the DeepSeek-R1 model to
+generate intermediate reasoning steps for each translation ex-
+ample. Specifically, we select the first 40 000 sentence pairs
+from the training split of SwissLegalTranslations
+and prompt DeepSeek-R1 to produce both the reasoning
+steps and the final translation using prompt format:
+Translate the following sentence to target lan-
+guage while respecting Swiss legal parlance.
+Give the final translation starting with “Final
+translation:”
+Here’s the sentence to translate:
+Source sentence: source sentence
+To ensure that the reasoning steps meaningfully contribute
+to correct translations, we evaluate the final outputs using
+the ChrF (Popovi´c, 2015) score, a character n-gram overlap
+metric commonly used for machine translation evaluation 2.
+We retain only samples with a ChrF score above the median
+value (64.19), thereby filtering out lower-quality translations
+while preserving approximately half of the generated data.
+This filtering step helps isolate reasoning sequences that are
+more likely to support high-quality translation. The result-
+ing dataset contains 19 979 sentence pairs, which are split
+into 90% for training and 10% for validation. The distribu-
+tion of language pairs in this filtered dataset is illustrated in
+Table 4.
+Evaluation Dataset
+For the evaluation across the three
+experiments described in the following section, we
+use the 22.7k sentence pairs from the test split of
+SwissLegalTranslations. To ensure comparability,
+we exclude Romansh from the dataset, as it is not supported
+2We use the ChrF score here because of its effectiveness in
+capturing lexical and terminological accuracy, which is particularly
+important in the legal domain.
+by the translation models under consideration. After filter-
+ing, the final evaluation dataset consists of 18.1k sentence
+pairs.
+3.2. Evaluation Metrics
+For evaluation, we use a combination of commonly used
+machine translation evaluation metrics, including both lex-
+ical and model-based approaches: ChrF (Popovi´c, 2015),
+METEOR (Banerjee & Lavie, 2005), COMET (Rei et al.,
+2020), and MetricX (Juraska et al., 2024). In contrast to
+ChrF, which measures character n-gram similarity between
+the generated translation and the reference, METEOR ex-
+tends lexical matching by incorporating stemming and syn-
+onymy, allowing for a more flexible comparison between
+translations and references. COMET is a neural evaluation
+metric that leverages pretrained multilingual language mod-
+els to assess semantic adequacy and fluency by comparing
+the source, hypothesis, and reference translation. MetricX
+is a large language model-based evaluation metric designed
+to provide fine-grained assessments of translation quality,
+with a stronger focus on semantic correctness and factual
+consistency.
+While GEMBA-MQM (Kocmi & Federmann, 2023) has
+demonstrated strong correlation with human judgments, we
+did not prioritize it because it relies on GPT-based eval-
+uation and would incur a high estimated evaluation cost
+exceeding $3 000. In addition to automatic metrics, we also
+perform human evaluation on a representative sample of
+translations to further assess translation quality and validate
+the automatic evaluation results.
+4. Experiments
+4.1. Experiment I: Reasoning via Prompting
+To assess the capabilities of current state-of-the-art large
+reasoning models in legal translation, we evaluate a diverse
+set of model families, including DeepSeek-R1, OpenAI’s
+o4-mini, o4, o3, and o3-mini. For comparison, we
+also include a smaller model: Mistral-Small. All ex-
+periments are conducted on the Azure AI Foundry platform3.
+We do not aim to benchmark all existing frontier mod-
+els—for instance, we do not test the Claude family despite
+its strong reported performance in Niklaus et al. (2025).
+Instead, this experiment is intended to establish a represen-
+tative baseline for large reasoning models, which serves as a
+point of comparison for the SFT and RL experiments using
+small language models 4 presented in later sections.
+3https://azure.microsoft.com/en-us/
+products/ai-foundry
+4We define small language models as models with between 1
+billion and 12 billion parameters.
+3
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+All models are evaluated using the same prompt described in
+subsection 3.1, which directly instructs the model to produce
+the final translation. This prompt format has been shown to
+be effective in eliciting accurate outputs in the Swiss legal
+context.
+4.2. Experiment II: Reasoning via SFT
+Experiment II investigates whether supervised fine-tuning
+of small language models with intermediate reasoning steps
+can enhance legal translation quality. To this end, we ex-
+plore two SFT approaches. The first, Simple SFT, involves
+fine-tuning the SLMs solely on the correct translations. The
+second, Reasoning SFT, fine-tunes the SLMs using both the
+final translations and the intermediate reasoning steps that
+lead to them. The goal is to encourage the SLMs to think
+more like a large reasoning model, potentially enabling it to
+produce more accurate and contextually grounded transla-
+tions.
+Training Setup
+We fine-tune three SLMs on our
+dataset: Qwen3.5 4B, Qwen3.5 9B, and Gemma 3
+12B. These models were selected for their comparable pa-
+rameter scales and for representing two distinct model fami-
+lies.
+Fine-tuning
+is
+performed
+using
+the
+Hugging
+Face
+transformers5 and unsloth6 libraries, with 4-bit
+quantization and 8-bit AdamW optimization (Loshchilov &
+Hutter, 2017b; Dettmers et al., 2021). Training is conducted
+on two NVIDIA A40 48GB GPUs. We employ Low-Rank
+Adaptation (LoRA) (Hu et al., 2022; Kalajdzievski, 2023)
+with a rank of 16 and an alpha value of 32.
+Instruction Format
+We adopt the Alpaca-style instruc-
+tion tuning format, which has been shown to improve gener-
+alization to new tasks (Taori et al., 2023). The instruction
+template is presented in Appendix B.
+The key distinction in the Reasoning SFT setting lies
+in incorporating intermediate reasoning steps generated
+by DeepSeek-R1 into the model’s training responses.
+Specifically, we extract the content enclosed between the
+<think> and </think> tags and pair it with the corre-
+sponding ground truth target sentence as the final translation.
+This setup aims to expose the model to structured reasoning
+patterns that precede accurate translations.
+We train the models using a maximum sequence length of
+512 tokens for Simple SFT, which covers approximately
+99% of the sentences, and 1024 tokens for Reasoning SFT,
+which captures over 95% of the training set (with the re-
+5https://github.com/huggingface/
+transformers
+6https://github.com/unslothai/unsloth
+mainder truncated). We deliberately avoid using the maxi-
+mum allowable sequence length—particularly for Reason-
+ing SFT—as we observed that very long inputs can cause
+models such as those in the Qwen family to produce repet-
+itive outputs. Limiting the input length also encourages
+the models to generate more concise and focused reasoning
+steps.
+We adopt a training setup similar to that of Niklaus et al.
+(2025). All models are trained on the full training set to
+maximize data coverage. We apply sequence packing, use a
+weight decay of 0.01, and set the batch size between 40 and
+64 depending on model capacity. Training is conducted for
+10 epochs with early stopping based on validation perfor-
+mance (patience set to 3 epochs). We use a cosine learning
+rate schedule (Loshchilov & Hutter, 2017a) with a warmup
+ratio of 0.1 and a base learning rate of 1e−4, which we
+manually tune within the range of [2e−5, 1e−4].
+Generation
+We use vLLM7 (Kwon et al., 2023) for sen-
+tence generation during evaluation. After experimenting
+with temperature values in the range [0, 0.7], we found that
+a temperature of 0 consistently produced the most reliable
+and coherent outputs across all settings. All generations
+were performed on an NVIDIA A40 48GB GPU. Genera-
+tion over the full evaluation dataset typically takes around
+30 minutes for the Simple SFT models, while the Reason-
+ing SFT models require 3–6 hours due to longer output
+sequences.
+4.3. Experiment III: Reasoning via Reinforcement
+Learning
+We use the same training and validation datasets as in Ex-
+periment II.
+The reinforcement learning employs GRPO with simple ver-
+ifiable rewards in order to promote the reasoning alongside
+a high quality translation. Similar to DeepSeek-R1, two
+rule-based rewards have been used:
+• Format: To make the translation easily extractable
+while also enforcing the presence of the reasoning,
+the model must put its thinking process inside the
+<think></think> tag and its final translation in-
+side the <translation></translation> tag.
+The presence of each tag gives a reward of 0.5, with an
+additional 0.5 if they occur in the correct order. This
+is to ensure that the thinking is done before given the
+final translation, such that it can potentially improve
+the translation rather than given an explanation after
+the fact.
+• Translation quality: A reward for the quality of the
+7https://github.com/vllm-project/vllm
+4
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+Table 1. Performance of frontier models for legal translation using prompting (Experiment I).
+Model
+Output Pricing
+ChrF ↑
+COMET ↑
+METEOR ↑
+MetricX ↓
+per 1M tokens
+OpenAI o3
+$8.00
+64.87 ± 0.10
+85.92 ± 0.05
+64.82 ± 0.12
+2.54 ± 0.01
+OpenAI 4o
+$8.00
+62.40 ± 0.10
+85.35 ± 0.05
+61.57 ± 0.13
+2.87 ± 0.01
+DeepSeek-R1
+$5.40
+61.04 ± 0.10
+84.35 ± 0.05
+59.27 ± 0.12
+3.13 ± 0.01
+OpenAI o4-mini
+$4.40
+60.53 ± 0.10
+84.35 ± 0.05
+58.91 ± 0.12
+2.84 ± 0.01
+OpenAI o3-mini
+$4.40
+58.88 ± 0.10
+84.21 ± 0.05
+56.88 ± 0.12
+3.09 ± 0.01
+Mistral-Small-2503
+$0.15
+61.22 ± 0.10
+84.41 ± 0.05
+60.19 ± 0.12
+3.12 ± 0.01
+de →en
+de →fr
+de →it
+fr →en
+fr →it
+it →en
+80
+82
+84
+86
+88
+90
+Mean COMET Score
+o3
+4o
+DeepSeek-R1
+o4-mini
+o3-mini
+Mistral-Small-2503
+Figure 1. Comparison of translation quality (mean of COMET score) across language pairs for different frontier models evaluated on the
+test dataset.
+translation is paramount to guide the model to produce
+better responses. The final translation is extracted from
+the response, which is then compared to the ground
+truth. We chose the ChrF score to assess the qual-
+ity of the translation and used it directly as a reward,
+since the values are in the range [0, 1]. This results in
+a continuous scale for the reward, which gives extra
+nuance to the differences in responses, allowing a more
+fine-grained adaptation.
+A group size of G = 4 is used, meaning that for each input
+sentence four different responses are sampled which are
+then compared to each other based on the rewards. Due
+to the increased computational demands for these gener-
+ations, only a single epoch was performed compared to
+the 10 epochs for the SFT. The training parameters remain
+unchanged, with the exception of the learning rate, which
+needed to be reduced to 2e−5 as the higher learning rate led
+to training instabilities.
+5. Results
+Performance of State-of-the-Art Reasoning Models
+We
+report the performance of large reasoning models in Ta-
+ble 1. As the exact model sizes are not publicly disclosed,
+we use the output cost per million tokens as a proxy mea-
+sure8. Among the evaluated models, the o3 model achieves
+the highest performance across all metrics but is also the
+most expensive. In contrast, the Mistral-Small-2503
+model is approximately ten times cheaper while delivering
+comparable results, making it the most cost-effective option.
+When examining performance across language pairs (Fig-
+ure 1), we find that the relative ranking of models remains
+largely consistent across pairs. All models achieve their
+best results on the fr →it pairs, likely due to the close
+linguistic relationship between these two Romance lan-
+guages. The o4-mini model shows particularly strong
+performance when translating into English, whereas the
+mistral-small-2503 model performs better on trans-
+lations into French or Italian.
+Performance of SFT vs. RL
+Table 2 reports the over-
+all results for SFT and RL using four evaluation metrics:
+ChrF, COMET, METEOR and MetricX. We find that RL
+consistently improves translation quality across all models
+and achieves the best overall performance. In particular, RL
+with Gemma 3 12B delivers the strongest results among the
+smaller models, performing just below the frontier model
+o4-mini. This demonstrates that reasoning-augmented
+training can substantially narrow the performance gap be-
+8Experiments and pricing estimates correspond to July 2025.
+5
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+Table 2. Comparison of performance of SFT and RL in legal translation (Experiments II and III).
+Model
+Method
+ChrF ↑
+COMET ↑
+METEOR ↑
+MetricX ↓
+Qwen3.5 4B
+Base Model
+50.53 ± 0.18
+77.05 ± 0.15
+47.21 ± 0.19
+5.13 ± 0.04
+Simple SFT
+50.03 ± 0.12
+76.47 ± 0.09
+47.96 ± 0.13
+6.07 ± 0.03
+Reasoning SFT
+42.84 ± 0.16
+69.88 ± 0.14
+39.99 ± 0.16
+7.56 ± 0.03
+RL
+54.64 ± 0.10
+79.47 ± 0.07
+50.98 ± 0.12
+4.95 ± 0.02
+Qwen3.5 9B
+Base Model
+51.76 ± 0.19
+77.99 ± 0.16
+49.08 ± 0.20
+4.66 ± 0.04
+Simple SFT
+51.38 ± 0.12
+77.25 ± 0.10
+49.36 ± 0.14
+5.61 ± 0.03
+Reasoning SFT
+49.42 ± 0.12
+76.88 ± 0.10
+47.59 ± 0.14
+5.69 ± 0.03
+RL
+56.02 ± 0.10
+81.52 ± 0.06
+53.66 ± 0.12
+4.07 ± 0.02
+Gemma 3 12B
+Base Model
+56.73 ± 0.10
+82.49 ± 0.05
+53.20 ± 0.12
+3.70 ± 0.02
+Simple SFT
+55.86 ± 0.11
+82.45 ± 0.06
+54.29 ± 0.12
+3.71 ± 0.02
+Reasoning SFT
+53.29 ± 0.14
+79.02 ± 0.12
+51.74 ± 0.16
+4.53 ± 0.03
+RL
+57.32 ± 0.10
+83.08 ± 0.05
+54.92 ± 0.12
+3.32 ± 0.01
+Base
+Simple SFT
+Reasoning SFT
+RL
+de →en
+de →fr
+de →it
+fr →en
+fr →it
+it →en
+70
+75
+80
+85
+90
+Mean COMET Score
+Qwen3.5 9B
+de →en
+de →fr
+de →it
+fr →en
+fr →it
+it →en
+70
+75
+80
+85
+90
+Gemma 3 12B
+Figure 2. Comparison of translation quality (mean of COMET score) for Qwen3.5 9B (left) and Gemma 3 12B (right) across different
+language pairs and training procedures.
+tween small models and state-of-the-art LLMs.
+When comparing RL to SFT, we observe that RL consis-
+tently outperforms both SFT variants across all models. Ex-
+amining the two SFT approaches more closely, we find that
+Reasoning SFT degrades the quality of the translation in
+comparison to Simple SFT. This is especially noticeable on
+the smallest model Qwen3.5 4B, where the gap of every
+metric is much larger than in the larger models. Although
+Simple SFT outperforms the Reasoning SFT, it performs
+marginally worse than the base model. This means that it is
+more beneficial to use the pretrained models unaltered than
+training them with SFT.
+In terms of performance differences across language pairs,
+as illustrated in Figure 2 for Qwen3.5 9B and Gemma 3 12B,
+we observe that RL performs on par with or slightly better
+than the baselines for most language pairs. For Qwen3.5 9B,
+all language pairs exhibit a consistent pattern: RL achieves
+the best performance, followed by Simple SFT and the base
+model which outperform each other in different categories,
+and lastly Reasoning SFT. For Gemma 3 12B, the base
+model is much closer to RL, and technically surpasses it
+for it →en by the tiniest margin, although that would be
+considered to be on par. The strongest overall results for
+Qwen3.5 9B and Gemma 3 12B can be observed in the lan-
+guage pairs de →en, whereas the fr →it pairs exhibit the
+largest difference compared to the frontier models, which
+are their best performing language pairs.
+Comparison Across Metrics
+Comparing the different
+evaluation metrics, we observe that while each captures
+a different aspect of translation quality—lexical overlap
+(ChrF), semantic similarity (COMET / MetricX), and lin-
+guistic fluency (METEOR)—the overall ranking of methods
+remains consistent across all metrics. Although absolute
+scores vary, RL consistently outperforms other approaches.
+6
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+This trend aligns with the results from Experiment I, where
+the strongest models also achieve top performance across
+all evaluation criteria.
+Table 3. Pearson correlation between human evaluation scores
+and automatic evaluation metrics. COMET shows the strongest
+correlation with expert judgments on the legal translation dataset.
+Metric
+Pearson Correlation (r)
+p-value
+ChrF
+0.05
+0.54
+METEOR
+0.07
+0.40
+COMET
+0.24
+0.00
+MetricX
+-0.13
+0.11
+Human Evaluation
+We sampled 240 translation pairs
+covering all language combinations present in the dataset.
+A legal expert manually assessed the translation quality
+on a scale from 1 to 10, considering factors such as ac-
+curacy, fluency, and preservation of legal meaning. We
+then computed the Pearson correlation between the human
+annotation scores and the automatic evaluation metrics to
+assess their alignment with expert judgments. As shown
+in Table 3, COMET achieves the highest correlation with
+human evaluations, indicating a stronger alignment with
+expert judgments on the legal translation dataset.
+6. Discussions
+6.1. Leveraging Reasoning in Translation
+Translation often requires careful refinement and review to
+ensure alignment with normative language (Ordudari, 2007;
+Nida, 1964). This is particularly important in technical
+domains such as the legal field, where precision in terminol-
+ogy and strict adherence to legal conventions are essential.
+These requirements extend beyond surface-level semantic
+equivalence. This motivates the integration of reasoning
+into the translation process, as prior studies have shown that
+adding self-reaffine improve translation (Chen et al., 2023;
+Wang et al., 2024).
+In our training dataset for the Reasoning SFT setup, we
+examined the reasoning steps generated by DeepSeek. We
+found that the model produces coherent, multi-step reason-
+ing sequences that often resemble the workflow of a human
+translator. These typically include decomposing the sen-
+tence, translating individual components, recomposing the
+full output, and conducting a final review and refinement.
+While the objective of Reasoning SFT is to encourage a
+more structured and deliberate translation process, our re-
+sults indicate that fine-tuning with explicit reasoning steps
+degrades the performance rather than improving it. These
+models may already possess strong intrinsic reasoning abili-
+ties that were obtained during their pre-training, therefore,
+the addition of shallow or formulaic reasoning steps offers
+little added value.
+Another concern is that current reasoning models, while
+demonstrating emergent reasoning abilities (Wei et al., 2022;
+Webb et al., 2023), often fail to provide genuine explanatory
+depth. In particular, these capacities are often considered su-
+perficial, and models are unlikely to generate “how-actually”
+explanations that reflect true causal or conceptual under-
+standing (Musker et al., 2024). Providing explicit reason-
+ing steps during training or prompting does not necessarily
+incentivize models to engage in authentic reasoning. In-
+stead, they may simply learn to reproduce reasoning-like
+patterns without acquiring the underlying cognitive mecha-
+nisms such steps are meant to encourage.
+6.2. Reinforcement Learning vs. Supervised
+Fine-Tuning
+We observe that reinforcement learning consistently outper-
+forms supervised fine-tuning in our experiments. This sug-
+gests that RL may provide a more effective mechanism for
+enabling models to internalize reasoning strategies through
+the reward optimization process.
+In the broader literature, the differences between SFT and
+RL have been explored across a range of tasks, with RL
+predominantly showing improved generalization capabil-
+ities. Chu et al. (2025) compared them in an arithmetic
+reasoning card game and a real-world navigation scenario,
+which require text-based and visual reasoning, and came to
+the conclusion that SFT tends to memorize the training data
+and therefore struggles to generalize to out-of-distribution
+data, while RL exhibits more generalized reasoning capa-
+bilities. Similarly, Jungo & Fischer (2025) showed that RL
+generalizes better to previously unseen classes and out-of-
+distribution samples on the task of document classification.
+In the medical domain, Med-RLVR (Zhang et al., 2025)
+observed a similar trend for medical multiple-choice ques-
+tions where RL improves the accuracy on out-of-distribution
+data by 8 points compared to SFT, indicating that it also
+applies to domain specific language. For general machine
+translation, MT-R1-Zero (Feng et al., 2025) successfully
+applied RL with competitive performance to other models
+trained with SFT, while observing stronger generalization
+to out-of-distribution tasks, including languages the model
+was not trained on.
+6.3. Global Quality and Cost-Quality Comparisons
+Pure Quality
+Figure 3 shows that commercial frontier
+models reach COMET scores in the 84.21 to 85.94 range,
+whereas small models enhanced with the reinforcement
+learning method fall in the 79.47 to 83.08 range. There is
+nearly an overlap, as the gap keeps narrowing.
+Considering quality exclusively (that is, not considering cost
+7
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+OpenAI o3
+OpenAI 4o
+DeepSeek-R1
+OpenAI o4-mini
+OpenAI o3-mini
+Mistral-Small-2503
+Qwen3.5 4B + RL
+Qwen3.5 9B + RL
+Gemma 3 12B + RL
+76
+78
+80
+82
+84
+86
+88
+85.92
+85.35
+84.35
+84.35
+84.21
+84.41
+79.47
+81.52
+83.08
+Mean COMET Score
+Figure 3. Performance comparison of RL enhanced small models with frontier models, using the COMET score as a benchmark.
+of model for the moment), performance of small enhanced
+models could potentially be raised by fine-tuning parameters
+such as the value of the reward, the group size, etc. Hence,
+enhanced small models might be competitive for NMT.
+It might be tempting to try to fill the performance gap by us-
+ing slightly larger RL-enhanced models. However, referring
+to Table 2, one can remark that the relative enhancement
+provided by RL shows diminishing returns as the language
+model gets larger. The quality of Qwen3.5 4B evolves from
+77.05 to 79.47 (+2.47) in terms of COMET score, while
+Gemma3 12B only improves by +0.59 (from 82.49 to 83.08).
+We plan to investigate this further.
+Cost-Quality Trade-off
+In contrast to commercial mod-
+els, whose usage costs are known (see Table 1), the costs
+associated with the enhanced models evaluated in this study
+remain unknown. Nevertheless, assuming that reinforce-
+ment learning (RL) enhancement has only a marginal impact
+on computational complexity, these costs are expected to
+represent only a fraction of those incurred by frontier models
+comprising several hundred billion parameters. Therefore,
+once the focus shifts from a quality-at-any-cost perspective
+to a cost–quality trade-off, our results indicate that RL-
+enhanced models emerge as a compelling and viable design
+option.
+7. Conclusion
+In this work, we investigate multiple strategies of leveraging
+reasoning to enhance translation quality, with a specific fo-
+cus on the Swiss legal domain—a high-stakes, linguistically
+complex setting for NMT systems. We design and evaluate
+three complementary approaches to reasoning integration:
+prompting frontier models, SFT with intermediate reasoning
+steps, and RL using reward-based feedback.
+Our results show that although frontier models still
+achieve the strongest overall translation quality, reasoning-
+augmented training methods—especially RL—substantially
+narrow the performance gap. Across all evaluated model
+architectures, RL consistently surpasses SFT, demonstrat-
+ing that reinforcement learning with verifiable rewards is
+a highly effective approach for improving legal transla-
+tion quality and enabling smaller open-source models to
+acquire stronger reasoning capabilities. Notably, our best-
+performing open-source models use more than 100× fewer
+parameters than frontier models while achieving competitive
+translation quality. These findings provide strong empirical
+evidence that explicit reasoning and RL-based optimization
+can significantly advance domain-specific neural machine
+translation.
+Future work will focus on improving reinforcement learning
+methods for legal machine translation, as well as optimiz-
+ing the trade-off between training and inference costs and
+translation quality. This includes investigating more effec-
+tive reward designs, more efficient training strategies, and
+approaches that improve translation quality while reducing
+computational requirements.
+8
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+Limitations
+We rely on four cost-efficient evaluation metrics to assess
+translation quality: ChrF, METEOR, COMET, and MetricX.
+Although more fine-grained evaluation methods—such as
+using LLMs as judges—may provide deeper insights, they
+are resource-intensive and less scalable. Additionally, we
+fine-tune only a handful of commonly used models. Future
+work could explore models of varying sizes and architec-
+tures to gain a broader understanding of performance trends.
+Finally, our RL experiments use simple, rule-based rewards;
+more complex or adaptive reward functions may offer addi-
+tional gains and warrant further investigation.
+Impact Statement
+This work advances legal machine translation by demon-
+strating that reinforcement learning with verifiable rewards
+can improve translation quality beyond supervised fine-
+tuning. By focusing on open-source models, our approach
+contributes to making high-quality legal translation sys-
+tems more accessible, transparent, and reproducible for re-
+searchers, institutions, and practitioners who rely on open
+technologies.
+Acknowledgements
+The authors would like to thank the Hasler Foundation and
+the Mercator Foundation Switzerland for their generous
+financial support.
+References
+Ahn, J., Verma, R., Lou, R., Liu, D., Zhang, R., and Yin,
+W. Large language models for mathematical reasoning:
+Progresses and challenges. In Falk, N., Papi, S., and
+Zhang, M. (eds.), Proceedings of the 18th Conference
+of the European Chapter of the Association for Com-
+putational Linguistics: Student Research Workshop, pp.
+225–237, St. Julian’s, Malta, March 2024. Association
+for Computational Linguistics. doi: 10.18653/v1/2024.
+eacl-srw.17. URL https://aclanthology.org/
+2024.eacl-srw.17/.
+Banerjee, S. and Lavie, A. Meteor: An automatic metric
+for mt evaluation with improved correlation with human
+judgments. In Proceedings of the acl workshop on in-
+trinsic and extrinsic evaluation measures for machine
+translation and/or summarization, pp. 65–72, 2005.
+Canavese, P. and Cadwell, P. Translators’ perspectives on
+machine translation uses and impacts in the Swiss Con-
+federation: Navigating technological change in an in-
+stitutional setting. In Proceedings of the 25th Annual
+Conference of the European Association for Machine
+Translation (Volume 1), pp. 347–359, 2024.
+Chen, A., Song, Y., Zhu, W., Chen, K., Yang, M., Zhao,
+T., et al. Evaluating o1-like llms: Unlocking reasoning
+for translation through comprehensive analysis. arXiv
+preprint arXiv:2502.11544, 2025.
+Chen, P., Guo, Z., Haddow, B., and Heafield, K. Iterative
+translation refinement with large language models. arXiv
+preprint arXiv:2306.03856, 2023.
+Chu, T., Zhai, Y., Yang, J., Tong, S., Xie, S., Levine, S., and
+Ma, Y. SFT memorizes, RL generalizes: A comparative
+study of foundation model post-training. In The Second
+Conference on Parsimony and Learning (Recent Spotlight
+Track), 2025.
+URL https://openreview.net/
+forum?id=d3E3LWmTar.
+Dettmers, T., Lewis, M., Shleifer, S., and Zettlemoyer, L. 8-
+bit optimizers via block-wise quantization. arXiv preprint
+arXiv:2110.02861, 2021.
+El-Kishky, A., Wei, A., Saraiva, A., Minaiev, B., Selsam, D.,
+Dohan, D., Song, F., Lightman, H., Clavera, I., Pachocki,
+J., et al. Competitive programming with large reasoning
+models. arXiv preprint arXiv:2502.06807, 2025.
+Feng, Z., Cao, S., Ren, J., Su, J., Chen, R., Zhang, Y., Xu, Z.,
+Hu, Y., Wu, J., and Liu, Z. Mt-r1-zero: Advancing llm-
+based machine translation via r1-zero-like reinforcement
+learning. arXiv preprint arXiv:2504.10160, 2025.
+Fernandes, P., Deutsch, D., Finkelstein, M., Riley, P., Mar-
+tins, A. F., Neubig, G., Garg, A., Clark, J. H., Freitag,
+M., and Firat, O. The devil is in the errors: Leveraging
+large language models for fine-grained machine transla-
+tion evaluation. In Proceedings of the Eighth Conference
+on Machine Translation, pp. 1066–1083, 2023.
+Finkelstein, M., Caswell, I., Domhan, T., Peter, J.-T.,
+Juraska, J., Riley, P., Deutsch, D., Kovacs, G., Dilanni,
+C., Cherry, C., et al. Translategemma technical report.
+arXiv preprint arXiv:2601.09012, 2026.
+Guo, D., Yang, D., Zhang, H., Song, J., Zhang, R., Xu, R.,
+Zhu, Q., Ma, S., Wang, P., Bi, X., et al. Deepseek-r1: In-
+centivizing reasoning capability in llms via reinforcement
+learning. arXiv preprint arXiv:2501.12948, 2025.
+He, M., Liu, Y., Tao, S., Luo, Y., Zeng, H., Su, C., Zhang,
+L., Ma, H., Wei, D., Meng, W., et al.
+R1-t1: Fully
+incentivizing translation capability in llms via reasoning
+learning. arXiv preprint arXiv:2502.19735, 2025.
+Hendy, A., Abdelrehim, M., Sharaf, A., Raunak, V., Gabr,
+M., Matsushita, H., Kim, Y. J., Afify, M., and Awadalla,
+9
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+H. H.
+How good are gpt models at machine trans-
+lation?
+a comprehensive evaluation.
+arXiv preprint
+arXiv:2302.09210, 2023.
+Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang,
+S., Wang, L., Chen, W., et al. Lora: Low-rank adaptation
+of large language models. ICLR, 1(2):3, 2022.
+Hu, J., Liu, J. K., and Shen, W. Reinforce++: An efficient
+rlhf algorithm with robustness to both prompt and reward
+models. arXiv preprint arXiv:2501.03262, 2025.
+Jiao, W., Wang, W., Huang, J.-t., Wang, X., Shi, S., and Tu,
+Z. Is chatgpt a good translator? yes with gpt-4 as the
+engine. arXiv preprint arXiv:2301.08745, 2023.
+Jungo, M. and Fischer, A. Rule-based reinforcement learn-
+ing for document image classification with vision lan-
+guage models. In International Conference on Document
+Analysis and Recognition, pp. 292–309. Springer, 2025.
+Juraska, J., Deutsch, D., Finkelstein, M., and Freitag, M.
+MetricX-24: The Google submission to the WMT 2024
+metrics shared task. In Haddow, B., Kocmi, T., Koehn, P.,
+and Monz, C. (eds.), Proceedings of the Ninth Conference
+on Machine Translation, pp. 492–504, Miami, Florida,
+USA, November 2024. Association for Computational
+Linguistics. URL https://aclanthology.org/
+2024.wmt-1.35.
+Kalajdzievski, D. A rank stabilization scaling factor for
+fine-tuning with lora. arXiv preprint arXiv:2312.03732,
+2023.
+Kocmi, T. and Federmann, C. Gemba-mqm: Detecting
+translation quality error spans with gpt-4. arXiv preprint
+arXiv:2310.13988, 2023.
+Koehn, P. and Knowles, R. Six challenges for neural ma-
+chine translation. arXiv preprint arXiv:1706.03872, 2017.
+Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu,
+C. H., Gonzalez, J., Zhang, H., and Stoica, I.
+Effi-
+cient memory management for large language model
+serving with pagedattention.
+In Proceedings of the
+29th Symposium on Operating Systems Principles, SOSP
+’23, pp. 611–626, New York, NY, USA, 2023. Associa-
+tion for Computing Machinery. ISBN 9798400702297.
+doi: 10.1145/3600006.3613165. URL https://doi.
+org/10.1145/3600006.3613165.
+Liu, S., Lyu, C., Wu, M., Wang, L., Luo, W., Zhang,
+K., and Shang, Z.
+New trends for modern machine
+translation with large reasoning models. arXiv preprint
+arXiv:2503.10351, 2025.
+Loshchilov, I. and Hutter, F. Sgdr: Stochastic gradient
+descent with warm restarts. In International Conference
+on Learning Representations, 2017a.
+Loshchilov, I. and Hutter, F. Decoupled weight decay regu-
+larization. arXiv preprint arXiv:1711.05101, 2017b.
+Mart´ınez, E., Mollica, F., and Gibson, E. Even lawyers do
+not like legalese. Proceedings of the national academy of
+sciences, 120(23):e2302672120, 2023.
+Mart´ınez-Dom´ınguez, R., Rikters, M., Vasil¸evskis, A., Pin-
+nis, M., and Reichenberg, P. Customized neural machine
+translation systems for the Swiss legal domain. In Pro-
+ceedings of the 14th Conference of the Association for
+Machine Translation in the Americas (Volume 2: User
+Track), pp. 217–223, 2020.
+Mattila, H. E. Comparative legal linguistics: Language of
+law, Latin and modern lingua francas. Routledge, 2016.
+Musker, S., Duchnowski, A., Milli`ere, R., and Pavlick, E.
+Llms as models for analogical reasoning. arXiv preprint
+arXiv:2406.13803, 2024.
+Nida, E. A. Toward a science of translating: with special
+reference to principles and procedures involved in Bible
+translating. Brill Archive, 1964.
+Niklaus, J., Merane, J., Nenadic, L., Ahmadi, S., Gao, Y.,
+Chevalley, C. A., Humbel, C., G¨osken, C., Tanzi, L.,
+L¨uthi, T., et al. Swiltra-bench: The swiss legal translation
+benchmark. arXiv preprint arXiv:2503.01372, 2025.
+Ordudari, M. Translation procedures, strategies and meth-
+ods. Translation journal, 11(3):8, 2007.
+Popovi´c, M. chrf: character n-gram f-score for automatic
+mt evaluation. In Proceedings of the tenth workshop on
+statistical machine translation, pp. 392–395, 2015.
+Rei, R., Stewart, C., Farinha, A. C., and Lavie, A. Comet:
+A neural framework for mt evaluation. arXiv preprint
+arXiv:2009.09025, 2020.
+Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang,
+H., Zhang, M., Li, Y., Wu, Y., et al. Deepseekmath: Push-
+ing the limits of mathematical reasoning in open language
+models. arXiv preprint arXiv:2402.03300, 2024.
+Taori, R., Gulrajani, I., Zhang, T., Dubois, Y., Li,
+X., Guestrin, C., Liang, P., and Hashimoto, T. B.
+Stanford
+alpaca:
+An
+instruction-following
+llama
+model.
+https://github.com/tatsu-lab/
+stanford_alpaca, 2023.
+Tiersma, P. The nature of legal language. In Dimensions of
+forensic linguistics, pp. 7–25. John Benjamins Publishing
+Company, 2008.
+Wang, J., Meng, F., Liang, Y., and Zhou, J. Drt-o1: Op-
+timized deep reasoning translation via long chain-of-
+thought. arXiv e-prints, pp. arXiv–2412, 2024.
+10
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+Wang, J., Meng, F., and Zhou, J.
+Deep reasoning
+translation via reinforcement learning. arXiv preprint
+arXiv:2504.10187, 2025.
+Webb, T., Holyoak, K. J., and Lu, H. Emergent analogi-
+cal reasoning in large language models. Nature Human
+Behaviour, 7(9):1526–1541, 2023.
+Wei, J., Tay, Y., Bommasani, R., Raffel, C., Zoph, B.,
+Borgeaud, S., Yogatama, D., Bosma, M., Zhou, D., Met-
+zler, D., et al. Emergent abilities of large language models.
+arXiv preprint arXiv:2206.07682, 2022.
+Wiesmann, E. Machine translation in the field of law: A
+study of the translation of italian legal texts into german.
+Comparative Legilinguistics, 37(1):117–153, 2019.
+Wu, D., Aycock, S., and Monz, C.
+Please translate
+again: Two simple experiments on whether human-
+like reasoning helps translation.
+In Christodoulopou-
+los, C., Chakraborty, T., Rose, C., and Peng, V.
+(eds.), Proceedings of the 2025 Conference on Em-
+pirical Methods in Natural Language Processing, pp.
+20424–20440, Suzhou, China, November 2025. As-
+sociation for Computational Linguistics.
+ISBN 979-
+8-89176-332-6.
+doi: 10.18653/v1/2025.emnlp-main.
+1031. URL https://aclanthology.org/2025.
+emnlp-main.1031/.
+Xia, S., Li, X., Liu, Y., Wu, T., and Liu, P. Evaluating mathe-
+matical reasoning beyond accuracy. In Proceedings of the
+AAAI Conference on Artificial Intelligence, volume 39,
+pp. 27723–27730, 2025.
+Zhang, S., Liu, Q., Qin, G., Naumann, T., and Poon,
+H. Med-rlvr: Emerging medical reasoning from a 3b
+base model via reinforcement learning. arXiv preprint
+arXiv:2502.19655, 2025.
+Zhao, Y., Ji, T., Feng, W., Huang, Z., Liu, Q., Liu, Z., Ma,
+Y., Zhang, K., and Chen, E. Unveiling the magic of
+code reasoning through hypothesis decomposition and
+amendment. In The Thirteenth International Conference
+on Learning Representations, 2025. URL https://
+openreview.net/forum?id=kN25ggeq1J.
+11
+
+Reasoning Before Translation: Enhancing Legal Machine Translation with Structured Reasoning
+A. Training Set Language Pair Distribution Statistics
+Table 4. Statistics of language pair distribution in the training set used for the experiments.
+Language Pair
+Count
+fr →it
+8 152
+de →fr
+5 384
+de →it
+4 252
+de →en
+65
+fr →en
+65
+it →en
+63
+Total
+18 981
+B. Prompt
+### Instruction
+Translate the following sentence from {lang_source} to {lang_target}
+while respecting Swiss legal parlance. Respond in the following format:
+<think>
+...
+</think>
+<translation>...</translation>
+Explain your reasoning inside the <think> tag and give your final
+translation in the <translation> tag.
+### Input
+{source}
+12

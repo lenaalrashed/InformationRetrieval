@@ -1,0 +1,1621 @@
+Angular Dispersion Accelerates k-Nearest Neighbors Machine Translation
+Evgeniia Tokarchuk
+University of Amsterdam
+evgeniia@tokarch.uk
+Sergey Troshin
+University of Amsterdam
+s.troshin@uva.nl
+Vlad Niculae
+University of Amsterdam
+v.niculae@uva.nl
+Abstract
+Augmenting neural machine translation with
+external memory at decoding time, in the form
+of k-nearest neighbors machine translation (k-
+NN MT), is a well-established strategy for in-
+creasing translation performance. k-NN MT
+retrieves a set of tokens that occurred in the
+most similar contexts recorded in a prepared
+data store, using hidden state representations
+of translation contexts as vector lookup keys.
+One of the main disadvantages of this method
+is the high computational cost and memory re-
+quirements. Since an exhaustive search is not
+feasible in large data stores, practitioners com-
+monly use approximate k-NN lookup, yet even
+such algorithms are a bottleneck. In contrast to
+research directions seeking to accelerate k-NN
+MT by reducing data store size or the number
+of lookup calls, we pursue an orthogonal di-
+rection based on the performance properties
+of approximate k-NN lookup data structures.
+In particular, we propose to encourage angular
+dispersion of the neural hidden representations
+of contexts. We show that improving disper-
+sion leads to better balance in the retrieval data
+structures, accelerating retrieval and slightly
+improving translations.
+1
+Introduction
+k-Nearest Neighbors Machine Translation (k-NN
+MT) is a promising training-free approach demon-
+strated to improve the translation quality of neural
+MT in both in- and out-of-domain setups (Khan-
+delwal et al., 2021; Meng et al., 2022; Dai et al.,
+2023). However, performance improvement comes
+with a high decoding cost because k-NN queries
+require nearest-neighbor lookups in a usually large
+data store: a key-value store where tokens in the
+training dataset are indexed by continuous key vec-
+tors (given by the hidden states of the neural MT
+system when processing the context).
+With modern neural networks, keys tend to be
+high-dimensional (≥512), and, given the number
+Figure 1: Angular dispersion applied to a set of vec-
+tors: dispersion spreads out the angles of the vectors,
+without changing their length (norm). By increasing
+angular dispersion of key-value data stores, we observe
+substantial speed-ups at the retrieval time. Here, solid
+lines represent vectors before dispersion, and dashed
+lines after dispersion.
+of tokens in a data store, k-NN search requires sub-
+stantial time and space. Thus, in order to search this
+large data collection, approximate k-NN (Johnson
+et al., 2019) is dominant in practice (Khandelwal
+et al., 2021; Martins et al., 2023; Gao et al., 2024).
+However, even approximate k-NN methods can not
+achieve a decoding speed of the baseline models
+out-of-the-box.
+Many works focus on the efficiency of retrieval
+either by data store compression (He et al., 2021;
+Dai et al., 2023; Wang et al., 2022a; Martins et al.,
+2022a; Zhu et al., 2023a) or by adaptive retrieval
+at the decoding time (Martins et al., 2022a,b; Gao
+et al., 2024). Key representations have, perhaps
+surprisingly, received less attention, even though
+their geometric properties play an important role
+in retrieval. Wang et al. (2022b) argue that key
+vectors are not specific enough for fine-grained re-
+trieval and suggest a contrastive learning approach
+
+to decouple representations. Similarly, Wang et al.
+(2022a) show that there is a large overlap between
+data store keys, and that the overlap is not related
+to word frequency; they suggest a method based on
+contrastive learning that can mitigate the overlap.
+Since modern data structures that allow billion-
+scale distance-based k-NN search (Johnson et al.,
+2019) rely heavily on space partitioning, the dis-
+tribution of keys affects not only the quality of
+the retrieved samples but also plays a significant
+role in retrieval speed due to the cluster imbalance
+(Tavenard et al., 2011). Gao et al. (2019) and Etha-
+yarajh (2019) draw attention to the clumping of the
+continuous representations of Transformer-based
+(Vaswani et al., 2017) models, i.e., they show that
+model representations tend to occupy only a small
+subspace and semantically different words cluster
+together. Motivated by the work of Tokarchuk et al.
+(2025), we study distributional properties of the
+keys in k-NN MT, focusing on angular dispersion
+(Figure 1) . In particular, we show that higher an-
+gular dispersion of the key vectors leads to up to 5
+times more efficient k-NN lookups in large (>10M)
+data stores. We also emphasize that angular dis-
+persion results in an overall slight increase of the
+translation performance for both k-NN MT with
+in-domain and out-of-domain data stores.
+2
+Background
+2.1
+k-NN Machine Translation
+We follow the k-NN MT model proposed by Khan-
+delwal et al. (2021), in which a neural MT system is
+augmented with a non-parametric k-nearest neigh-
+bors classifier at the token level. Given a set of
+pairs of source and target sentences (X, Y), and a
+well-trained encoder-decoder model with parame-
+ters θ, let hθ(x, y<i) ∈Rd denote a hidden state
+representation of the context needed for translat-
+ing the i-th output token.1 Given a key-value data
+store, we associate the key hθ(x, y<i) with the tar-
+get yi, for all prefixes of all pairs in the parallel
+dataset. This results in a data store of key-value
+pairs D = {(hj, yj)}N
+j=1, where N is the total
+number of contexts used (on the order of millions).
+Given some new query state h and a distance func-
+tion d, the k-nearest neighbor set Nk(h) is a sub-
+set of D containing exactly k pairs such that if
+(h′, y′) ∈Nk(h) and (h′′, y′′) ∈D \ Nk(h) then
+d(h, h′) ≤d(h, h′′) . The k-nearest neighbors set
+can be used to induce a probabilistic classifier from
+1Often the last hidden layer in a transformer decoder.
+h onto the vocabulary, essentially by counting each
+neighboring state as a “vote” toward that word,
+weighted by the distance:
+pk-NN (y|h) ∝
+∑︂
+(hj,yj)∈Nk(h)
+Jy = yjK exp
+(︃−∥h −hj∥2
+T
+)︃
+,
+(1)
+where J·K is the Iverson bracket, equal to 1 or 0
+depending on the truth value of its argument, T > 0
+is a temperature parameter adjusting the flatness
+of the induced distribution, and ∝denotes equality
+up to a normalization constant. When translating
+from the neural MT system, we interpolate its own
+predictive distribution with the one of the kNN
+classifier with weight 0 ≤λ ≤1:
+p(yi|x, y<i) := (1 −λ)pmodel(yi|x, y<i)
++ λpk-NN (yi|hθ(x, y<i)) .
+(2)
+2.2
+Approximate k-NN search
+The efficiency bottleneck of k-NN MT is the
+nearest-neighbor search. For this reason, the search
+is typically not performed exactly; rather, it is
+common to employ approximate nearest-neighbor
+search, which enables larger data stores up to bil-
+lions of tokens (Johnson et al., 2019). We follow
+the line of k-NN MT research (Khandelwal et al.,
+2021; Zheng et al., 2021; Meng et al., 2022; Wang
+et al., 2022a; Martins et al., 2022b; Deguchi et al.,
+2023b,a) and use the inverted file index with prod-
+uct quantization (IVFPQ), through the implemen-
+tation in the faiss library (Johnson et al., 2019),
+which, with GPU acceleration, is state-of-the-art in
+terms of accuracy and speed for this application.
+Inverted file index (IVF).
+IVF first splits the
+keys h into clusters by using k-means clustering
+algorithm (Hartigan and Wong, 1979) by learning
+K centroids µ = [µ1, . . . , µK]. Given the set of
+learned centroids, any vector h ∈Rd is associated
+with its nearest centroid as µ(h) = arg minµ′ ∥h−
+µ′∥. The search vector space is then divided into
+Voronoi cells (see Figure 2) and the data store
+is split into clusters Dµi = {(hj, yj) | µ(hj) =
+µi, (hj, yj) ∈D}. In practice, searching within
+a single IVF cluster is suboptimal, and several
+nearest IVF clusters (probes) are searched (John-
+son et al., 2019). Given a query vector, we re-
+trieve a shortlist of nearest neighbor candidates
+from the top-n (nprobes) nearest Voronoi cells:
+IVF(h) = {(hj, yj) | µ(hj) ∈KIVF(h), (hj, yj) ∈
+
+Figure 2: An illustration of the IVF index with a sin-
+gle probe. A query vector h is mapped to the nearest
+centroid µ(h). The search is then performed within the
+Voronoi cell of µ(h) (orange area), and then h2 will be
+returned as the approximate nearest neighbor of h. With
+larger nprobes, it is possible to retrieve h1, the closest
+neighbor of h.
+D}, where KIVF(h) denotes the set of nearest cen-
+troids given a query vector, namely probes.
+Product quantization (PQ).
+Product quanti-
+zation (Jégou et al., 2011) compresses the d-
+dimensional key vectors for fine-grained search.
+While IVF is the part of the data structure that we
+most target in our work, we describe the PQ stage
+for completeness. PQ splits the vector space into
+a Cartesian product of M subspaces, each d/m–
+dimensional: h = [˜h1, . . . , ˜hM], and quantizes
+each subspace separately. For each subspace, we
+use k-means to learn L d/M-dimensional code-
+words per subspace: C = [ci]L
+i=1. To quantize a
+key, one finds the closest codeword ids within each
+subspace, namely for a given subspace we search
+for the closest codeword using the Euclidean dis-
+tance between a codeword and ˜h (the sub-vector
+of h): PQ(˜h) = arg mini ∥ci −˜h∥. A standard
+practice is to represent each key vector using 8 bits.
+IVFPQ.
+This strategy combines the inverted file
+index and product quantization. To store the keys,
+PQ compresses the residual key representations
+within an IVF cluster, where the residual key rep-
+resentation is a key vector minus the associated
+IVF centroid. Given a query vector, IVF first maps
+the query to a Voronoi cell of the nearest IVF cen-
+troid. Then, PQ performs a fine-grained search
+within the Voronoi cell using the stored quantized
+key representations.
+The efficiency and accuracy of lookups in the
+IVFPQ data structure depends on the quality of
+the clustering stages, which depends in turn on the
+geometric distribution of the key vectors (Tavenard
+et al., 2011). Quantifying the properties of a point
+cloud that make it well-suited for IVFPQ lookup
+remains an open question. We propose to analyze
+the geometry of the directions of the key vectors,
+and, in particular, their angular dispersion.
+2.3
+Angular Dispersion
+Directions in d-dimensional space can be repre-
+sented as points on the sphere Sd ⊂Rd. Unlike
+the entirety of Rd, the sphere is compact and has
+many computationally attractive properties that al-
+low us to quantify and optimize angular dispersion.
+Given two directions s, s′ ∈Sd, their Euclidean
+dot product ⟨s, s′⟩∈[−1, 1] corresponds to the
+cosine of the angle between them, and thus the
+angle is arccos ⟨s, s′⟩∈[0, π]. A well-dispersed
+configuration S ∈(Sd)n is spread out uniformly
+over the entire sphere surface. One way to quan-
+tify dispersion is by the angle between the closest
+points:
+dmin(S) := min
+s̸=s′∈S arccos ⟨s, s′⟩.
+(3)
+An alternative and complementary measure of an-
+gular dispersion is spherical variance (Jammala-
+madaka and Sengupta, 2001; Mardia, 1975):
+svar(S) = 1 −⃦⃦⃦⃦⃦
+1
+|S|
+∑︂
+s∈S
+s⃦⃦⃦⃦⃦.
+(4)
+Spherical variance close to 1 indicates high con-
+centration of directions, as the average will be
+close to the sphere surface; a value close to 0
+does not necessarily imply dispersion but at least
+a more symmetrical configuration of the direc-
+tions: for any x ∈Sd, the four-point configura-
+tion (x, x, −x, −x) has both minimum angle and
+spherical variance zero.
+Finding an optimally-dispersed configuration is
+known as the Tammes problem (Tammes, 1930),
+and it is generally not exactly tractable. Instead, it
+is common to define functions to optimize in order
+to encourage dispersion (Wang and Isola, 2020;
+Wang et al., 2020; Liu et al., 2018; Tokarchuk et al.,
+2025). A wide class of such functions are based on
+pairwise similarities or kernels. For example, the
+minimum hyperspherical energy objective is
+RMHE(S) =
+1
+|S|(|S| −1)
+∑︂
+s̸=s′∈S
+k(s, s′).
+(5)
+where k(s, s′) is a kernel such as perhaps the Gaus-
+sian kernel k(s, s′) = exp(⟨s, s′⟩/σ).
+
+Sliced dispersion (Tokarchuk et al., 2025; Bonet
+et al., 2023) is an efficient alternative which avoids
+the quadratic complexity by making use of the
+fact that optimal dispersion is trivial on a circle
+(on S2 ⊂R2). In this special case, any perfectly-
+dispersed configuration is made up of equidistant
+angles and given any input set of angles, the near-
+est dispersed configuration can be efficiently found.
+Let the sum of angles between a configuration S
+and the nearest optimally-dispersed configuration
+on a circle be δ(S). If d = 2 we can exactly mini-
+mize δ(S). To extend to higher dimensions, we will
+invoke projections onto great circles. On a sphere
+Sd, the great circles correspond to pairs of orthog-
+onal directions C(Sd) := {(p, q) : p ∈Sd, q ∈
+Sd, ⟨p, q⟩= 0}. If we denote by Spq the projection
+of a configuration of directions S onto the great
+circle (p, q), sliced dispersion optimizes
+Rsliced(S) := Ep,q [δ(Spq)] ,
+(6)
+where the expectation is over the uniform distribu-
+tion on C(Sd). In words, this objective minimizes
+the expected distance to an optimally-sliced config-
+uration along any great circle. Preliminary experi-
+ments in §A show that sliced dispersion regularizer
+converges faster in terms of spherical variance, so
+we use it for all further experiments.
+3
+Key Representation with Dispersion
+Dispersion on the sphere is well-established in the
+literature as discussed in §3, and it is common to ap-
+ply dispersion of the angles for learning hyperspher-
+ical representations, i.e., magnitudes of the vectors
+are discarded. However, previous works show that
+the norm of the keys, in fact, might contain im-
+portant information (Gao et al., 2024). To avoid
+discarding norms, contrary to other works, we ap-
+ply dispersion only to the angles of the model’s
+outputs while keeping their magnitudes intact and
+do gradient updates in Euclidean space. Figure 1
+shows how angular dispersion operates in 2D.
+Optimization for dispersion.
+In the context of k-
+NN MT, we also have to avoid a mismatch between
+the data store representation and the model’s output
+to keep the decoding step consistent. Therefore, we
+cannot apply dispersion on the data store alone. We
+fine-tune a small portion of a pretrained model to
+optimize for the dispersion of the model’s outputs
+before they are saved in a data store. We estimate
+dispersion over all possible keys using the mini-
+batches.
+Given a dataset of paired (parallel) sentences
+(X, Y) as in §2.1, we employ the standard log-
+likelihood machine translation loss2 w.r.t. the train-
+able model parameters θ:
+LMT(θ) := −
+∑︂
+(x,y)
+|y|
+∑︂
+i=1
+log p(yi|x, y<i).
+(7)
+In
+addition,
+given
+a
+dispersion
+regularizer
+R that acts on the sphere Sd,
+we define
+a dispersion loss on the directions of the
+hidden states.
+Concretely,
+writing H
+:=
+{h(x, y<i) : (x, y) ∈X × Y, i ∈|y|} ⊂Rd and
+¯H = {h/∥h∥: h ∈H} ⊂Sd, we have
+LDisp(θ) := R( ¯H),
+and we optimize their weighted sum
+L(θ) := LMT(θ) + γLDisp(θ),
+(8)
+estimating its stochastic gradients on minibatches.
+Any directional dispersion regularizer can play
+the part of R; we use sliced dispersion as motivated
+in §3.
+During the entire dispersion process, most of the
+network parameters are kept frozen. We only fine-
+tune the weights of the last two feed-forward layers,
+layer normalization, and output projection of the fi-
+nal decoder block. Hence, we do not introduce any
+new model parameters and utilize the existing ar-
+chitecture. Schematically, Figure 3 shows how we
+update the model representations during training.
+Key representation.
+In kNN-MT, the input to
+the final Transformer decoder fully-connected (FC)
+block is usually used as the key representation for
+the datastore (Khandelwal et al., 2021). In our
+setup (Figure 3), following Martins et al. (2023),
+we instead use the decoder output as the key, and
+keep this choice consistent across experiments. Pre-
+liminary tests showed a small advantage for the
+conventional choice (input to the final FC decoder
+block) in vanilla kNN-MT. However, when fine-
+tuning, we found that adjusting the output pro-
+jection is essential for good performance. This
+requires fine-tuning all weights up to the output,
+making the conventional approach less practical
+as it involves more parameters. How to fine-tune
+for dispersion more efficiently remains an open
+question.
+2In practice, we additionally use label smoothing regular-
+ization (Szegedy et al., 2016) with ϵ = 0.1.
+
+FC2
+activation & dropout
+dropout
+residual
+final layernorm
+output projection
+FC1
+Decoder layer L
+Figure 3: Fine-tuning of the NMT model for dispersion
+of outputs. Blocks in purple are trained, and the rest of
+the parameters are frozen.
+4
+Experimental Setup
+4.1
+Synthetic Data
+To more directly control the effect of dispersion, we
+generate a family of synthetic data stores. Specif-
+ically, we sample 10M random vectors of dimen-
+sionality 128 from the mixture of 5 power spher-
+ical distributions (De Cao and Aziz, 2020). The
+scale parameter κ for the power spherical distribu-
+tion defines the concentration of the data points,
+where higher κ means higher concentration. We
+build a data store using the keys generated with
+κ = {1, 10, 50, 100, 1000} with 2048 centroids
+while picking a random length for each key in the
+[1, 100] range.
+4.2
+MT Datasets and Evaluation
+We provide empirical results on two different lan-
+guages with in-domain and out-of-domain data
+stores. Below is the description of the datasets
+and evaluation criteria.
+• WMT16 ro-en news translation dataset3
+with 612k training samples.
+We apply
+sentencepiece4 tokenization (Kudo, 2018).
+• Multi-domain en-de dataset (Aharoni and
+Goldberg, 2020). We prepare data similar
+to Khandelwal et al. (2021), applying BPE
+(Sennrich et al., 2016) and data filtering based
+3https://www.statmt.org/wmt16/
+4https://github.com/google/sentencepiece
+on sentence length.5 The number of training
+samples varies by domain: Medical (206K),
+Law (450K), IT (180K), and Koran (15K).
+• WMT19 en-de dataset provided by Hugging-
+Face.6 We use this dataset only for fine-tuning
+de-en translation model. It contains 34M fil-
+tered de-en news data.
+We evaluate the translation accuracy on the best
+checkpoint according to the validation BLEU
+score using SacreBLEU (Papineni et al., 2002;
+Post, 2018) and COMET (Rei et al., 2020) on
+newstest2016 for ro-en and test sets of four do-
+mains (Medical, Law, IT and Koran) for de-en.
+We do all experiments using fairseq frame-
+work (Ott et al., 2019).
+4.3
+Models
+We compare translation quality and decoding speed
+across the following models:
+• Baseline (base). We train a transformer-base
+model (Vaswani et al., 2017) for ro-en, with
+additional linear projection of the decoder out-
+puts to dimensionality 128. We deliberately
+choose this dimensionality since the prelimi-
+nary results show a performance increase com-
+pared to a model with output dimensional-
+ity 512 (see §C). For de-en, we use the pre-
+trained model (Ng et al., 2019) with the di-
+mensionality of the decoder output 1024.
+• Baseline fine-tuned with the dispersion ob-
+jective (base-D). For both ro-en and de-en
+we fine-tune the baseline model as shown in
+Figure 3. All layers, except the last two fully
+connected layers, layer normalization of the
+last decoder block, and an output projection,
+are frozen during fine-tuning. For de-en fine-
+tuning, we use WMT 19 training set, and for
+ro-en we use WMT 16 training set. We fine-
+tuned all models with 5k optimization steps.
+We choose γ equal to 1 for all experiments
+and use the sliced dispersion regularizer with
+one great circle per batch.
+• Vanilla k-NN MT with (k-NN-D) and with-
+out (k-NN) dispersion. These models are
+obtained without additional training, by com-
+bining the aforementioned models (base and
+5https://github.com/urvashik/knnmt/blob/
+master/examples/translation/prepare-domadapt.sh
+6https://huggingface.co/datasets/wmt/wmt19
+
+100
+101
+102
+103
+Concentration
+101
+102
+103
+104
+Req./s
+13.8
+14.53
+32.5
+45.9
+112.6
+151.6
+Figure 4: The number of requests per second (req./s)
+for the data stores generated with different concentra-
+tion parameters κ. Higher concentration means lower
+dispersion. We also show the imbalance factor for each
+data store above the req./s value. Notably, increasing
+or decreasing dispersion past certain points does not
+influence speed much, but a certain critical range of con-
+centration makes a substantial difference when crossed.
+base-D) with k-NN interpolation at test time
+(Khandelwal et al., 2021). The data store is
+built from the model checkpoint with best de-
+velopment BLEU.
+More details of the model training and inference
+can be found in §B.
+4.4
+Data Store Construction and Search
+To build a data store from a NMT model, we ex-
+tract the hidden states from the last decoder feed-
+forward layer h(L). As described in §2.2, we use
+faiss with IVFPQ index (Johnson et al., 2019)
+and train the index on 1M random samples.7 For
+all models, we use 2048 IVF centroids and retrieve
+according to the squared Euclidean distance.
+5
+Results
+5.1
+Synthetic Results
+We first verify our hypothesis in a controlled exper-
+iment. Using the collection of synthetic data stores
+indexed by concentration (§4.1), we measure the
+time to retrieve k = 8 nearest neighbors for 10K
+random queries with batch size 10 and nprobe 32.
+Figure 4 shows that the data store lookup speed
+(measured as the number of queries per second)
+correlates negatively with the dispersion.
+5.2
+In-domain Results
+First, we analyze fine-tuning dynamics of the
+model with sliced regularizer described in §3 and
+without dispersion regularizer.
+We only report
+spherical variance, as the number of keys is highly
+7For data stores with less than 1M elements, we use all
+elements.
+500
+1000 1500 2000 2500 3000 3500 4000
+Steps
+0.4
+0.6
+0.8
+Spherical Variance
+w/o dispersion
+sliced regularizer
+Figure 5: Fine-tuning dynamics of ro-en models in
+terms of spherical variance. A step is a gradient update
+on the effective batch size described in §B.
+large, and minimum distance has quadratic com-
+plexity. Figure 5 shows that fine-tuning the model
+with the sliced regularizer increases the spherical
+variance value to a large extent, compared to the
+fine-tuning without the dispersion regularizer.
+Table 1 shows translation results for base and
+base-D models, both with and without k-NN. We
+also vary the number of centroids to probe between
+32 and 8. The total amount of keys stored in the
+data store is equal to 21M. Alongside the transla-
+tion scores, we report the number of tokens pro-
+cessed in one second (tok/s).
+model
+#pr. BLEU(↑) COMET(↑) tok/s(↑)
+base
+-
+31.5
+78.95
+75
+base-D
+-
+31.7
+78.96
+79
+k-NN
+32
+32.4
+79.89
+12
+k-NN
+8
+32.2
+79.69
+28
+k-NN-D
+32
+32.6
+79.91
+53
+k-NN-D
+8
+32.6
+79.93
+63
+Table 1: ro-en translation scores on newstest16 test
+set. tok/s calculated as a median over three runs.
+k-NN MT decoding with dispersion (base-D)
+performs as well as the base k-NN MT model while
+being about 5 times faster. The speedup agrees
+with the synthetic results, and so we attribute it to
+the properties of the IVFPQ index. To verify this
+hypothesis, we conduct an analysis of the data store
+properties in §6 and establish a connection to the
+NMT model performance.
+We provide additional results with embeddings
+dimensionality equal to 512 in §C.
+5.3
+Domain Adaptation
+Following the line of k-NN MT works (Khandelwal
+et al., 2021; Gao et al., 2024; Meng et al., 2022), we
+provide results for five different domains for de-en,
+comparing the models with and without dispersion.
+As shown in Table 2, a model with dispersion can
+achieve slightly faster data store lookup and over-
+
+all better performance on all domains. The main
+difference between the two setups is that all de-en
+keys have larger dimension (1024 instead of 128),
+and the data store size, except for Law, is much
+smaller than for ro-en.
+Our experiments also show that domain adap-
+tation k-NN MT is robust against decreasing the
+number of clusters to probe, while without disper-
+sion, we can see a performance drop both in BLEU
+and COMET. The most pronounced lookup speed
+improvements can be seen on the Law domain since
+it has the largest k-NN data store out of the four
+domains. Note that we fine-tuned for dispersion us-
+ing only WMT 19 training data and did not use any
+domain-specific data. We measure average tok/s
+over 10 random subsets, each consisting of 200
+sentences drawn uniformly with replacement from
+the test set. We report the median measurement.
+Translation analysis.
+While studying the differ-
+ence in the system outputs using compare-mt (Neu-
+big et al., 2019), we do not see many systematic
+patterns that can plausibly explain the performance
+gain of the k-NN MT-D model. We find that sen-
+tence length is predicted more accurately in the dis-
+persed model and sentence-level quality increases
+for short sentences. We leave further investigation
+to future work.
+6
+Analysis and Data Store
+Geometric Properties
+Empirically, dispersion has a positive effect in
+terms of lookup speed for the synthetic and k-NN
+MT experiments. To further explore how disper-
+sion affects the IVFPQ search, we measure how it
+affects the properties of the IVF clusters.
+Dimensionality.
+Intuitively, clumping occurs
+more often when dimensionality is relatively small.
+Previous studies on dispersion (Tokarchuk et al.,
+2025) and our experiments discussed in §5.2
+and §5.3 show that higher dimensionality alleviates
+clumping problem to some extent. However, in-
+creasing dimensionality does not necessarily leads
+to better performance (e.g., ro-en model with out-
+put dimensionality 128 performs overall better than
+the same model with output dimensionality 512, as
+per Table 1 and Table 7), but it often incurs ad-
+ditional computation and memory costs. While
+having larger dimensionality showed to be useful
+in large-scale setups (), with k-NN MT such scal-
+ing is non-trivial given the size of resulting data
+0
+500
+1000
+1500
+2000
+inverted list id (sorted)
+101
+103
+105
+size of a inverted list
+k-NN MT (baseline)
+k-NN MT-D (w/ dispersion)
+Figure 6: Dispersion tends to reduce the variance of
+IVF cluster sizes.
+store. However, there is a performance and speed
+gain even with higher dimensionality as per Ta-
+ble 2. Therefore, dispersion might be a good and
+relatively cheap tool that helps balancing clusters
+in the data store, and as a result improve retrieval
+speed with no additional handcrafted optimizations.
+We do believe that our method can be successfully
+applied in scenarios where large amount of points
+have to be distributed in high-dimensional space.
+Distribution of IVF cluster sizes.
+We investi-
+gate whether dispersion improves the distribution
+of cluster sizes, which is known to have a positive
+effect on the retrieval speed and leads to a more
+predictable retrieval time (Tavenard et al., 2011).
+In the Figure 6, we compare the distributions of
+the IVF cluster sizes for the k-NN MT and the k-
+NN MT-D data stores. To numerically quantify the
+effect, we report the imbalance factor (Tavenard
+et al., 2011). Given a partitioning of a data store
+elements into K clusters with sizes Ni, and the
+total size N = ∑︁K
+i=1 Ni, the imbalance factor is:
+IF = K
+K
+∑︂
+i=1
+(︃Ni
+N
+)︃2
+.
+(9)
+We observe that dispersion improves the imbalance
+factor (IF), as observed from Table 3 and Figure 4.
+Number of clusters to probe.
+Next, we are ask-
+ing whether dispersion improves the quantization
+accuracy such that we need fewer IVF probes to
+obtain the same quality.
+To complement the analysis above, we also pro-
+pose the expected number of probes (ENP) metric
+that aims to reflect the number of probes that is
+enough to obtain high-quality retrieval. First, given
+a vector h, we rank the IVF centroids µ = [µi]K
+i=1,
+by the distance from the h: Rh(µi) ∈{1, . . . , K}.
+Next, given k nearest neighbors [hi]k
+i=1 ∈K(h),
+and their corresponding IVF centroids ranks µh =
+
+model
+#pr.
+Medical (5.7M)
+Law (18.4M)
+IT (3.1M)
+Koran (0.5M)
+BLEU
+COMET
+tok/s
+BLEU
+COMET
+tok/s
+BLEU
+COMET
+tok/s
+BLEU
+COMET
+tok/s
+base
+-
+40.4
+83.05
+91
+45.8
+85.24
+90
+37.6
+82.07
+70
+16.9
+72.48
+89
+base-D
+-
+40.5
+83.30
+86
+46.0
+85.37
+92
+38.3
+82.45
+82
+17.1
+72.58
+76
+k-NN MT
+32
+55.0
+84.41
+55
+61.0
+87.03
+17
+45.1
+83.13
+51
+20.8
+72.38
+62
+k-NN MT
+8
+54.6
+84.37
+63
+60.7
+86.87
+36
+44.6
+83.12
+55
+20.1
+71.44
+63
+k-NN MT-D
+32
+55.2
+84.54
+62
+61.5
+87.07
+41
+45.8
+83.54
+55
+21.4
+72.58
+62
+k-NN MT-D
+8
+55.1
+84.47
+66
+61.3
+87.01
+47
+45.8
+83.49
+58
+21.3
+72.27
+63
+Table 2: Translation quality (BLEU/COMET scores) on different domains for de-en alongside the tok/s decoding
+speed. The #npr column shows the number of probes used during approximate k-NN retrieval (§2.2).
+[µ(hi)]k
+i=1, we estimate the ENP metric:
+ENP = Eh∼D max
+h′∈K(h) Rh(µ(h′)).
+(10)
+ENP takes values from 1 to K, where 1 means 1 is
+the perfect score (meaning we need 1 probe to find
+k-NNs). We use the approximate search with 32
+probes to estimate the reference [hi]k
+i=1.
+For the ro-en data stores, the ENP metric for
+k-NN MT is 6.296±0.667, while for k-NN MT-D
+the ENP is 3.290 ± 0.215; for de-en (Law) data
+stores, we observe a marginal improvement in ENP
+(1.59 ± 0.056 vs 1.5 ± 0.049). The improvements
+in ENP are more pronounced for the ro-en data
+stores. We attribute this to the difference in key di-
+mensionality and the amount of training data used.
+Clustering algorithm evaluation.
+Further, we
+are asking whether dispersion improves other clus-
+tering metrics.
+Namely, we look at the com-
+monly used clustering metrics, namely homogene-
+ity, completeness, and v-measure (Rosenberg and
+Hirschberg, 2007) implemented via scikit-learn
+(Pedregosa et al., 2011). Motivated by the preci-
+sion, recall, and f-measure (Van Rijsbergen, 1979),
+homogeneity, completeness, and v-measure esti-
+mate the quality of a clustering given keys and
+classes (labels), where we use the next tokens v
+from the vocabulary V . Homogeneity measures
+if all of its clusters contain only data points that
+are members of a single class; completeness mea-
+sures if all the data points that are members of a
+given class are elements of the same cluster; and
+v-measure is the harmonic mean between homo-
+geneity and completeness. For the definitions, we
+refer the reader to §D.
+As we show in Table 3, the clustering perfor-
+mance improves for the dispersed model. In par-
+ticular, homogeneity and v-measure improve for
+both ro-en and de-en data stores by a large mar-
+gin, while completeness improves for the ro-en
+data store.
+metric
+ro-en
+de-en
+w/o disp. w/ disp. w/o disp. w/ disp.
+homogeneity (↑)
+51.54
+71.98
+67.56
+74.06
+completeness (↑)
+44.41
+73.90
+70.27
+70.11
+v-measure (↑)
+61.39
+70.16
+68.89
+72.03
+IF (↓)
+68.34
+11.12
+27.73
+7.79
+Table 3:
+Clustering metrics for in-domain ro-en k-
+NN MT and Law de-en k-NN MT data stores with and
+without dispersion. Dispersion improves homogeneity
+and v-measure for both ro-en and de-en data stores.
+Symmetry of IVF keys.
+One of the ways to quan-
+tify the balance of the representation space is to
+measure how symmetrical the space is, i.e., we
+are asking whether the dispersion helps to increase
+the symmetry of the key space. We measure the
+central symmetry as the Euclidean norm of the
+mean vector over the data store. Namely, if the
+norm of the mean vector is low, the vector repre-
+sentations must be well-balanced relative to the
+origin. Given a set of keys h, sampled from the
+data store D, we estimate ∥E[h]∥. For the ro-en
+data stores, k-NN MT ∥E[h]∥= 68.35, and k-
+NN MT-D ∥E[h]∥= 11.12; for de-en (Law) data
+stores, k-NN MT ∥E[h]∥= 6.03, and k-NN MT-D
+∥E[h]∥= 2.91, which indicates that dispersion im-
+proves the symmetry of the vector representations.8
+6.1
+Sensitivity to Dispersion Weight
+In order to verify that speed-up and performance
+gains are the positive effect of dispersion rather
+than additional fine-tuning, we vary the value of
+γ in Equation (8) where γ = 0 is equivalent to
+fine-tuning with only cross-entropy loss. Results
+in Table 4 that positive values of gamma lead to
+improvements in both speed and translation quality,
+while being not sensitive to the specific value of γ.
+8Note that symmetry around zero implies zero mean, but
+zero mean does not necessarily imply symmetry.
+
+γ
+Medical (5.7M)
+Law (18.4M)
+IT (3.1M)
+BLEU
+tok/s
+BLEU
+tok/s
+BLEU
+tok/s
+-
+53.8
+53.2
+60.4
+16.2
+42.8
+48.5
+0
+53.9
+46.7
+60.5
+27.5
+43.0
+48.2
+1
+54.2
+51.2
+60.7
+40.4
+43.0
+53.0
+100
+53.7
+53.7
+61.4
+46.6
+43.3
+55.0
+Table 4: BLEU scores on different domains for de-en
+development sets alongside the tok/s decoding speed
+with various values of γ.
+7
+Related Work
+In the literature, there are two main lines of work
+addressing the decoding speed of k-NN MT. One of
+them is related to the creation of the data store and
+includes methods such as pruning and dimension-
+ality reduction. Another direction of the k-NN MT
+improvements lies in the decoding-time improve-
+ment, including caching and adaptive retrieval. He
+et al. (2021) discuss various pruning strategies (in-
+cluding greedy merge pruning) and dimensionality
+reduction in the context of k-NN language mod-
+els. Martins et al. (2022a) apply similar techniques
+in the context of NMT domain adaptation with
+k-NN. Zhu et al. (2023a) propose to prune data
+stores based on a local correctness metric, which is
+defined as the maximum number of correct predic-
+tions in the neighborhood of a specific key. Wang
+et al. (2022a) and Meng et al. (2022) build a source-
+side small data store to avoid searching across all
+possible target contexts. Dai et al. (2023) also
+use a small data store and perform sentence-based
+retrieval. They incorporate results into the NMT
+model using an adapter network.
+Zhang et al. (2022) also show that there are re-
+dundant features in the keys and that a compression
+network can be learned for efficient search, while
+Zhu et al. (2023b) use adapter and alignment loss
+to learn low-dimensional keys representation.
+To improve the decoding speed at the decod-
+ing time, Martins et al. (2022b) introduced chunk-
+based retrieval that retrieves multiple tokens at once
+instead of one token at a time. Martins et al. (2022a)
+use a caching mechanism in decoding time and a
+simple decision mechanism for skipping retrieval
+from the data store based on a predicted interpola-
+tion value λ rather than a static λ as in the original
+k-NN MT model (Khandelwal et al., 2021). Sim-
+ilar in nature, Gao et al. (2024) propose to use a
+classifier to decide when to skip retrieval from the
+k-NN data store and introduce a timestep aware
+k-NN MT threshold λ.
+In contrast, the study of the key representation
+properties is limited. Wang et al. (2022a) analyze
+the distributions of the keys and show that even
+unrelated words can be seen in the same clusters,
+which can negatively affect the distance-based re-
+trieval. They train adapter network with contrastive
+loss to promote more separable representations
+and introduce compression. Similarly Wang et al.
+(2022b) show that context representation from the
+NMT model is suboptimal for the k-NN MT re-
+trieval and more fine-grained representation can be
+obtained via training small adapter network with
+a contrastive loss approach. In our work, we show
+that a similar goal can be achieved with a simple
+regularizer without the need for negative samples.
+Also, we show that we can achieve speed up even
+without compression.
+Orthogonal to the speed-up of the k-NN MT is
+the design choice of the k-NN search index itself
+that affects retrieval speed greatly. In our work,
+we have focused on IVF-PQ since it is an index
+that that is well established and validated in the k-
+NN MT literature and methodology (Khandelwal
+et al., 2021; Martins et al., 2022a; Gao et al., 2024).
+Our method has direct impact on improving IVF
+lookup of the index rather then improving search
+over quantized vectors (PQ). Using such methods
+as Optimized Product Quantization (OPQ, Ge et al.,
+2014) might further improve search speed.
+8
+Conclusion
+In this work, we show that angular dispersion of the
+data store benefits the retrieval speed and perfor-
+mance in k-NN MT for both in-domain and domain
+adaptation scenarios. Our analysis of cluster prop-
+erties and synthetic data stores further indicates
+that dispersion of the keys balances the data store
+clustering, accelerating the approximate search, es-
+pecially for larger data store sizes. Our findings
+indicate that fine-tuning with dispersion can be a
+first efficient k-NN MT component. Since there
+are no changes in architecture or k-NN data store
+construction, we hypothesize that other efficient
+methods that rely on distance metrics can be easily
+applied on top, which we leave for future work.
+Limitations
+Limited study of dimensionality effect.
+Disper-
+sion and dimensionality have a tight connection
+with each other. Specifically, larger dimensionality
+naturally allows for large dispersion but induces
+
+greater costs for storage and retrieval. However, in
+this work, we focus on three different choices of
+dimensionality: 128, 512 and 1024. The dimen-
+sionality of modern LLMs is typically on the larger
+side, and it remains a question to what extent we
+can see the benefits of dispersion in application to
+language modeling, particularly at a larger scale.
+Search Metric.
+Similar to previous works, we
+use squared Euclidean distance for the k-NN re-
+trieval. Wang et al. (2022b) specified in their work
+that using the same metric as in fine-tuning leads
+to better performance. We use angular dispersion,
+and it is possible that resorting to angular-based
+distances, such as cosine similarity, during pretrain-
+ing and fine-tuning will lead to better performance
+of the dispersed models.
+Data store Index Design
+Our analysis relies on
+a specific index design with a fixed number of IVF
+centroids. Among all parameters, the number of
+centroids plays a key role in determining data store
+lookup speed. In addition, optimized product quan-
+tization can further accelerate index search. In this
+work, however, we do not explore modifications
+to the data store index, and leave this direction for
+future investigation.
+Acknowledgments
+We thank Caio Corro and the UvA Language Tech-
+nology Lab, especially Yang Meng, Maya Nachesa,
+Di Wu and Melika Davoodzadeh for discussion
+and feedback on the manuscript. This work is sup-
+ported by the Dutch Research Council (NWO) via
+VI.Veni.212.228. The authors also thank SURF
+(www.surf.nl) for the support in using the National
+Supercomputer Snellius.
+References
+Roee Aharoni and Yoav Goldberg. 2020. Unsupervised
+domain clusters in pretrained language models. In
+Proceedings of the 58th Annual Meeting of the Associ-
+ation for Computational Linguistics (Volume 1: Long
+Papers). Association for Computational Linguistics.
+Clément Bonet, Paul Berg, Nicolas Courty, François
+Septier, Lucas Drumetz, and Minh Tan Pham. 2023.
+Spherical Sliced-Wasserstein. In The Eleventh Inter-
+national Conference on Learning Representations.
+Yuhan Dai, Zhirui Zhang, Qiuzhi Liu, Qu Cui, Weihua
+Li, Yichao Du, and Tong Xu. 2023. Simple and
+scalable nearest neighbor machine translation. In
+The Eleventh International Conference on Learning
+Representations.
+Nicola De Cao and Wilker Aziz. 2020. The power
+spherical distrbution. Proceedings of the 37th Inter-
+national Conference on Machine Learning, INNF+.
+Hiroyuki Deguchi, Hayate Hirano, Tomoki Hoshino,
+Yuto Nishida, Justin Vasselli, and Taro Watanabe.
+2023a. knn-seq: Efficient, extensible knn-mt frame-
+work. Preprint, arXiv:2310.12352.
+Hiroyuki Deguchi, Taro Watanabe, Yusuke Matsui,
+Masao Utiyama, Hideki Tanaka, and Eiichiro Sumita.
+2023b. Subset retrieval nearest neighbor machine
+translation. In Proceedings of the 61st Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 174–189, Toronto,
+Canada. Association for Computational Linguistics.
+Kawin Ethayarajh. 2019. How contextual are contextu-
+alized word representations? Comparing the geom-
+etry of BERT, ELMo, and GPT-2 embeddings. In
+Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the
+9th International Joint Conference on Natural Lan-
+guage Processing (EMNLP-IJCNLP), pages 55–65,
+Hong Kong, China. Association for Computational
+Linguistics.
+Jun Gao, Di He, Xu Tan, Tao Qin, Liwei Wang, and
+Tieyan Liu. 2019. Representation degeneration prob-
+lem in training natural language generation models.
+In International Conference on Learning Representa-
+tions.
+Yan Gao, Zhiwei Cao, Zhongjian Miao, Baosong Yang,
+Shiyu Liu, Min Zhang, and Jinsong Su. 2024. Ef-
+ficient k-nearest-neighbor machine translation with
+dynamic retrieval. In Findings of the Association for
+Computational Linguistics: ACL 2024, pages 7990–
+8001, Bangkok, Thailand. Association for Computa-
+tional Linguistics.
+Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun.
+2014. Optimized product quantization. IEEE Trans-
+actions on Pattern Analysis and Machine Intelligence,
+36(4):744–755.
+John A. Hartigan and Manchek A. Wong. 1979. Al-
+gorithm AS 136: A k-means clustering algorithm.
+Journal of the Royal Statistical Society. Series C (Ap-
+plied Statistics), 28(1):100–108.
+Junxian He,
+Graham Neubig,
+and Taylor Berg-
+Kirkpatrick. 2021. Efficient nearest neighbor lan-
+guage models. In Proceedings of the 2021 Confer-
+ence on Empirical Methods in Natural Language Pro-
+cessing, pages 5703–5714, Online and Punta Cana,
+Dominican Republic. Association for Computational
+Linguistics.
+S Rao Jammalamadaka and Ambar Sengupta. 2001.
+Topics in circular statistics. Series on multivariate
+analysis; vol. 5. World Scientific, Singapore.
+Jeff Johnson, Matthijs Douze, and Hervé Jégou. 2019.
+Billion-scale similarity search with GPUs.
+IEEE
+Transactions on Big Data, 7(3):535–547.
+
+Hervé Jégou, Matthijs Douze, and Cordelia Schmid.
+2011.
+Product quantization for nearest neighbor
+search.
+IEEE Trans. Pattern Anal. Mach. Intell.,
+33(1):117–128.
+Urvashi Khandelwal, Angela Fan, Dan Jurafsky, Luke
+Zettlemoyer, and Mike Lewis. 2021. Nearest neigh-
+bor machine translation. In International Conference
+on Learning Representations.
+Diederik P. Kingma and Max Welling. 2014. Auto-
+Encoding Variational Bayes. In 2nd International
+Conference on Learning Representations, ICLR 2014,
+Banff, AB, Canada, April 14-16, 2014, Conference
+Track Proceedings.
+Taku Kudo. 2018. Subword regularization: Improv-
+ing neural network translation models with multiple
+subword candidates. In Proceedings of the 56th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 66–75,
+Melbourne, Australia. Association for Computational
+Linguistics.
+Weiyang Liu, Rongmei Lin, Z. Liu, Lixin Liu, Zhiding
+Yu, Bo Dai, and Le Song. 2018. Learning towards
+minimum hyperspherical energy. In Neural Informa-
+tion Processing Systems.
+Kantilal Varichand Mardia. 1975. Statistics of direc-
+tional data. Journal of the Royal Statistical Society
+Series B: Statistical Methodology, 37(3):349–371.
+Pedro Martins, Zita Marinho, and Andre Martins. 2022a.
+Efficient machine translation domain adaptation. In
+Proceedings of the 1st Workshop on Semiparametric
+Methods in NLP: Decoupling Logic from Knowledge,
+pages 23–29, Dublin, Ireland and Online. Association
+for Computational Linguistics.
+Pedro Henrique Martins, João Alves, Tânia Vaz,
+Madalena Gonçalves,
+Beatriz Silva,
+Marianna
+Buchicchio, José G. C. de Souza, and André F. T.
+Martins. 2023. Empirical assessment of kNN-MT
+for real-world translation scenarios. In Proceedings
+of the 24th Annual Conference of the European As-
+sociation for Machine Translation, pages 115–124,
+Tampere, Finland. European Association for Machine
+Translation.
+Pedro Henrique Martins, Zita Marinho, and André F. T.
+Martins. 2022b. Chunk-based nearest neighbor ma-
+chine translation. In Proceedings of the 2022 Con-
+ference on Empirical Methods in Natural Language
+Processing, pages 4228–4245, Abu Dhabi, United
+Arab Emirates. Association for Computational Lin-
+guistics.
+Yuxian Meng, Xiaoya Li, Xiayu Zheng, Fei Wu, Xi-
+aofei Sun, Tianwei Zhang, and Jiwei Li. 2022. Fast
+nearest neighbor machine translation. In Findings of
+the Association for Computational Linguistics: ACL
+2022, pages 555–565, Dublin, Ireland. Association
+for Computational Linguistics.
+Graham Neubig, Zi-Yi Dou, Junjie Hu, Paul Michel,
+Danish Pruthi, Xinyi Wang, and John Wieting. 2019.
+compare-mt: A tool for holistic comparison of lan-
+guage generation systems. CoRR, abs/1903.07926.
+Nathan Ng, Kyra Yee, Alexei Baevski, Myle Ott,
+Michael Auli, and Sergey Edunov. 2019. Facebook
+FAIR‘s WMT19 news translation task submission.
+In Proceedings of the Fourth Conference on Machine
+Translation (Volume 2: Shared Task Papers, Day
+1), pages 314–319, Florence, Italy. Association for
+Computational Linguistics.
+Myle Ott, Sergey Edunov, Alexei Baevski, Angela Fan,
+Sam Gross, Nathan Ng, David Grangier, and Michael
+Auli. 2019. fairseq: A fast, extensible toolkit for
+sequence modeling. In Proceedings of NAACL-HLT
+2019: Demonstrations.
+Kishore Papineni, Salim Roukos, Todd Ward, and Wei-
+Jing Zhu. 2002. Bleu: a method for automatic evalu-
+ation of machine translation. In Proceedings of the
+40th Annual Meeting of the Association for Compu-
+tational Linguistics, pages 311–318, Philadelphia,
+Pennsylvania, USA. Association for Computational
+Linguistics.
+F. Pedregosa, G. Varoquaux, A. Gramfort, V. Michel,
+B. Thirion, O. Grisel, M. Blondel, P. Prettenhofer,
+R. Weiss, V. Dubourg, J. Vanderplas, A. Passos,
+D. Cournapeau, M. Brucher, M. Perrot, and E. Duch-
+esnay. 2011.
+Scikit-learn: Machine learning in
+Python.
+Journal of Machine Learning Research,
+12:2825–2830.
+Matt Post. 2018. A call for clarity in reporting BLEU
+scores. In Proceedings of the Third Conference on
+Machine Translation: Research Papers, pages 186–
+191, Brussels, Belgium. Association for Computa-
+tional Linguistics.
+Ricardo Rei, Craig Stewart, Ana C Farinha, and Alon
+Lavie. 2020. COMET: A neural framework for MT
+evaluation. In Proceedings of the 2020 Conference
+on Empirical Methods in Natural Language Process-
+ing (EMNLP), pages 2685–2702, Online. Association
+for Computational Linguistics.
+Andrew Rosenberg and Julia Hirschberg. 2007.
+V-
+measure: A conditional entropy-based external clus-
+ter evaluation measure. In Proceedings of the 2007
+Joint Conference on Empirical Methods in Natural
+Language Processing and Computational Natural
+Language Learning (EMNLP-CoNLL), pages 410–
+420, Prague, Czech Republic. Association for Com-
+putational Linguistics.
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+2016. Neural machine translation of rare words with
+subword units. In Proceedings of the 54th Annual
+Meeting of the Association for Computational Lin-
+guistics (Volume 1: Long Papers), pages 1715–1725,
+Berlin, Germany. Association for Computational Lin-
+guistics.
+
+Christian Szegedy, Vincent Vanhoucke, Sergey Ioffe,
+Jon Shlens, and Zbigniew Wojna. 2016. Rethink-
+ing the inception architecture for computer vision.
+In 2016 IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR), pages 2818–2826.
+Pieter Merkus Lambertus Tammes. 1930. On the origin
+of number and arrangement of the places of exit on
+the surface of pollen-grains. Ph.D. thesis, University
+of Groningen. Relation: http://www.rug.nl/ Rights:
+De Bussy.
+Romain Tavenard, Hervé Jégou, and Laurent Amsaleg.
+2011. Balancing clusters to reduce response time
+variability in large scale image search. In 2011 9th
+International Workshop on Content-Based Multime-
+dia Indexing (CBMI), page 19–24, Madrid, Spain.
+IEEE.
+Evgeniia Tokarchuk, Hua Chang Bakker, and Vlad Nic-
+ulae. 2025. Keep your distance: Learning dispersed
+embeddings on Sm. Transactions on Machine Learn-
+ing Research.
+C. J. Van Rijsbergen. 1979. Information retrieval. Dept.
+of Computer Science, University of Glasgow.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In Advances in Neural Information Pro-
+cessing Systems, Red Hook, NY, USA. Curran Asso-
+ciates Inc.
+Dexin Wang, Kai Fan, Boxing Chen, and Deyi Xiong.
+2022a. Efficient cluster-based k-nearest-neighbor
+machine translation. In Proceedings of the 60th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 2175–
+2187, Dublin, Ireland. Association for Computational
+Linguistics.
+Qiang Wang, Rongxiang Weng, and Ming Chen. 2022b.
+Learning decoupled retrieval representation for near-
+est neighbour neural machine translation. In Proceed-
+ings of the 29th International Conference on Com-
+putational Linguistics, pages 5142–5147, Gyeongju,
+Republic of Korea. International Committee on Com-
+putational Linguistics.
+Tongzhou Wang and Phillip Isola. 2020. Understanding
+contrastive representation learning through alignment
+and uniformity on the hypersphere. In Proceedings
+of the 37th International Conference on Machine
+Learning, volume 119 of Proceedings of Machine
+Learning Research, pages 9929–9939. PMLR.
+Zhennan Wang, Canqun Xiang, Wenbin Zou, and
+Chen Xu. 2020. Mma regularization: Decorrelat-
+ing weights of neural networks by maximizing the
+minimal angles. In Advances in Neural Information
+Processing Systems, volume 33, pages 19099–19110.
+Curran Associates, Inc.
+Haokui Zhang, Buzhou Tang, Wenze Hu, and Xi-
+aoyu Wang. 2022. Connecting compression spaces
+with transformer for approximate nearest neighbor
+search. In Computer Vision – ECCV 2022, pages
+515–530, Cham. Springer Nature Switzerland.
+Xin Zheng, Zhirui Zhang, Junliang Guo, Shujian Huang,
+Boxing Chen, Weihua Luo, and Jiajun Chen. 2021.
+Adaptive nearest neighbor machine translation. In
+Proceedings of the 59th Annual Meeting of the Asso-
+ciation for Computational Linguistics and the 11th
+International Joint Conference on Natural Language
+Processing (Volume 2: Short Papers), pages 368–374,
+Online. Association for Computational Linguistics.
+Wenhao Zhu, Shujian Huang, Yunzhe Lv, Xin Zheng,
+and Jiajun Chen. 2023a. What knowledge is needed?
+towards explainable memory for kNN-MT domain
+adaptation. In Findings of the Association for Com-
+putational Linguistics: ACL 2023, pages 2824–2836,
+Toronto, Canada. Association for Computational Lin-
+guistics.
+Wenhao Zhu, Jingjing Xu, Shujian Huang, Lingpeng
+Kong, and Jiajun Chen. 2023b. INK: Injecting kNN
+knowledge in nearest neighbor machine translation.
+In Proceedings of the 61st Annual Meeting of the
+Association for Computational Linguistics (Volume 1:
+Long Papers), pages 15948–15959, Toronto, Canada.
+Association for Computational Linguistics.
+A
+Regularizers
+We compare the behavior of sliced and MHE reg-
+ularizers (see §3) during the ro-en model fine-
+tuning. Figure 7 shows batched spherical variance
+for both regularizers on the training data. We can
+see that sliced requires fewer updates for conver-
+gence, and the overall spherical variance is higher.
+Therefore, we use the sliced regularizer for all ex-
+periments.
+500
+1000 1500 2000 2500 3000 3500 4000
+Steps
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+Spherical Variance
+w/o dispersion
+sliced regularizer
+MHE
+Figure 7: Comparison of the MHE and sliced regular-
+izer.
+B
+Training and Inference Details
+Fine-tuning.
+We fine-tune base models with
+cross-entropy loss, label smoothing equal to 0.1,
+and sliced regularizer with γ equal to 1.
+We
+
+ro-en
+en-de
+# total
+46M
+356M
+# trained
+4M
+51M
+time
+2h
+20h
+GPU
+NVIDIA GeForce GTX TITAN X
+# GPUs
+1
+Table 5: Total number of model parameters and number
+of trained parameters for ro-en and de-en alongside
+GPU model, number of GPUs and total training time.
+test set
+k
+T
+λ
+ro-en newstest
+8
+100
+0.3
+de-en Law
+8
+10
+0.8
+de-en Medical
+4
+10
+0.8
+de-en IT
+8
+10
+0.7
+de-en Koran
+8
+100
+0.7
+Table 6: k-NN MT parameters.
+optimize for 5k steps using Adam (Kingma and
+Welling, 2014) optimizer with 500 warm-up steps
+and effective batch size 65.5K tokens. ro-en is
+fine-tune with learning rate 5 · 10−5, de-en model
+is fine-tuned with lr 7 · 10−5. Details of the model
+size and hardware set up is shown in Table 5
+Decoding Speed.
+To make a fair comparison of
+the data store lookup, we use the same GPU cluster
+node with NVIDIA GeForce GTX TITAN X.
+k-NN MT parameters.
+k-NN MT relies on the
+three hyperparameters: number of retrieved neigh-
+bors (k), temperature (T), and interpolation param-
+eter λ. Table 6 shows the exact parameters we used
+for each k-NN MT model.
+Evaluation.
+We use SacreBLEU with the nrefs:1,
+case:mixed, eff:no, tok:13a, smooth:exp, ver-
+sion:2.3.1 signature; and for COMET, we use de-
+fault Unbabel/wmt22-comet-da9 model.
+C
+Additional Results
+Table 7 shows the results for ro-en models with
+the output dimension of 512.
+D
+Clustering Analysis
+Here define homogeneity,
+completeness and
+v-measure clustering metrics (Rosenberg and
+Hirschberg, 2007). To define these metrics, let
+9https://huggingface.co/Unbabel/
+wmt22-comet-da
+model
+BLEU
+COMET
+tok./sec.
+base
+31.2
+0.7855
+94.6
+base-D.
+31.1
+0.7862
+78.9
+k-NN MT
+31.8
+0.7937
+26.1
+k-NN MT-D
+31.9
+0.7905
+54.4
+Table 7:
+BLEU and COMET on newstest16 for
+ro-en 512 model. k-NN MT is with the in-domain
+data store.
+us first denote the entropy and conditional entropy
+of clusters and next tokens:
+H(V |K) = −
+K
+∑︂
+i=1
+|V |
+∑︂
+v=1
+nv,i
+N log
+nv,i
+∑︁|V |
+v=1 nv,i
+H(V ) = −
+|V |
+∑︂
+v=1
+∑︁K
+i=1 nv,i
+N
+log
+∑︁K
+i=1 nv,i
+N
+H(K|V ) = −
+|V |
+∑︂
+v=1
+K
+∑︂
+i=1
+nv,i
+N log
+nv,i
+∑︁K
+i=1 nv,i
+H(K) = −
+K
+∑︂
+i=1
+∑︁|V |
+v=1 nv,i
+N
+log
+∑︁|V |
+v=1 nv,i
+N
+,
+where by nv,i, we denote the number of data store
+elements with a next token v and assigned with the
+cluster i. Homogeneity measures if all of its clus-
+ters contain only data points which are members of
+a single class
+hom =
+{︄
+1
+if H(V ) = 1
+1 −H(V |K)
+H(V )
+else;
+(11)
+completeness measures if all the data points that
+are members of a given class are elements of the
+same cluster
+compl =
+{︄
+1
+if H(K) = 1
+1 −H(K|V )
+H(K)
+else;
+(12)
+and v-measure is the harmonic mean between ho-
+mogeneity and completeness, where β weights the
+two components (we use β = 1):
+v-measure = (1 + β) hom compl
+(β hom) + compl .
+(13)

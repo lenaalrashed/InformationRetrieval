@@ -1,0 +1,2555 @@
+TabRAG: Improving Tabular Document Question Answering
+for Retrieval Augmented Generation via Structured Representations
+Jacob Si * 1 Mike Qu * 2 Michelle Lee 1 Marek Rei 1 Yingzhen Li 1
+Abstract
+Incorporating external knowledge bases in tradi-
+tional retrieval-augmented generation (RAG) re-
+lies on parsing the document, followed by query-
+ing a language model with the parsed informa-
+tion via in-context learning. While effective for
+text-based documents, question answering on tab-
+ular documents often fails to generate plausi-
+ble responses. Standard parsing techniques lose
+the two-dimensional structural semantics critical
+for cell interpretation. In this work, we present
+TABRAG, a parsing-based RAG framework de-
+signed to improve tabular document question
+answering via structured representations. Our
+framework consists of layout segmentation that
+decomposes the document inputs into a series
+of components, enabling fine-grained extraction.
+Subsequently, a vision language model parses
+and extracts the document tables into a hierar-
+chically structured representation. In order to
+cater various table styles and formats, we inte-
+grate a self-generated in-context learning module
+that guides the table extraction process. Experi-
+mental results demonstrate that TABRAG outper-
+forms existing popular parsing techniques across a
+broad suite of evaluation and ablation benchmarks.
+Code is available at: https://github.com/
+jacobyhsi/TabRAG.
+1. Introduction
+Tabular documents are the standard for organizing action-
+able data in professional and research environments (van
+Breugel & van der Schaar, 2024; Hollmann et al., 2023; Si
+et al., 2024; Arik & Pfister, 2020; Si et al., 2025). These
+documents are used to record and communicate critical in-
+formation across various domains, from auditing financial
+statements in corporate settings to personal day-to-day tax
+*Equal contribution 1Imperial College London 2Columbia Uni-
+versity. Correspondence to: Jacob Si <y.si23@imperial.ac.uk>.
+Preprint. February 3, 2026.
+filings (Zhu et al., 2022; Kim et al., 2024; Zhao et al., 2024).
+Consequently, effective table retrieval and understanding
+are essential for accurate data analysis and decision-making.
+Unlike plain text, which follows a natural sequence, a no-
+table feature unique to tabular data is that it conveys infor-
+mation through a two-dimensional layout, where the value
+of each cell depends on both its row and column context,
+along with added nuances such as units and table structure.
+Retrieval-Augmented Generation (RAG) has become an
+established framework that enhances large language mod-
+els by grounding their generation in external knowledge
+sources (Lewis et al., 2021; Guu et al., 2020; Wei et al.,
+2025b). In real-world industries, RAG is widely used in
+settings such as personalized enterprise search, and question
+answering over private documents, many of which involve
+large, complex tables (OpenAI, 2024; Cohere, 2024; Liu,
+2022). Traditional RAG (Lewis et al., 2021; Guu et al.,
+2020) relies on parsing documents to obtain text, followed
+by querying a large language model (LLM) with the corre-
+sponding retrieved information via in-context learning (Liu,
+2022; Chase, 2022). While straightforward, traditional RAG
+pipelines often struggle to generate plausible answers when
+queried about tabular documents (Shaikh, 2025; Kylo, 2025).
+During inference, the retrieved tables are typically serialized
+into linear text before provided as in-context learning exam-
+ples. However, this conversion process creates a bottleneck
+as the resulting text-based representations fail to effectively
+mirror the original two-dimensional dependencies. The com-
+plicated table styles and formatting overwhelm the LLM’s
+reasoning abilities and lead to hallucinated or imprecise
+answers. The best performing parsers that serialize the data
+either lack customizability and can only perform flat-text
+extraction (McKie, 2025; Hoffstaetter, 2025) or require care-
+ful prompt engineering (Qwen et al., 2025; OpenAI, 2025;
+Gemma et al., 2025), which we tackle in our paper.
+Since tabular documents are inherently structured and vi-
+sually grounded, effectively integrating them into RAG
+pipelines requires more than typical extraction methods.
+In this work, we propose TABRAG, a parsing-based RAG
+framework that improves tabular document question answer-
+ing via structured representations. TABRAG first segments
+the document via a layout detector (Li et al., 2022) into var-
+1
+arXiv:2511.06582v2 [cs.CL] 31 Jan 2026
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Step 1: 
+Layout Parsing &
+Component Extraction
+Step 2: 
+Self-Generated In-
+Domain ICL Examples
+ 
+Step 3: 
+Generate Structured
+Representations 
+TabRAG
+Text
+Figures
+Tables
+Retrieval & Generation
+Query
+Step 5: 
+Retrieval through
+Vector Database
+Answer
+Step 6: 
+Generation through
+In-Context Learning
+Step 4: 
+Generate Page Overview
+VLM
+VLM
+concat
++
+embed
+Document
+Layout Components
+SelfGenICL
+RetTopK
+Figure 1. The TABRAG Architecture, a parsing-based RAG pipeline designed specifically for tables. A layout detection model is applied
+to segment various components from the documents. Specifically, the tables are then passed into a vision language model, which extracts
+cell values along with their corresponding column and row names in a structured representation. The structured representation is then
+coupled with self-generating in-context learning examples that guide its output.
+ious components. This produces smaller chunks of data that
+allow the pipeline to focus on localized content while ensur-
+ing each chunk fits within a model’s context window. Next,
+we engineer prompts for a vision language model (VLM) to
+parse various component types (Brown et al., 2020; Sahoo
+et al., 2025). Specifically, for table components, we focus on
+extracting the values and units, along with their correspond-
+ing column and row names, into a structured representation.
+We then include an autonomous in-context learning mod-
+ule that self-generates exemplars, serving as supervision by
+facilitating domain knowledge for the VLM during table
+extraction. We conduct comprehensive experiments against
+parsing baselines across various datasets and benchmarks.
+The results demonstrate that TABRAG outperforms existing
+methods in generation while remaining competitive for re-
+trieval. To the best of our knowledge, the proposed work is
+the first to explore the design of parsed representations for
+tabular question answering tasks in RAG. Our architecture
+can be found in Figure 1.
+2. Method
+Given a dataset D that contains I documents, each of which
+constitutes a single page, we consider various parsing strate-
+gies that extract its contents. In the following section, we in-
+troduce how we construct our TABRAG framework, starting
+by decomposing our documents into focused tasks (§2.1),
+followed by the design of our structured representation
+(§2.2). Lastly, we augment our structured representation
+with an autonomous self-generated in-context learning (ICL)
+example (§2.3), and concluded with the retrieval and gener-
+ation pipeline (§2.4).
+2.1. Layout Segmentation
+Layout segmentation identifies and segments visually co-
+herent regions to preserve the document’s structural orga-
+nization. Given an input document page I, we introduce a
+layout detection model flayout based on the Document Image
+Transformer (Li et al., 2022), a self-supervised transformer
+model for document image understanding trained on large-
+scale datasets such as PubLayNet (Zhong et al., 2019). The
+layout model serves to predict bounding box positions and
+semantic labels for document components. More formally,
+Π ←flayout(I),
+where Π = {πi}M
+i=1, πi = (bi, xi, ci),
+(1)
+and (bi, xi, ci) represents a tuple of bounding box coordi-
+nates, cropped image, and component type. The component
+type ci ∈{0, 1, 2, 3} maps to a semantic label in the set
+{title, text, figure, table}. Layout segmentation
+allows for explicit localized reasoning and addresses several
+key limitations of page-level methods. When an entire page
+is represented as a single visual embedding, global attention
+blurs fine-grained dependencies (Liu et al., 2023) that are es-
+pecially crucial in tables, such as column alignments, header
+associations, and cell-to-cell relations. A nice byproduct
+of layout segmentation is that it also reduces the effective
+context length, allowing the input to fit within the context
+window of the VLMs.
+In contrast to standard document understanding models,
+such as LayoutLMv3 (Huang et al., 2022) and DocFormer
+(Appalaraju et al., 2021), that use spatial embeddings to
+correlate text with 2D coordinates and layout semantics,
+TABRAG models these dependencies explicitly through
+region-level segmentation, ensuring that relationships are
+preserved in the representation itself. This allows TABRAG
+2
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+to establish a more faithful and structurally grounded foun-
+dation for downstream multimodal processing.
+2.2. Structured Representation
+Once the document is decomposed into localized regions,
+each segment is semantically interpreted using a vision lan-
+guage model. For each image xi, we prompt a VLM fVLM
+with a component-specific prompt pci to translate the visual
+structure into a concise, structured, yet information-dense
+representation of each region:
+ri ←fVLM(xi, pci).
+(2)
+The VLM is instructed to extract texts and titles directly,
+while providing detailed interpretations and descriptions for
+figures. Notably, for tables, we engineer a prompt for the
+VLM to generate a JSON-based structured representation.
+Formally, we first provide our VLM with the role of an
+“information extraction engine” (Kong et al., 2024) tasked
+with extracting visible cells in the input table image into
+JSON objects, where each table cell must be represented
+with its corresponding row name, column name, value, and
+unit. We then define rules addressing nuances, including
+punctuation, normalizations of symbols and numbers, table
+formatting such as multi-level text and headers, as well as
+empty cells. To further guide the extraction process, we
+couple our instructions with self-generated ICL examples,
+creating a system agnostic to diverse table styles.
+Instead of performing flat-text extraction on the table, the
+VLM is used to provide a structured understanding of the
+visual elements. We tune the VLM’s prompt to capture cues
+such as alignment, cell grouping, and formatting style, cor-
+responding to how information is organized and interpreted
+by humans. This semantic enrichment transforms raw visual
+segments into a coherent textual representation that can later
+be reasoned over by a language model.
+In the case where the layout model fails, either due to the
+model’s lack of generalization or ambiguous visual bound-
+aries, we introduce a fallback mechanism in which the
+vision-language model is also applied to the full document
+image: fVLM(I, ppage). This full-page inference provides a
+coarse global description that captures the overall content,
+even when region extraction is unreliable. During retrieval,
+summaries produced under this fallback mode are treated
+equivalently to region-level descriptions, allowing the sys-
+tem to maintain continuity and prevent failure propagation
+across the pipeline.
+2.3. Self-Generated In-Context Learning
+In-context learning has been established as an emergent
+property of large autoregressive language models (Brown
+et al., 2020). Language models demonstrate reasoning abili-
+ties from few-shot or chain-of-thought demonstrations (Wei
+et al., 2023; Wang et al., 2023), improving overall coher-
+ence in their outputs. Considering that tables are formatted
+in varying complex styles (see Appendix C.1), supervision
+is necessary to guide the VLM in its extraction. Given a
+VLM, a natural way to incorporate ICL could be to input
+example image tables along with instructions. However, tok-
+enizing images is costly and consumes a significant amount
+of the context window. Therefore, the architecture necessi-
+tates a text-based ICL example. Inspired by recent agentic
+workflows (Yao et al., 2022; Shinn et al., 2023), we de-
+sign a VLM-based autonomous module that self-generates
+text-based ICL examples, supplementing our prompt for
+extracting structured table representations.
+We formalize this process as a multi-stage selection and
+generation pipeline. Given a dataset D, we first accumulate
+and shuffle a set of document pages ˜I to ensure fairness.
+For each page, we apply a layout segmentation model flayout
+and extract layout components Π. We then filter specifically
+for elements identified as a table:
+Πtbl ←{πi ∈Π | ci = table}.
+(3)
+To ensure that the generated ICL examples are sufficiently
+complex, we select the largest table from each page based
+on its bounding box area: arg maxπ∈Πtbl AREA(bi). The
+M candidate tables with the largest area are collected, then
+each processed by a VLM to generate dual structured repre-
+sentations: a markdown string m and a JSON object j:
+m ←fVLM(x, pmarkdown),
+(4)
+j ←fVLM(x, pjson).
+(5)
+To ensure the validity of the demonstration, we compute the
+total token length L:
+L ←ftok(m) + ftok(j),
+(6)
+and enforce a constraint such that L is at least Lmin and
+at most Lmax tokens in length: Lmin ≤L < Lmax. The
+markdown and JSON are then concatenated to form the final
+input-output pairs and accumulated in S until it reaches the
+desired K target ICL examples. S can now be used as input
+to the VLM when generating the structured representations:
+ri ←
+(
+fVLM(xi, pci, S)
+if ci = table
+fVLM(xi, pci)
+otherwise
+(7)
+Our self-generated ICL algorithm and its recommended
+hyperparameters can be found in Algorithm 1. This filtering
+mechanism ensures that the selected set S consists of K
+high-fidelity examples that fit within the model’s context
+window. Most importantly, the algorithm incorporates the
+topological complexities of the table’s design and format,
+as well as its domain-specific semantics. To wrap up our
+method, a qualitative example is displayed in Figure 2.
+3
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Algorithm 1 Self-Generated In-Context Learning
+1: Input: Dataset D, VLM fVLM, tokenizer ftok, target examples K=3, candidate pages M=20, min tokens Lmin, max tokens Lmax
+2: Output: Selected ICL examples S
+3: I ←COLLECTPAGE(D)
+{accumulate document pages in the dataset}
+4: ˜I ←SHUFFLE(I)
+{shuffle to ensure fairness}
+5: T , S ←∅, ∅
+{store largest tables of all ˜I and ICL examples}
+6: for all I ∈˜I and |T | < M do
+7:
+Π ←flayout(I)
+{where Π = {πi}M
+i=1}
+8:
+Πtbl ←{πi ∈Π | ci == table}
+{πi = (bi, xi, ci) = (bbox, cropped img, component type)}
+9:
+if Πtbl̸ = ∅then
+10:
+T ←T ∪{arg maxπ∈Πtbl AREA(bi)}
+{extract largest table from the extracted tables}
+11:
+end if
+12: end for
+13: T ←SORTBYLARGESTAREA(T )
+14: for all x ∈T and |S| < K do
+{generate ICL examples from the top K largest tables}
+15:
+m ←fVLM(x, pmarkdown)
+{markdown structured representation}
+16:
+j ←fVLM(x, pjson)
+{json structured representation}
+17:
+L ←ftok(m) + ftok(j)
+18:
+if Lmin ≤L < Lmax then
+{ensure validity of representation}
+19:
+S ←S ∪{(m, j)}
+20:
+end if
+21: end for
+22: return S
+2.4. Retrieval and Generation
+After yielding the representations across the whole dataset,
+R, they are then embedded into a high-dimensional latent
+space, femb(R) (Zhang et al., 2025), and indexed within a
+vector store, Ω(Douze et al., 2025). At inference time, a
+similarity search is then performed against the vector store to
+retrieve the k most relevant documents to the query, q. The
+retrieved document is then used as an in-context learning
+example for an LLM to generate an answer to the query.
+We provide a summary of our Methods section (§2) in the
+appendix. Our end-to-end TABRAG algorithm can be found
+in Appendix B. Prompts for TABRAG’s self-generated ICL
+examples and TABRAG’s structured representations can be
+found in Appendix D.1 and D.2. TABRAG’s stage-by-stage
+outputs can be found in Appendix E.1 and E.2.
+3. Experiments
+3.1. Setup
+TABRAG employs Qwen3-VL-8B-Instruct (TABRAG8B)
+and Qwen3-VL-32B-Instruct (TABRAG32B) as the vision-
+language model (Qwen et al., 2025).
+We use Qwen3-
+Embedding-8B (Zhang et al., 2025) as the embedding back-
+bone for retrieval, where the embeddings are stored in a
+FAISS vector store (Douze et al., 2025). Lastly, a Qwen3-
+8B (No Think) language model is used as the downstream
+query engine. In our main text, we focus on TABRAG8B
+for our ablation studies. Experimental results are obtained
+over an average of 3 evaluation seeds. Document pages
+used in our self-generated ICL are excluded from evaluation.
+Further details on the setup can be found in Appendix A.
+Datasets. We evaluate TABRAG across document question-
+answering benchmarks that include tables and vary in layout
+complexity and domain coverage. These include TAT-DQA
+(Zhu et al., 2022) and TableVQA-Bench (TableVQA) (Kim
+et al., 2024), which focus on real-world financial reports;
+ComTQA (Zhao et al., 2024), which examines a combina-
+tion of financial reports and scientific articles; MP-DocVQA
+(Tito et al., 2023), which targets multipage industry scanned
+documents; and WikiTableQuestions (WikiTQ) (Pasupat
+& Liang, 2015), which contains semi-structured HTML
+tables. To ensure consistency across modalities, all multi-
+page documents are preprocessed into single-page units and
+converted into high-resolution PNG images for methods
+requiring visual input. See Appendix C.1 for more details.
+Baselines. We compare TABRAG against existing parsing
+frameworks: PyMuPDF (McKie, 2025), PyTesseract (Hoff-
+staetter, 2025), Deepseek-OCR (Wei et al., 2025a), and
+VLMs including Gemma-3-27B-it (Gemma et al., 2025),
+Qwen3-VL-8B/32B-Instruct (Qwen et al., 2025) and GPT-
+5.2 (OpenAI, 2025), which represent text-based parsing,
+OCR-based extraction, and transformer-based VLMs. See
+Appendix C.2 for more details. The prompts used for our
+baseline VLM experiments are shown in Appendix D.3.
+While these parsers are highly accurate in extraction qual-
+ity, they are limited by the linearized nature of their output.
+Specifically, PyMuPDF and PyTesseract follow a raster scan
+order, while VLMs typically default to markdown serializa-
+tion. Both approaches discard the table’s spatial hierarchy
+by collapsing two-dimensional dependencies into a one-
+dimensional sequence.
+4
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+TABRAG’s Structured Representation
+{"row":
+"Revenues", "column":
+"2008", "value":
+"$1,364,661", "units":
+"$"}
+{"row":
+"Revenues", "column":
+"2007", "value":
+"$1,205,340", "units":
+"$"}
+{"row":
+"Net income", "column":
+"2008", "value":
+"83,026", "units":
+null}
+{"row":
+"Net income", "column":
+"2007", "value":
+"66,608", "units":
+null}
+{"row":
+"Net income per share-diluted", "column":
+"2008", "value":
+"$ 1.32", "units":
+"$"}
+{"row":
+"Net income per share-diluted", "column":
+"2007", "value":
+"$ 0.97", "units":
+"$"}
+LLM Query Engine (Input/Output)
+You are a helpful assistant. Use the information from the documents below to answer the question.
+{‘TabRAG’s Structured Representation’}
+Question: {‘What is the Net income per share--diluted in 2007?’}
+Answer: $ 0.97
+Figure 2. Qualitative example from TableVQA of TABRAG aiding the LLM Query Engine in delivering the correct output.
+Table 1. Overall generation performance in accuracy (%). We assume that the query corresponds to the ground truth document. In an
+in-context learning setting, we query an LLM to use the representations synthesized by different parsing methods to answer the question.
+To evaluate, we use exact-match accuracy, which determines whether the ground-truth answers are included in the model generations.
+ACCURACY (%) ↑
+MODELS
+TAT-DQA
+MP-DOCVQA
+WIKITQ
+TABLEVQA
+COMTQA
+AVERAGE
+PYMUPDF
+66.83±.000
+N/A
+59.49±.004
+N/A
+N/A
+63.16
+PYTESSERACT
+62.01±.002
+59.73±.002
+49.32 ±.005
+51.88±.001
+40.90±.001
+52.77
+DEEPSEEK-OCR
+64.45±.002
+73.47±.003
+60.40±.002
+68.57±.002
+53.30±.005
+64.04
+GEMMA-3-27B-IT
+43.92±.002
+69.08±.003
+56.75±.002
+64.75±.003
+51.70±.002
+57.24
+QWEN3-VL-8B-INSTRUCT
+66.26±.001
+85.81±.002
+61.71±.005
+66.29±.002
+67.80±.001
+69.57
+QWEN3-VL-32B-INSTRUCT
+66.56±.003
+86.32±.003
+65.95±.007
+66.07±.001
+71.30±.002
+71.24
+GPT-5.2
+68.54±.001
+86.26±.001
+62.23±.002
+67.40±.002
+73.90±.003
+71.67
+TABRAG8B
+92.56±.002
+88.87±.003
+68.49±.003
+70.60±.004
+82.60±.002
+80.62
+TABRAG32B
+92.70±.002
+88.93±.002
+71.68±.004
+71.20±.001
+75.80±.002
+80.06
+Benchmarks. To evaluate generation performance, we use
+exact-match accuracy (excluding whitespace, punctuation,
+and capitalization), which determines whether the ground-
+truth answers are included in the model generations (Wei
+et al., 2025b; Mallen et al., 2023; Schick et al., 2023). For
+retrieval, we use mean reciprocal rank (MRR@10) (Yu et al.,
+2025a; Masry et al., 2022; Methani et al., 2020), computed
+as the inverse of the rank of the first relevant document
+among the top-10 retrieved candidates, and averaged across
+all queries, assigning higher scores to relevant documents
+retrieved at earlier positions. Further details can be found
+Appendix C.3. The prompt used for our query engine can
+be found in Appendix D.4.
+3.2. Baseline Performance
+Generation. We evaluate TabRAG on downstream gen-
+eration tasks to isolate the impact of different document
+parsing methodologies on answer quality. To independently
+assess generation performance, we operate under an oracle
+retrieval setting, assuming that the ground-truth document
+corresponding to each query is provided. This setup ensures
+that differences in accuracy are attributable to the structural
+representation of the document rather than retrieval noise.
+Specifically, we utilize these ground-truth documents to con-
+struct the various representations, which then serve as the
+context for the generative reasoning stage. In an in-context
+5
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Table 2. Overall retrieval performance in mean reciprocal rank (MRR@10). Given a query, the model searches over ten indexed document
+representations and ranks them based on semantic similarity. Note that since we emphasize on generation, an optimal method of deploying
+TABRAG is to combine it with state-of-the-art retrievers and leverage the corresponding TABRAG vector stores during generation.
+MRR@10 ↑
+MODELS
+TAT-DQA
+MP-DOCVQA
+WIKITQ
+TABLEVQA
+COMTQA
+AVERAGE
+PYMUPDF
+75.60±.001
+N/A
+86.74±.001
+N/A
+N/A
+81.17
+PYTESSERACT
+75.95±.001
+83.77±.001
+82.23±.003
+85.48±.004
+81.36±.002
+81.76
+DEEPSEEK-OCR
+73.66±.002
+84.05±.002
+82.01±.003
+88.72±.002
+80.25±.005
+81.74
+GEMMA-3-27B-IT
+71.31±.004
+84.48±.001
+85.81±.002
+88.75±.005
+80.77±.002
+82.22
+QWEN3-VL-8B-INSTRUCT
+73.88±.002
+84.59±.002
+86.20±.001
+88.57±.002
+82.34±.001
+83.12
+QWEN3-VL-32B-INSTRUCT
+73.95±.002
+84.69±.003
+86.24±.001
+88.16±.001
+82.59±.001
+83.13
+GPT-5.2
+74.23±.002
+84.69±.003
+86.08±.004
+90.38±.003
+81.54±.003
+83.38
+TABRAG8B
+72.30±.003
+85.61±.001
+84.07±.004
+88.15±.003
+80.01±.003
+82.03
+TABRAG32B
+72.77±.004
+85.60±.002
+83.58±.002
+89.54±.001
+78.77±.003
+82.05
+Table 3. Leave-one-out ablation study of individual TabRAG8B modules on generation accuracy (%) across five benchmarks. Each row
+(prefixed with “−”) represents the performance of the pipeline after removing a specific component: Layout (localized segmentation),
+Self-Gen ICL (autonomous supervision), Structured Representation (hierarchical JSON schema), or Page Overview (global context).
+ACCURACY (%) ↑
+MODELS
+TAT-DQA
+MP-DOCVQA
+WIKITQ
+TABLEVQA
+COMTQA
+AVERAGE
+TABRAG8B
+92.56±.002
+88.87±.003
+68.49±.003
+70.60±.004
+82.60±.002
+80.62
+– LAYOUT
+90.97±.002
+80.15±.003
+63.60±.003
+66.60±.002
+73.30±.002
+74.92
+– SELF-GEN ICL
+90.12±.001
+87.41±.002
+62.04±.002
+61.20±.000
+77.40±.001
+75.63
+– STRUCTURED REP. + SELF-GEN ICL
+87.26±.001
+87.21±.004
+62.23±.003
+61.20±.003
+70.00±.002
+73.58
+– PAGE OVERVIEW
+91.69±.001
+80.47±.004
+67.73±.002
+67.20±.003
+73.10±.003
+76.04
+learning (Brown et al., 2020) setting, we prompt an LLM
+(Qwen3-8B (Zhang et al., 2025)) to use the information from
+the document to answer a question. We observe in Table 1
+that across all benchmarks, TABRAG8B and TABRAG32B
+exhibit consistent and substantial gains over baselines. By
+aligning visual, structural, and textual cues before genera-
+tion, TABRAG enables the language model to reason over
+documents in a manner that preserves both local tabular
+relationships and global contextual meaning.
+Retrieval. We evaluate TABRAG’s ability to retrieve the
+most relevant documents corresponding to each query. The
+datasets TAT-DQA, TableVQA, and ComTQA consist of
+separate individual document pages. Thus, there is no des-
+ignated “group” of coherent pages available for retrieval
+experiments. To solve this, we randomly sample the pages
+into folders of 25 pages each and conduct retrieval within
+these folders. Given a query, the model searches over the in-
+dexed document representations generated by different pars-
+ing methods and ranks them based on semantic similarity.
+We report the mean reciprocal rank at 10 (MRR@10) as the
+primary evaluation metric. As shown in Table 2, TABRAG
+achieves competitive retrieval accuracy compared to exist-
+ing baselines. We emphasize that our method is primarily
+designed for improved document understanding and ques-
+tion answering, which enhances generation performance.
+Therefore, an optimal method of deploying TABRAG is
+to combine it with existing state-of-the-art retrievers and
+leverage the corresponding TABRAG vector stores during
+generation. We leave this to future work.
+3.3. Ablation Studies
+TabRAG Modules. We investigate the impact of the dif-
+ferent modules in our TABRAG pipeline. In Table 3, we
+conduct an ablation study on the generation performance in
+which we leave a module out of TABRAG. The modules
+include layout segmentation, self-generated ICL examples,
+both the structured representation and the self-generated
+ICL examples, as well as the page overview. Our results
+illustrate that each component contributes positively and is
+crucial to the overall reasoning and extraction capability of
+the model, as the full TABRAG configuration consistently
+outperforms all ablated variants across all five datasets.
+We provide qualitative insights to support the importance of
+each component. The core contribution of our method lies
+in the structured representation that extracts table values for
+LLM understanding, coupled with self-generated ICLs that
+aid the VLM in extraction. However, we notice that when
+parsing structured representations from entire page docu-
+ments containing a significant amount of information, such
+as text and complicated tables, the VLM alone is unable
+to parse the information accurately. It often hallucinates,
+6
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Table 4. Comparison of generation accuracy (%) across varying structured representations within the TabRAG framework. We evaluate
+the performance of our hierarchical JSON schema (TABRAGJSON) against standard markdown formatting (TABRAGMD) and natural
+language interpretation (TABRAGTEXT).
+ACCURACY (%) ↑
+MODELS
+TAT-DQA
+MP-DOCVQA
+WIKITQ
+TABLEVQA
+COMTQA
+AVERAGE
+TABRAGJSON
+92.56±.002
+88.87±.003
+68.49±.003
+70.60±.004
+82.60±.002
+80.62
+TABRAGMD
+90.48±.002
+88.35±.003
+62.42±.002
+62.00±.003
+75.90±.002
+75.83
+TABRAGTEXT
+90.97±.002
+86.45±.003
+62.03±.003
+68.00±.003
+78.40±.002
+77.17
+0
+1
+3
+5
+7
+9
+Number of ICL Examples
+90.0
+90.5
+91.0
+91.5
+92.0
+92.5
+93.0
+Accuracy (%)
+TAT-DQA
+0
+1
+3
+5
+7
+9
+Number of ICL Examples
+87.5
+87.8
+88.0
+88.2
+88.5
+88.8
+89.0
+Accuracy (%)
+MP-DocVQA
+0
+1
+3
+5
+7
+9
+Number of ICL Examples
+62.0
+63.0
+64.0
+65.0
+66.0
+67.0
+68.0
+69.0
+Accuracy (%)
+WikiTQ
+0
+1
+3
+5
+7
+9
+Number of ICL Examples
+62.0
+64.0
+66.0
+68.0
+70.0
+72.0
+Accuracy (%)
+TableVQA
+0
+1
+3
+5
+7
+9
+Number of ICL Examples
+77.0
+78.0
+79.0
+80.0
+81.0
+82.0
+83.0
+84.0
+Accuracy (%)
+ComTQA
+Figure 3. Generation performance in accuracy (%) of TABRAG8B with varying number of self-generated in-context learning examples (K).
+We find three ICL examples (K = 3) as the sweet spot for guiding the VLM’s extraction. Beyond this point, additional demonstrations
+provide diminishing returns and, in some cases, lead to slight performance degradation, likely due to increased context saturation.
+producing inaccurate values or nonsensical outputs, such
+as delimiters or empty strings. Layout segmentation helps
+to solve this issue by breaking pages into focused compo-
+nents. In addition, we notice that without our page overview
+module, there is a significant decrease in accuracy, espe-
+cially in the MP-DocVQA and ComTQA datasets. Upon
+further investigation, we observe that the layout segmenta-
+tion model occasionally fails to generate reliable bounding
+boxes, missing key information. Thus, as a safeguard, the
+page overview ensures that no global context is left out.
+Structured Representation Design. While tables are inher-
+ently two-dimensional, LLMs require them to be flattened
+into a one-dimensional representation before they can be in-
+dexed. We compare our JSON representation against mark-
+down and text. This is reflected in both the rules of the struc-
+tured representation and our self-generated ICL. As shown
+in Table 4, the JSON serialization format (TABRAGJSON)
+provides the most robust results. The prompts of this abla-
+tion study can be found in Appendix D.5.
+The industry standard for parsing tabular documents is to
+directly serialize or parse the document (Liu, 2022; Chase,
+2022). Therefore, many VLMs (Qwen et al., 2025; Ope-
+nAI, 2025) default to a markdown representation for tables
+because it provides a linear text format that most closely
+mimics the visual two-dimensional layout of a table. An-
+other intuitive option is to directly describe the table values
+using natural language. In Appendix E.3, we perform a case
+study of these representations and illustrate their outputs
+in the generation experiment. Overall, we observe that the
+generation performance degrades as the size of the table
+scales with the number of columns and rows. The issue
+stems from the sequential nature of LLM processing, which
+makes it difficult for the model to maintain the mental link
+between the data points and the structural anchors required
+for multi-step reasoning. If we visualize passing in the “flat-
+tened” TABRAGMD table, the values in the right-most and
+bottom-most columns and rows lose their ability to asso-
+ciate with their corresponding row and column names. The
+parsing operates in a raster-scan manner, causing the names
+to be parsed much earlier than the values. Similarly, for a
+textual representation, we notice that the lack of structure in-
+herently prevents the model from synthesizing information
+across multiple rows and columns. While the JSON repre-
+sentation explicitly links each value to its metadata, the text
+and markdown-based generations fail to maintain these re-
+lational threads. This is demonstrated in both TABRAGMD
+and TABRAGText generation outputs, where the model in-
+correctly claims that total assets “cannot be directly calcu-
+lated” and are “not explicitly provided,” despite the data
+being physically present in the source. Ultimately, the lack
+of “structure” leads the model to perceive the table as a
+collection of disjointed components rather than a cohesive
+data set, preventing it from performing basic arithmetic or
+identifying summary figures.
+Number of Self-Gen ICL Demonstrations. While increas-
+ing the number of demonstrations in the prompt generally
+improves the model’s task alignment, the increase in prompt
+length introduces a trade-off against the model’s capacity to
+reason over longer contexts (Liu et al., 2023). We analyze
+the effect of the number of self-generated ICL demonstra-
+tions on our generation performance. As observed in Figure
+7
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+3, performance improves sharply when moving from zero
+to a small number of demonstrations, with three ICL exam-
+ples consistently yielding stable gains across most datasets.
+Beyond this point, additional demonstrations provide dimin-
+ishing returns and, in some cases, lead to slight performance
+degradation, likely due to increased context saturation.
+4. Related Works
+Document Understanding. Document AI has transitioned
+from raw OCR toward unified multimodal architectures
+like LayoutLMv3 (Huang et al., 2022) and DocFormer
+(Appalaraju et al., 2021). While these models effectively
+integrated text and layout, their encoder-only nature was
+optimized for discriminative labeling rather than the rea-
+soning required for complex QA. Conversely, generative
+frameworks such as UDOP (Tang et al., 2023) and Nougat
+(Blecher et al., 2023) relied on linearized sequences to rep-
+resent document content. In tabular tasks, this sequential
+approach failed to maintain the relational associations be-
+tween headers and data points as sequence lengths grew.
+TabRAG addresses these limitations by treating tabular QA
+as a localized task, utilizing hierarchical representations to
+explicitly preserve the 2D semantics that holistic or sequen-
+tial frameworks are not architecturally biased to recover.
+RAG for Visually Rich Documents. In the context of visu-
+ally rich documents, standard RAG often failed to bridge the
+“semantic gap” created when text-only extraction discarded
+essential layout cues. Recent pipelines like VisRAG (Yu
+et al., 2025a) and ColPali (Faysse et al., 2025) addressed this
+by utilizing vision-language models to produce document
+embeddings that incorporated visual and spatial features di-
+rectly. While these vision-based retrieval methods improved
+relevance for retrieval, they often lacked the granularity to
+preserve specific cell-to-header associations in dense tables
+for generation. To maintain relational context, GraphRAG
+(Edge et al., 2025) and StructRAG (Li et al., 2024) utilized
+LLMs to reconstruct information into knowledge graphs or
+dynamic formats at inference time. However, these methods
+relied on probabilistic inference from text chunks, which
+often lack the spatial-logical cues required to recover the
+precise 2D hierarchy of a tabular document. In contrast,
+TABRAG deterministically maps the physical 2D hierarchy
+of a table into a hierarchical structural rationale, allowing
+for the preservation of explicit spatial-semantic information
+especially from dense, cell-heavy PDFs.
+Table Understanding. Table understanding research has
+primarily focused on discrete reasoning over data that is
+already structured. Chain-of-Table (Wang et al., 2024) in-
+troduced a dynamic framework for iteratively transforming
+tables to mimic human thought, while TableRAG (Yu et al.,
+2025b) utilized SQL-based querying for explicit data re-
+trieval. However, these methods assume a “clean” input,
+typically in HTML, CSV, or SQL formats, thereby bypass-
+ing the fundamental challenge of interpreting raw, unstruc-
+tured document (PDF) pixels. While UniTable (Peng et al.,
+2024) unified structure recognition and content extraction
+into a pixel-to-sequence objective, its focus on table recog-
+nition and reliance on linear decoding remains a bottleneck
+for preserving relational dependencies in large-scale tables.
+To the best of our knowledge, TABRAG is the only frame-
+work that offers a complete end-to-end pipeline that specifi-
+cally targets tabular document QA within RAG frameworks.
+Rather than assuming a pre-parsed schema, TABRAG oper-
+ates directly on document images, converting them into a
+hierarchical structural rationale. This ensures that the rea-
+soning engine receives the explicit two-dimensional context
+required to bridge the gap between raw document pixels and
+high-level discrete reasoning.
+Agentic Rationale Generation. Recent approaches in doc-
+ument parsing have moved beyond simple extraction, in-
+corporating agentic rationale generation (Shinn et al., 2023;
+Yuksekgonul et al., 2024; Xiao et al., 2025) to improve reli-
+ability. In the text domain, frameworks like Self-RAG intro-
+duced self-reflection tokens to dynamically critique retrieval
+quality (Asai et al., 2023), while InstructRAG leveraged
+self-synthesized rationales to explicitly filter noise from re-
+trieved contexts (Wei et al., 2025b). This reasoning-centric
+paradigm is now influencing visual document understand-
+ing, where methods such as Rationale Distillation (Jia et al.,
+2025) train models to articulate intermediate reasoning steps
+for complex visual tasks. In this work, TABRAG adopts this
+philosophy by utilizing VLMs to generate structured JSON
+representations with agentic self-generated ICLs, ensuring
+that extracted values are explicitly grounded in their spatial
+and semantic layout.
+5. Conclusion
+In this work, we present TABRAG, a retrieval augmented
+generation framework for improving tabular document ques-
+tion answering via structured representations. We first seg-
+ment the documents into various layout components. Specif-
+ically for table components, we design a prompt that extracts
+a representation to effectively capture structural and seman-
+tic information from tabular documents. We couple our
+extraction process with a self-generated in-context learning
+module to provide information regarding the complexities
+of the table’s design as well as domain-specific knowledge.
+We conducted extensive experiments and comprehensive
+ablations to evaluate TABRAG. Our results on multiple
+tabular-document question answering datasets demonstrate
+TABRAG’s prowess in generation tasks while remaining
+competitive in retrieval. TABRAG, coupled with state-of-
+the-art retrievers, can help bridge the gap between table
+understanding and document-level comprehension.
+8
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Impact Statement
+The goal of this work is to make AI-driven tabular document
+parsing and analysis more reliable by improving reasoning
+on complex tables. While standard AI often “hallucinates”
+when looking at dense spreadsheets or financial reports,
+TabRAG focuses on turning those visuals into a clear, struc-
+tured format that the model can actually reason through.
+The broader implications of this approach include: Higher
+Accuracy in Critical Fields: In areas like finance, healthcare,
+or scientific research, misreading a single cell in a table
+can have major consequences. By grounding AI in the
+actual structure of a document, we can reduce the risk of
+”hallucinations” where the AI makes up a number because
+it couldn’t follow the row or column or misinterprets the
+table’s fundamental structure.
+Making Data More Accessible: Many complex reports and
+documents are currently difficult for automated systems
+to read and parse effectively without human intervention.
+This technology helps bridge that gap, making it easier for
+everyone from individual tax-filers to large organizations to
+get fast, accurate answers from their own data.
+Better Transparency and Interpretability: Our method em-
+ploys a step-by-step parsing process, converting visuals into
+JSON representations, making it easier for users to verify
+the origin of an answer. This makes the entire system more
+predictable and trustworthy compared to ”black box” mod-
+els that process a whole page at once.
+References
+Appalaraju, S., Jasani, B., Kota, B. U., Xie, Y., and Man-
+matha, R. Docformer: End-to-end transformer for doc-
+ument understanding, 2021. URL https://arxiv.
+org/abs/2106.11539.
+Arik, S. O. and Pfister, T. Tabnet: Attentive interpretable
+tabular learning, 2020. URL https://arxiv.org/
+abs/1908.07442.
+Artifex Software, I. Pymupdf4llm: Structured pdf extrac-
+tion for large language models, 2024. URL https:
+//github.com/pymupdf/PyMuPDF4LLM.
+Built
+on PyMuPDF (MuPDF) for LLM-oriented document
+parsing.
+Asai, A., Wu, Z., Wang, Y., Sil, A., and Hajishirzi, H. Self-
+rag: Learning to retrieve, generate, and critique through
+self-reflection, 2023. URL https://arxiv.org/
+abs/2310.11511.
+Blecher, L., Cucurull, G., Scialom, T., and Stojnic, R.
+Nougat: Neural optical understanding for academic doc-
+uments, 2023.
+URL https://arxiv.org/abs/
+2308.13418.
+Boulanger, M. img2table: Table extraction from images and
+pdfs, 2023. URL https://github.com/xavctn/
+img2table. Python library for detecting and extracting
+tables using computer vision and OCR.
+Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan,
+J., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G.,
+Askell, A., Agarwal, S., Herbert-Voss, A., Krueger, G.,
+Henighan, T., Child, R., Ramesh, A., Ziegler, D. M., Wu,
+J., Winter, C., Hesse, C., Chen, M., Sigler, E., Litwin, M.,
+Gray, S., Chess, B., Clark, J., Berner, C., McCandlish,
+S., Radford, A., Sutskever, I., and Amodei, D. Language
+models are few-shot learners, 2020. URL https://
+arxiv.org/abs/2005.14165.
+Chase, H.
+Langchain, 2022.
+URL https://www.
+langchain.com/.
+Cohere. Enterprise ai: Private, secure, customizable —
+cohere, 2024. URL https://cohere.com/.
+Douze, M., Guzhva, A., Deng, C., Johnson, J., Szilvasy, G.,
+Mazar´e, P.-E., Lomeli, M., Hosseini, L., and J´egou, H.
+The faiss library, 2025. URL https://arxiv.org/
+abs/2401.08281.
+Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A.,
+Mody, A., Truitt, S., Metropolitansky, D., Ness, R. O.,
+and Larson, J. From local to global: A graph rag ap-
+proach to query-focused summarization, 2025.
+URL
+https://arxiv.org/abs/2404.16130.
+Faysse, M., Sibille, H., Wu, T., Omrani, B., Viaud, G.,
+Hudelot, C., and Colombo, P. Colpali: Efficient docu-
+ment retrieval with vision language models, 2025. URL
+https://arxiv.org/abs/2407.01449.
+Gemma, :, Kamath, G. T. A., Ferret, J., Pathak, S., Vieil-
+lard, N., Merhej, R., Perrin, S., Matejovicova, T., Ram´e,
+A., Rivi`ere, M., Rouillard, L., Mesnard, T., Cideron, G.,
+bastien Grill, J., Ramos, S., Yvinec, E., Casbon, M., Pot,
+E., Penchev, I., Liu, G., Visin, F., Kenealy, K., Beyer,
+L., Zhai, X., Tsitsulin, A., Busa-Fekete, R., Feng, A.,
+Sachdeva, N., Coleman, B., Gao, Y., Mustafa, B., Barr, I.,
+Parisotto, E., Tian, D., Eyal, M., Cherry, C., Peter, J.-T.,
+Sinopalnikov, D., Bhupatiraju, S., Agarwal, R., Kazemi,
+M., Malkin, D., Kumar, R., Vilar, D., Brusilovsky, I.,
+Luo, J., Steiner, A., Friesen, A., Sharma, A., Sharma,
+A., Gilady, A. M., Goedeckemeyer, A., Saade, A., Feng,
+A., Kolesnikov, A., Bendebury, A., Abdagic, A., Vadi,
+A., Gy¨orgy, A., Pinto, A. S., Das, A., Bapna, A., Miech,
+A., Yang, A., Paterson, A., Shenoy, A., Chakrabarti, A.,
+Piot, B., Wu, B., Shahriari, B., Petrini, B., Chen, C.,
+Lan, C. L., Choquette-Choo, C. A., Carey, C., Brick,
+C., Deutsch, D., Eisenbud, D., Cattle, D., Cheng, D.,
+Paparas, D., Sreepathihalli, D. S., Reid, D., Tran, D.,
+Zelle, D., Noland, E., Huizenga, E., Kharitonov, E.,
+9
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Liu, F., Amirkhanyan, G., Cameron, G., Hashemi, H.,
+Klimczak-Pluci´nska, H., Singh, H., Mehta, H., Lehri,
+H. T., Hazimeh, H., Ballantyne, I., Szpektor, I., and
+Nardini, I.
+Gemma 3 technical report, 2025.
+URL
+https://arxiv.org/abs/2503.19786.
+Guu, K., Lee, K., Tung, Z., Pasupat, P., and Chang, M.-
+W. Realm: Retrieval-augmented language model pre-
+training, 2020.
+URL https://arxiv.org/abs/
+2002.08909.
+Hoffstaetter, S. A python wrapper for google tesseract.
+Version 0.3.13, 2025. URL https://github.com/
+madmaze/pytesseract.
+Hollmann, N., M¨uller, S., Eggensperger, K., and Hut-
+ter, F.
+Tabpfn: A transformer that solves small tab-
+ular classification problems in a second, 2023. URL
+https://arxiv.org/abs/2207.01848.
+Huang, Y., Lv, T., Cui, L., Lu, Y., and Wei, F. Layoutlmv3:
+Pre-training for document ai with unified text and image
+masking, 2022. URL https://arxiv.org/abs/
+2204.08387.
+Jia, P., Xu, D., Li, X., Du, Z., Li, X., Wang, Y., Wang,
+Y., Liu, Q., Wang, M., Guo, H., Tang, R., and Zhao, X.
+Bridging relevance and reasoning: Rationale distillation
+in retrieval-augmented generation, 2025. URL https:
+//arxiv.org/abs/2412.08519.
+Kay, A. Tesseract: an open-source optical character recog-
+nition engine. Linux J., 2007(159):2, July 2007. ISSN
+1075-3583.
+Kim, Y., Yim, M., and Song, K. Y. Tablevqa-bench: A
+visual question answering benchmark on multiple table
+domains, 2024. URL https://arxiv.org/abs/
+2404.19205.
+Kong, A., Zhao, S., Chen, H., Li, Q., Qin, Y., Sun, R.,
+Zhou, X., Wang, E., and Dong, X.
+Better zero-shot
+reasoning with role-play prompting, 2024. URL https:
+//arxiv.org/abs/2308.07702.
+Kylo.
+How
+to
+make
+RAG
+work
+with
+tabular
+data?
+Reddit Discussion Thread (r/Rag), 2025.
+URL
+https://www.reddit.com/r/Rag/
+comments/1n5lwlt/how_to_make_rag_
+work_with_tabular_data/.
+Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin,
+V., Goyal, N., K¨uttler, H., Lewis, M., tau Yih, W.,
+Rockt¨aschel, T., Riedel, S., and Kiela, D.
+Retrieval-
+augmented generation for knowledge-intensive nlp tasks,
+2021.
+URL https://arxiv.org/abs/2005.
+11401.
+Li, J., Xu, Y., Lv, T., Cui, L., Zhang, C., and Wei, F. Dit:
+Self-supervised pre-training for document image trans-
+former, 2022.
+URL https://arxiv.org/abs/
+2203.02378.
+Li, Z., Chen, X., Yu, H., Lin, H., Lu, Y., Tang, Q., Huang,
+F., Han, X., Sun, L., and Li, Y. Structrag: Boosting
+knowledge intensive reasoning of llms via inference-time
+hybrid information structurization, 2024. URL https:
+//arxiv.org/abs/2410.08815.
+Liu, J.
+Llamaindex, 2022.
+URL https://github.
+com/run-llama/llama_index.
+Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua,
+M., Petroni, F., and Liang, P. Lost in the middle: How
+language models use long contexts, 2023. URL https:
+//arxiv.org/abs/2307.03172.
+Mallen, A., Asai, A., Zhong, V., Das, R., Khashabi, D., and
+Hajishirzi, H. When not to trust language models: Inves-
+tigating effectiveness of parametric and non-parametric
+memories. In Proceedings of the 61st Annual Meeting of
+the Association for Computational Linguistics (Volume 1:
+Long Papers), pp. 9802–9822, 2023.
+Masry, A., Do, X. L., Tan, J. Q., Joty, S., and Hoque, E.
+Chartqa: A benchmark for question answering about
+charts with visual and logical reasoning. In Findings of
+the association for computational linguistics: ACL 2022,
+pp. 2263–2279, 2022.
+Mathew, M., Karatzas, D., and Jawahar, C. Docvqa: A
+dataset for vqa on document images. In Proceedings
+of the IEEE/CVF winter conference on applications of
+computer vision, pp. 2200–2209, 2021.
+McKie, J. X. Pymupdf. Version 1.26.5, 2025. URL https:
+//pymupdf.readthedocs.io.
+Methani, N., Ganguly, P., Khapra, M. M., and Kumar, P.
+Plotqa: Reasoning over scientific plots. In Proceedings
+of the ieee/cvf winter conference on applications of com-
+puter vision, pp. 1527–1536, 2020.
+OpenAI. Ai platforms to accelerate your business, 2024.
+URL https://openai.com/business/.
+OpenAI.
+Update
+to
+gpt-5
+system
+card:
+Gpt-
+5.2.
+https://cdn.openai.com/pdf/
+3a4153c8-c748-4b71-8e31-aecbde944f8d/
+oai_5_2_system-card.pdf, 2025.
+Pasupat, P. and Liang, P. Compositional semantic parsing on
+semi-structured tables, 2015. URL https://arxiv.
+org/abs/1508.00305.
+10
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Peng, S., Chakravarthy, A., Lee, S., Wang, X., Balasubra-
+maniyan, R., and Chau, D. H. Unitable: Towards a uni-
+fied framework for table recognition via self-supervised
+pretraining, 2024. URL https://arxiv.org/abs/
+2403.04822.
+Qwen, Yang, . A., Li, A., Yang, B., Zhang, B., Hui, B.,
+Zheng, B., Yu, B., Gao, C., Huang, C., Lv, C., Zheng,
+C., Liu, D., Zhou, F., Huang, F., Hu, F., Ge, H., Wei,
+H., Lin, H., Tang, J., Yang, J., Tu, J., Zhang, J., Yang,
+J., Yang, J., Zhou, J., Zhou, J., Lin, J., Dang, K., Bao,
+K., Yang, K., Yu, L., Deng, L., Li, M., Xue, M., Li,
+M., and Zhang, P. Qwen3 technical report, 2025. URL
+https://arxiv.org/abs/2505.09388.
+Sahoo, P., Singh, A. K., Saha, S., Jain, V., Mondal, S.,
+and Chadha, A. A systematic survey of prompt engi-
+neering in large language models: Techniques and ap-
+plications, 2025. URL https://arxiv.org/abs/
+2402.07927.
+Schick, T., Dwivedi-Yu, J., Dess`ı, R., Raileanu, R., Lomeli,
+M., Hambro, E., Zettlemoyer, L., Cancedda, N., and
+Scialom, T. Toolformer: Language models can teach
+themselves to use tools. Advances in Neural Information
+Processing Systems, 36:68539–68551, 2023.
+Shaikh, N. Why RAG breaks on structured data (and why
+everyone misunderstands it). Medium, 2025.
+Shinn, N., Cassano, F., Berman, E., Gopinath, A.,
+Narasimhan, K., and Yao, S.
+Reflexion: Language
+agents with verbal reinforcement learning, 2023. URL
+https://arxiv.org/abs/2303.11366.
+Si, J., Cheng, W. Y., Cooper, M., and Krishnan, R. G.
+Interpretabnet: Distilling predictive signals from tabu-
+lar data by salient feature interpretation, 2024. URL
+https://arxiv.org/abs/2406.00426.
+Si, J., Ou, Z., Qu, M., Xiang, Z., and Li, Y. Tabrep: Training
+tabular diffusion models with a simple and effective con-
+tinuous representation. arXiv preprint arXiv:2504.04798,
+2025.
+Tang, Z., Yang, Z., Wang, G., Fang, Y., Liu, Y., Zhu, C.,
+Zeng, M., Zhang, C., and Bansal, M. Unifying vision,
+text, and layout for universal document processing, 2023.
+URL https://arxiv.org/abs/2212.02623.
+Tito, R., Karatzas, D., and Valveny, E. Hierarchical multi-
+modal transformers for multi-page docvqa, 2023. URL
+https://arxiv.org/abs/2212.05935.
+van Breugel, B. and van der Schaar, M. Why tabular foun-
+dation models should be a research priority, 2024. URL
+https://arxiv.org/abs/2405.01147.
+Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang,
+S., Chowdhery, A., and Zhou, D. Self-consistency im-
+proves chain of thought reasoning in language mod-
+els, 2023. URL https://arxiv.org/abs/2203.
+11171.
+Wang, Z., Zhang, H., Li, C.-L., Eisenschlos, J. M., Perot,
+V., Wang, Z., Miculicich, L., Fujii, Y., Shang, J., Lee,
+C.-Y., and Pfister, T. Chain-of-table: Evolving tables in
+the reasoning chain for table understanding, 2024. URL
+https://arxiv.org/abs/2401.04398.
+Wei, H., Sun, Y., and Li, Y. Deepseek-ocr: Contexts optical
+compression, 2025a. URL https://arxiv.org/
+abs/2510.18234.
+Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter,
+B., Xia, F., Chi, E., Le, Q., and Zhou, D. Chain-of-
+thought prompting elicits reasoning in large language
+models, 2023.
+URL https://arxiv.org/abs/
+2201.11903.
+Wei, Z., Chen, W.-L., and Meng, Y. Instructrag: Instructing
+retrieval-augmented generation via self-synthesized ra-
+tionales, 2025b. URL https://arxiv.org/abs/
+2406.13629.
+Xiao, T. Z., Bamler, R., Sch¨olkopf, B., and Liu, W. Verbal-
+ized machine learning: Revisiting machine learning with
+language models, 2025. URL https://arxiv.org/
+abs/2406.04344.
+Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan,
+K. R., and Cao, Y. React: Synergizing reasoning and
+acting in language models. In The eleventh international
+conference on learning representations, 2022.
+Yu, S., Tang, C., Xu, B., Cui, J., Ran, J., Yan, Y., Liu,
+Z., Wang, S., Han, X., Liu, Z., and Sun, M. Visrag:
+Vision-based retrieval-augmented generation on multi-
+modality documents, 2025a. URL https://arxiv.
+org/abs/2410.10594.
+Yu, X., Jian, P., and Chen, C. Tablerag: A retrieval aug-
+mented generation framework for heterogeneous docu-
+ment reasoning, 2025b. URL https://arxiv.org/
+abs/2506.10380.
+Yuksekgonul, M., Bianchi, F., Boen, J., Liu, S., Huang, Z.,
+Guestrin, C., and Zou, J. Textgrad: Automatic ”differen-
+tiation” via text, 2024. URL https://arxiv.org/
+abs/2406.07496.
+Zhang, Y., Li, M., Long, D., Zhang, X., Lin, H., Yang,
+B., Xie, P., Yang, A., Liu, D., Lin, J., Huang, F., and
+Zhou, J. Qwen3 embedding: Advancing text embedding
+and reranking through foundation models, 2025. URL
+https://arxiv.org/abs/2506.05176.
+11
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Zhao, W., Feng, H., Liu, Q., Tang, J., Wu, B., Liao,
+L., Wei, S., Ye, Y., Liu, H., Zhou, W., Li, H., and
+Huang, C. Tabpedia: Towards comprehensive visual
+table understanding with concept synergy, 2024. URL
+https://arxiv.org/abs/2406.01326.
+Zhong, X., Tang, J., and Yepes, A. J. Publaynet: largest
+dataset ever for document layout analysis, 2019. URL
+https://arxiv.org/abs/1908.07836.
+Zhu, F., Lei, W., Feng, F., Wang, C., Zhang, H., and Chua, T.-
+S. Towards complex document understanding by discrete
+reasoning. In Proceedings of the 30th ACM International
+Conference on Multimedia, MM ’22, pp. 4857–4866.
+ACM, October 2022. doi: 10.1145/3503161.3548422.
+URL http://dx.doi.org/10.1145/3503161.
+3548422.
+12
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Appendix
+Contents
+A Implementation
+14
+A.1
+Hardware Details
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+14
+A.2
+Model Configuration . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+14
+B Algorithms
+15
+B.1
+TabRAG . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+15
+C Experiments
+16
+C.1
+Datasets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+16
+C.2
+Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+22
+C.3
+Benchmarks . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+22
+D Prompts
+23
+D.1 TabRAG: Self-Generated In-Context Learning
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+23
+D.2 TabRAG . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+24
+D.3
+Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+26
+D.4
+LLM Query Engine . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+26
+D.5 Ablation: Structured Representation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+27
+E
+Outputs
+30
+E.1
+TabRAG: Layout Segmentation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+30
+E.2
+TabRAG . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+31
+E.3
+Ablation: Structured Representation (Case Study)
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+34
+13
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+A. Implementation
+A.1. Hardware Details
+The following delineates the foundation of our experiments:
+• Codebase: Python & PyTorch
+• CPU: AMD EPYC 7443P
+• GPU: NVIDIA A100 80GB PCIe / NVIDIA A6000 48GB
+A.2. Model Configuration
+The model configurations used are shown in Table 5. The hyperparameters for the remaining baselines (McKie, 2025;
+Hoffstaetter, 2025) are their default configurations. Qwen3-VL-8B-Instruct (TABRAG8B) and Qwen3-VL-32B-Instruct
+(TABRAG32B) are used as the vision-language models for TABRAG, while Qwen3-8B (No Think) is used for evaluating
+generation performance.
+Table 5. Model Configurations.
+Model
+Temperature
+Context Window
+Qwen3-VL-8B-Instruct
+1.0
+32768
+Qwen3-VL-32B-Instruct
+1.0
+32768
+Qwen3-8B (No Think)
+1.0
+32768
+14
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+B. Algorithms
+B.1. TabRAG
+Algorithm 2 TABRAG Framework
+1: Input: Dataset D = {Ij}N
+j=1, Query q, No. of Documents to Retrieve k
+2: Output: Response y
+3: S ←SELFGENICL(D)
+{self-generated ICL module; see Alg. 1}
+4: Ω←∅
+{initialize vector store}
+5: for all I ∈D do
+6:
+R ←∅
+{parsed representations}
+7:
+Π ←flayout(I)
+{where Π = {πi}M
+i=1}
+8:
+for all πi = (bi, xi, ci) ∈Π do
+{πi = (bi, xi, ci) = (bbox, cropped img, component type)}
+9:
+if ci == table then
+10:
+ri ←fVLM(xi, pci, S)
+{parse table with ICL supervision}
+11:
+else
+12:
+ri ←fVLM(xi, pci)
+{parse non-table component}
+13:
+end if
+14:
+R ←R ∪{ri}
+15:
+end for
+16:
+R ←R ∪{fVLM(I, ppage)}
+{page-level overview}
+17:
+Ω←Ω∪{(femb(R), R)}
+{embed document and add to vector store}
+18: end for
+19: Rq ←RETRIEVETOPK(q, Ω, k)
+{retrieve top-k documents}
+20: y ←fLLM(q, Rq)
+{generate response}
+15
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+C. Experiments
+C.1. Datasets
+Prior to constructing the ragstores, the datasets undergo preprocessing. Each file in the dataset can contain multiple pages;
+thus, for consistency, we ensure that each file is separated into individual files containing a single page each. For methods
+that require image files as inputs, we convert data modalities such as PDFs and HTML files into high-resolution PNG files.
+Table 6. Dataset Overview.
+Dataset
+Document Type
+# Pages
+# QA Pairs
+TAT-DQA (Zhu et al., 2022)
+Financial
+312
+1640
+MP-DocVQA (Tito et al., 2023)
+Multi-domain
+500
+515
+WikiTQ (Pasupat & Liang, 2015)
+Web Tables
+243
+511
+TableVQA-Bench (Kim et al., 2024)
+Multi-domain
+427
+500
+ComTQA (Zhao et al., 2024)
+Multi-domain
+500
+1000
+In the following section, we provide a description and visualizations of the datasets.
+16
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Figure 4. An example page from the TAT-DQA dataset illustrating financial tables interleaved with descriptive text and numerical values.
+TAT-DQA (Zhu et al., 2022). TAT-DQA comprises PDF document pages that include both semi-structured tables and
+unstructured textual content, each paired with corresponding question–answer sets. The documents are drawn from financial
+reports and feature a strong presence of numerical information. The dataset consists of separated individual PDF pages thus,
+there is no designated “group” of pages available for retrieval experiments. Hence, we first sort the document pages then
+split these pages into groups of 25. This yields 13 folders which we use to construct ragstores for retrieval.
+17
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Figure 5. A sample document image from MP-DocVQA showing a scanned document page with dense tables and multi-column text.
+MP-DocVQA (Tito et al., 2023). Document Visual Question Answering (DocVQA) datasets answer questions from
+document images. MP-DocVQA extends DocVQA (Mathew et al., 2021) to the multi-page scenario where DocVQA
+contains images such as typed or handwritten text, layout, diagrams, figures, tabular structures, and signatures. The dataset
+consists a total of 46K questions, 6K documents, and 48K pages (Images). We filter the dataset by selecting documents that
+contains tables (via layout detection), followed by documents with a high number of questions to pages ratio.
+18
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Figure 6. A rendered web table from the WikiTableQuestions dataset illustrating semi-structured tabular data with numerical and
+categorical entries.
+WikiTableQuestions (Pasupat & Liang, 2015). WikiTableQuestions aim to answer complex questions about semi-structured
+HTML tables using question-answer pairs as supervision. The dataset consists of question-answer pairs corresponding to
+an accompanying table. The questions include a variety of operations such as comparison, superlatives, aggregation, and
+arithmetic.
+19
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Figure 7. An example table from the TableVQA-Bench dataset with semi-structured layouts and mixed numerical and categorical content.
+TableVQA-Bench (Kim et al., 2024). TableVQA-Bench is a unified benchmark that aggregates multiple table-centric
+datasets, including VWTQ, VWTQ-Syn, VTabFact, and FinTabNetQA, covering diverse domains such as web tables, fact
+verification, and financial reports. To manage the size of the dataset in our experiments (number of documents), we use
+the FinTabNetQA and VTabFact subsets and treat each table image as an independent document. The dataset consists of
+separated individual PNG pages. Thus, there is no designated “group” of pages available for retrieval experiments. Hence,
+we first sort the document pages then split these pages into groups of 25. This yields 18 folders which we use to construct
+ragstores for retrieval.
+20
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Figure 8. An example table from the ComTQA dataset with semi-structured layouts and mixed data types.
+ComTQA (Zhao et al., 2024). ComTQA is a visual table question answering dataset composed of table images paired with
+question–answer annotations. The dataset aggregates tables from PubTables-1M and FinTabNet, spanning scientific and
+financial domains. The dataset consists of separated individual PNG pages. Thus, there is no designated “group” of pages
+available for retrieval experiments. Hence, we first sort the document pages then split these pages into groups of 25. This
+yields 20 folders which we use to construct ragstores for retrieval.
+21
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+C.2. Baselines
+TABRAG’s performance is evaluated in comparison to popular parsing methods. This includes PyMuPDF (McKie, 2025),
+PyTesseract (Hoffstaetter, 2025) and multiple vision language models drawn from the DeepSeek (Wei et al., 2025a), Gemma
+(Gemma et al., 2025), GPT (OpenAI, 2025) and Qwen (Qwen et al., 2025) model families.
+PyMuPDF (McKie, 2025). PyMuPDF is a Python library for data extraction and analysis of PDF documents. It interfaces
+with the MuPDF rendering engine, which parses the PDF’s internal object structure-decoding vector drawing commands,
+text placements, and embedded resources-to reconstruct the page layout.
+PyTesseract (Hoffstaetter, 2025). PyTesseract is a Python wrapper for Google’s Tesseract OCR engine (Kay, 2007), used
+for extracting text from images and scanned documents. It performs a raster-based analysis of the input image-segmenting it
+into connected components, detecting character shapes, and matching them against trained language models-to recognize
+and reconstruct textual content from pixel patterns.
+DeepSeek-OCR (Wei et al., 2025a). DeepSeek-OCR is an OCR-oriented vision system that explores compressing long
+textual contexts via optical 2D mapping of document content. It consists of a high-resolution visual encoder (DeepEncoder)
+that produces a set of vision tokens and a decoder (DeepSeek3B-MoE-A570M) that generates recognized text from these
+representations. By explicitly controlling the vision-token budget and compression ratio, DeepSeek-OCR enables efficient
+text decoding under constrained visual-token settings, making it suitable as an OCR-based document parsing baseline.
+Gemma-3-27B-IT (Gemma et al., 2025). Gemma-3-27B-IT is a large instruction-tuned multimodal language model from
+the Gemma 3 family developed by Google DeepMind. It integrates visual understanding and long-context processing within
+a unified transformer architecture, with architectural modifications to mitigate KV-cache growth. Trained via distillation
+and post-training refinement, the model supports structured instruction following and multimodal reasoning over document
+images, tables, and text.
+GPT-5.2 (OpenAI, 2025). GPT-5.2 is a state-of-the-art proprietary multimodal large language model developed by OpenAI
+for professional knowledge work and complex reasoning tasks. The model integrates advanced capabilities in natural
+language understanding, long-context processing, and tool usage within a unified architecture. GPT-5.2 demonstrates strong
+performance on multi-step reasoning, document and chart understanding and code generation that require planning and
+execution over long horizons.
+Qwen3-VL-32B/8B-Instruct (Qwen et al., 2025). Qwen3-VL-32B/8B-Instruct is a large-scale vision-language model
+developed by Alibaba Cloud. It integrates visual and textual understanding through a unified multimodal transformer
+architecture capable of processing both images and natural language. The model is trained on large-scale multimodal
+corpora, enabling it to interpret complex document layouts, tables, and figures while aligning visual cues with textual
+semantics. Its instruction-tuned variant enhances performance on document understanding and question answering tasks by
+following structured prompts and adapting to diverse multimodal reasoning scenarios.
+C.3. Benchmarks
+Accuracy (Yu et al., 2025a; Faysse et al., 2025). Accuracy is computed by evaluating the model’s ability to produce
+correct answers to the ground-truth questions. For each document, the corresponding docstore and question are passed to
+the language model to generate an answer. The generated response is normalized and compared against the normalized
+ground-truth answers. A prediction is counted as correct if all ground-truth answers appear in the model’s response. The
+final accuracy is calculated as the ratio of correctly answered questions to the total number of evaluated questions.
+Mean Reciprocal Rank (Yu et al., 2025a). Mean Reciprocal Rank (MRR@10) evaluates the ranking quality of the retrieved
+document components relative to the ground-truth evidence. For each question, the corresponding document’s vector store
+is loaded, and the question embedding is used to retrieve the top-10 most relevant components. The reciprocal rank is
+computed based on the first retrieved document containing the ground-truth evidence. The final MRR@10 score is obtained
+by averaging the reciprocal ranks across all evaluated questions, as defined by
+MRR =
+1
+|Q|
+|Q|
+X
+i=1
+1
+ranki
+,
+(8)
+where |Q| is the total number of questions and ranki denotes the rank position of the first relevant retrieved component for
+the i-th query.
+22
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+D. Prompts
+D.1. TabRAG: Self-Generated In-Context Learning
+In this section, we detail the prompts used to construct our Self-Generated In-Context Learning (ICL) examples. We begin
+by creating a representative markdown string to textually represent the target table. To achieve this, we utilize the prompt
+below, which includes several rudimentary ICL examples that provide concrete demonstrations of the extraction rules.
+TabRAG Self-Generated ICL: Markdown
+You are a precise information parsing and extraction engine. Output ONLY
+A markdown table of the provided image
+Task: Generate a markdown table with the correct structure, with every single cell accounted for.
+Rules:
+1. Output ONLY a valid Markdown table. Do not include any other text.
+2. Preserve the exact number of rows and columns visible in the image.
+3. Preserve unit information in headers if present (e.g., "$ in millions").
+4. Transcribe all cell contents as faithfully as possible without inference, normalization, or computation.
+5. Repeat values for merged cells so that every row has the same number of columns.
+6. If a cell is visually empty, leave it empty.
+7. Ignore captions, footnotes, and non-table elements outside the table.
+---
+**Example Output 1: Two-level header**
+| ($ in millions) | 2024
+| 2023
+|
+|-----------------|------------------|------------------|
+|
+| Revenue | Profit | Revenue | Profit |
+| Sales
+| 1,234
+| 400
+| 1,200
+| 350
+|
+| Net Income
+| (56)
+| 80
+| -40
+| 70
+|
+---
+**Example Output 2: Three-level header**
+| ($ in thousands) | 2024
+| 2023
+|
+|------------------|--------------------------------------|-------------------------------------|
+|
+| Q1
+| Q2
+| Q1
+| Q2
+|
+|
+| Revenue | Profit
+| Revenue | Profit | Revenue | Profit | Revenue | Profit |
+| Product A
+| 500
+| 120
+| 600
+| 150
+| 450
+| 100
+| 550
+| 140
+|
+| Product B
+| (50)
+| 80
+| (30)
+| 100
+| -20
+| 60
+| 10
+| 90
+|
+---
+**Example Output 3: Mixed 1-row, 2-row, and 3-row headers**
+| Category
+| 2024
+| 2023
+| Growth % | Notes
+|
+|-----------------------|-------------------------------------|------------------|----------|----------|
+|
+| Q1
+| Q2
+| Revenue | Profit |
+|
+|
+|
+| Revenue | Profit | Revenue | Profit |
+|
+|
+|
+|
+| Sales (Units)
+| 1,000
+| 300
+| 900
+| 250
+| 1,700
+| 550
+| 12%
+| N/A
+|
+| Cost ($ in thousands) | (200)
+| (50)
+| -180
+| -40
+| (380)
+| (90)
+| N/A
+| Adjusted |
+---
+Now, generate the markdown table ONLY, do not include any other irrelevant text.
+Additionally, we use the VLM to generate in-context examples for our structured JSON representation. This process converts
+visual tables into a standardized JSON format that maps headers to cell values. Including these exemplars provides the
+model with the structural grounding to accurately parse complex layouts, such as multi-level headers and merged cells. The
+prompt is shown below.
+TabRAG Self-Generated ICL: JSON
+You are a precise information parsing and extraction engine. Output ONLY
+A JSON array of objects, each with: {"row": <string>, "column": <string>, "value": <string|null>, "units": <string|null>}.
+Task: Then Extract every visible cell in the attached table image into JSON objects.
+Each table cell must be represented as:
+{
+"row": string,
+// the row label (e.g. "Revenue", "2024", "Row 1" if unnamed)
+"column": string,
+// column header text; if multi-level, join levels with " -> "
+"value": string|null,
+// exact text as seen in the table (keep symbols and brackets)
+"units": string|null // units if present in header (e.g., "$ in millions"), otherwise null
+}
+After generating both the markdown and JSON representations using the prompts above, we merge them to form the final
+input-output pairs for in-context learning. In this setup, the markdown string serves as the input context, while the JSON
+23
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+object provides the target structured output. This pairing teaches the model to map visual layouts directly to our “row -
+column - value” schema.
+TabRAG Self-Generated ICL: JSON + Markdown
+**INPUT**:
+{Markdown Representation}
+**OUTPUT**:
+{JSON Representation}
+D.2. TabRAG
+Table Component Prompt. Following layout segmentation and region classification, TABRAG applies component-specific
+prompt templates conditioned on the semantic type of each detected region. Specifically, for tables, we couple our structured
+representation prompt along with our self-generated ICL examples.
+TabRAG: Table
+You are a precise information extraction engine. Output ONLY a JSON array of objects, each with:
+{"row": <string>, "column": <string>, "value": <string|null>, "units": <string|null>}.
+No markdown, explanations, or text before/after the JSON.
+Task: Extract every visible cell in the attached table image into JSON triples.
+Each table cell must be represented as:
+{
+"row": string,
+// the row label (e.g. "Revenue", "2024", "Row 1" if unnamed)
+"column": string,
+// column header text; if multi-level, join levels with " -> "
+"value": string|null, // exact text as seen in the table (keep symbols and brackets)
+"units": string|null, // units if present in header (e.g., "$ in millions"), otherwise null
+}
+Rules:
+- Output ONLY a JSON array: [ {row, column, value, units}, ... ].
+- Order: top-to-bottom, left-to-right.
+- Preserve all text formatting exactly as shown:
+- Keep parentheses, minus signs, commas, currency symbols, and percent signs.
+- Do NOT normalize numbers or remove punctuation.
+- Multi-line text: join with a single space.
+- Multi-level headers: join with " -> " (e.g. "2024 -> Revenue").
+- If a row header spans multiple rows, repeat its label for each affected row.
+- If units are present, include them in the output (e.g., "$ in millions"), otherwise use null.
+- Use null only for empty or blank cells.
+---
+{‘‘Self-Generated ICL’’}
+Now, extract all visible cells from the attached table image and output only the JSON array of {row, column, value, units} objects
+using the " -> " separator for multi-level headers, keeping all cell values exactly as written in the table.
+ENSURING THAT ALL EXTRACTED VALUES ARE ACCURATE IS THE MOST IMPORTANT! DO NOT OUTPUT ANYTHING ELSE.
+24
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Here’s an example.
+Self-Generated 
+ICL Example
+Format
+instructions
+Rules
+Figure 9. Sample TABRAG prompt with one self-generated ICL example.
+25
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Other Component Prompts. TabRAG also applies VLM prompts to summarize and parse other non-table components.
+These prompts are shown below.
+TabRAG: Text
+Please extract and output the **visible text** in the image exactly **as it appears**, without rephrasing, summarizing, or skipping
+any content. Preserve original formatting such as line breaks, punctuation, and capitalization. This includes any small footnotes
+or embedded labels. DO NOT OUTPUT ANYTHING ELSE!
+TabRAG: Title
+Please extract and output the **title text** from the image exactly **as displayed**, preserving capitalization and formatting. Do
+not interpret or rewrite. Output the title as it appears visually. DO NOT OUTPUT ANYTHING ELSE!
+TabRAG: Figure
+Please interpret the figure and describe it in detail. Your output should include:
+1. Descriptions of individual data points if visible,
+2. Descriptions of trend lines, axes, and labels,
+3. Explanations of any color or shape encodings, and
+4. Any other notable features (e.g., anomalies, clustering, outliers).
+Be precise and avoid speculation. Ensure your interpretation **accurately matches the figure** and
+corresponds to what is visually present. DO NOT OUTPUT ANYTHING ELSE!
+Page Overview Prompt. We use the following prompt to generate a page overview, which supplements the component-wise
+representations by providing cross-component context.
+TabRAG: Page
+Please parse everything in the attached image and output the parsed contents only without anything else.
+D.3. Baselines
+Per conventional established parsing techniques (Artifex Software, 2024; Boulanger, 2023; Liu, 2022), all baseline vision-
+language and OCR-centric models are evaluated under a uniform prompting setup. This includes DeepSeek-OCR, Gemma-
+3-27B-IT, GPT-5.2 and Qwen3-VL-8B/32B-Instruct.
+Baseline
+Please parse everything in the attached image and output the parsed contents only without anything else.
+D.4. LLM Query Engine
+We use the following prompt to query an LLM along with the attached respective ICL example as context.
+LLM Query Engine
+You are a helpful assistant. Use the information from the documents below to answer the question.
+{‘Retrieved Information’}
+Question: {‘Question’}
+Answer:
+26
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+D.5. Ablation: Structured Representation
+To determine the optimal structured representation for tables, we compare our JSON representation (see Appendix D.2)
+with markdown and natural language text in an ablation study. The prompts used to generate each representation are shown
+below.
+Ablation: TABRAGMD (Markdown Table)
+You are a precise information parsing and extraction engine. Output ONLY a markdown table of the provided image.
+Task: Generate a markdown table with the correct structure, with every single cell accounted for.
+Rules:
+1. Output ONLY a valid Markdown table. Do not include any other text.
+2. Preserve the exact number of rows and columns visible in the image.
+3. Preserve unit information in headers if present (e.g., "$ in millions").
+4. Transcribe all cell contents as faithfully as possible without inference, normalization, or computation.
+5. Repeat values for merged cells so that every row has the same number of columns.
+6. If a cell is visually empty, leave it empty.
+7. Ignore captions, footnotes, and non-table elements outside the table.
+---
+{‘‘Self-Generated ICL (Markdown)’’}
+Now, generate the markdown table ONLY. DO NOT OUTPUT ANYTHING ELSE.
+Ablation: TABRAGTEXT (Text Table)
+You are an expert document analyst specializing in structured data verbalization.
+Your task is to extract every visible cell from the attached table and convert it into a clear, factual, natural language
+description.
+**Task:** Generate a list of descriptive sentences representing every data point in the table.
+**Rules for Generation:**
+1.
+**Format:** Output a bulleted list of natural language sentences.
+2.
+**Narrative Flow:** Use conversational connectors like "For...", "the data shows...", "recorded a value of...", or "was found
+to be...".
+3.
+**Hierarchy:** Incorporate nested headers naturally into the sentence (e.g., "Under the 2024 results for Q1, the Revenue was
+...").
+4.
+**Preserve Accuracy:** You must mention every specific row, column, and value. Do not skip any cells. Keep all original symbols
+like ( ), $, and %.
+5.
+**Contextual Units:** Integrate any units (like "in millions") directly into the description of the value.
+6.
+**No Rigid Patterns:** Avoid repeating the exact same sentence structure for every line; vary the phrasing slightly to maintain
+a natural, human-readable tone.
+---
+{‘‘Self-Generated ICL (Text)’’}
+Now, extract every cell from the table image into this natural language format. DO NOT OUTPUT ANYTHING ELSE.
+27
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Ablation: TABRAGMD (Markdown Table) Self-Generated ICL
+You are a precise information parsing and extraction engine. Output ONLY
+A markdown table of the provided image
+Task: Generate a markdown table with the correct structure, with every single cell accounted for.
+Rules:
+1. Output ONLY a valid Markdown table. Do not include any other text.
+2. Preserve the exact number of rows and columns visible in the image.
+3. Preserve unit information in headers if present (e.g., "$ in millions").
+4. Transcribe all cell contents as faithfully as possible without inference, normalization, or computation.
+5. Repeat values for merged cells so that every row has the same number of columns.
+6. If a cell is visually empty, leave it empty.
+7. Ignore captions, footnotes, and non-table elements outside the table.
+---
+**Example Output 1: Two-level header**
+| ($ in millions) | 2024
+| 2023
+|
+|-----------------|------------------|------------------|
+|
+| Revenue | Profit | Revenue | Profit |
+| Sales
+| 1,234
+| 400
+| 1,200
+| 350
+|
+| Net Income
+| (56)
+| 80
+| -40
+| 70
+|
+---
+**Example Output 2: Three-level header**
+| ($ in thousands) | 2024
+| 2023
+|
+|------------------|--------------------------------------|-------------------------------------|
+|
+| Q1
+| Q2
+| Q1
+| Q2
+|
+|
+| Revenue | Profit
+| Revenue | Profit | Revenue | Profit | Revenue | Profit |
+| Product A
+| 500
+| 120
+| 600
+| 150
+| 450
+| 100
+| 550
+| 140
+|
+| Product B
+| (50)
+| 80
+| (30)
+| 100
+| -20
+| 60
+| 10
+| 90
+|
+---
+**Example Output 3: Mixed 1-row, 2-row, and 3-row headers**
+| Category
+| 2024
+| 2023
+| Growth % | Notes
+|
+|-----------------------|-------------------------------------|------------------|----------|----------|
+|
+| Q1
+| Q2
+| Revenue | Profit |
+|
+|
+|
+| Revenue | Profit | Revenue | Profit |
+|
+|
+|
+|
+| Sales (Units)
+| 1,000
+| 300
+| 900
+| 250
+| 1,700
+| 550
+| 12%
+| N/A
+|
+| Cost ($ in thousands) | (200)
+| (50)
+| -180
+| -40
+| (380)
+| (90)
+| N/A
+| Adjusted |
+---
+Now, generate the markdown table ONLY, do not include any other irrelevant text.
+28
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+Ablation: TABRAGTEXT (Text Table) Self-Generated ICL
+You are an expert document analyst specializing in structured data verbalization.
+Your task is to extract every visible cell from the attached table and convert it into a clear, factual, natural language
+description.
+**Task:** Generate a list of descriptive sentences representing every data point in the table.
+**Rules for Generation:**
+1.
+**Format:** Output a bulleted list of natural language sentences.
+2.
+**Narrative Flow:** Use conversational connectors like "For...", "the data shows...", "recorded a value of...", or "was found
+to be...".
+3.
+**Hierarchy:** Incorporate nested headers naturally into the sentence (e.g., "Under the 2024 results for Q1, the Revenue was
+...").
+4.
+**Preserve Accuracy:** You must mention every specific row, column, and value. Do not skip any cells. Keep all original symbols
+like ( ), $, and %.
+5.
+**Contextual Units:** Integrate any units (like "in millions") directly into the description of the value.
+6.
+**No Rigid Patterns:** Avoid repeating the exact same sentence structure for every line; vary the phrasing slightly to maintain
+a natural, human-readable tone.
+---
+**Example 1: Two-level header**
+Input:
+| ($ in millions) | 2024
+| 2023
+|
+|-----------------|------------------|------------------|
+|
+| Revenue | Profit | Revenue | Profit |
+| Sales
+| 1,234
+| 400
+| 1,200
+| 350
+|
+| Net Income
+| (56)
+| 80
+| -40
+| 70
+|
+Output:
+[
+The Sales Revenue in 2024 was 1,234 million dollars.
+the Sales Profit in 2024 was 400 million dollars.
+the Sales Revenue in 2023 was 1,200 million dollars.
+the Sales Profit in 2023 was 350 million dollars.
+the Net Income Revenue in 2024 was (56) million dollars.
+the Net Income Profit in 2024 was 80 million dollars.
+the Net Income Revenue in 2023 was -40 million dollars.
+the Net Income Profit in 2023 was 70 million dollars.
+]
+---
+**Example 2: Three-level header**
+Input:
+| ($ in thousands) | 2024
+| 2023
+|
+|------------------|--------------------------------------|-------------------------------------|
+|
+| Q1
+| Q2
+| Q1
+| Q2
+|
+|
+| Revenue | Profit
+| Revenue | Profit | Revenue | Profit | Revenue | Profit |
+| Product A
+| 500
+| 120
+| 600
+| 150
+| 450
+| 100
+| 550
+| 140
+|
+| Product B
+| (50)
+| 80
+| (30)
+| 100
+| -20
+| 60
+| 10
+| 90
+|
+Output:
+[
+The Q1 Revenue for Product A in 2024 was 500 thousand dollars.
+The Q1 Profit for Product A in 2024 was 120 thousand dollars.
+The Q2 Revenue for Product A in 2024 was 600 thousand dollars.
+The Q2 Profit for Product A in 2024 was 150 thousand dollars.
+The Q1 Revenue for Product A in 2023 was 450 thousand dollars.
+The Q1 Profit for Product A in 2023 was 100 thousand dollars.
+The Q2 Revenue for Product A in 2023 was 550 thousand dollars.
+The Q2 Profit for Product A in 2023 was 140 thousand dollars.
+The Q1 Revenue for Product B in 2024 was (50) thousand dollars.
+The Q1 Profit for Product B in 2024 was 80 thousand dollars.
+The Q2 Revenue for Product B in 2024 was (30) thousand dollars.
+The Q2 Profit for Product B in 2024 was 100 thousand dollars.
+The Q1 Revenue for Product B in 2023 was -20 thousand dollars.
+The Q1 Profit for Product B in 2023 was 60 thousand dollars.
+The Q2 Revenue for Product B in 2023 was 10 thousand dollars.
+The Q2 Profit for Product B in 2023 was 90 thousand dollars.
+]
+---
+**Example 3: Mixed 1-row, 2-row, and 3-row headers**
+...
+---
+Now, extract every cell from the table image into this natural language format. ENSURE ACCURACY IS MAINTAINED.
+29
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+E. Outputs
+E.1. TabRAG: Layout Segmentation
+Given a high-resolution document page, our Document Image Transformer-based layout detection model predicts semanti-
+cally meaningful regions corresponding to various document components such as tables, text blocks, titles, and figures. Each
+component is associated with a bounding box and a confidence score. As shown in Figure 10, the model separates the tabular
+region from the surrounding text blocks and section headers. Each table is detected as a single coherent region containing
+multiple rows, columns, headers, and numerical entries. This demonstrates the model’s ability to preserve fine-grained
+structural organization that is critical for downstream table reasoning.
+Figure 10. Layout segmentation for a sample document from the ComTQA dataset.
+30
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+E.2. TabRAG
+In this section, we showcase TabRAG’s stage-by-stage outputs using Figure 10.
+TabRAG: Table
+{"row": "Total revenue", "column": "2007", "value": "$2,291,189", "units": "thousand"},
+{"row": "Total revenue", "column": "2006", "value": "$1,998,742", "units": "thousand"},
+{"row": "Total revenue", "column": "2005", "value": "$1,552,437", "units": "thousand"},
+{"row": "Total revenue", "column": "2004", "value": "$1,257,438", "units": "thousand"},
+{"row": "Total revenue", "column": "2003", "value": "$1,046,544", "units": "thousand"},
+{"row": "Cost of operations (exclusive of amortization and depreciation disclosed separately below)(1)", "column": "2007",
+"value": "1,631,029", "units": "thousand"},
+{"row": "Cost of operations (exclusive of amortization and depreciation disclosed separately below)(1)", "column": "2006",
+"value": "1,434,620", "units": "thousand"},
+{"row": "Cost of operations (exclusive of amortization and depreciation disclosed separately below)(1)", "column": "2005",
+"value": "1,124,590", "units": "thousand"},
+{"row": "Cost of operations (exclusive of amortization and depreciation disclosed separately below)(1)", "column": "2004",
+"value": "916,201", "units": "thousand"},
+{"row": "Cost of operations (exclusive of amortization and depreciation disclosed separately below)(1)", "column": "2003",
+"value": "788,874", "units": "thousand"},
+{"row": "General and administrative(1)", "column": "2007", "value": "80,898", "units": "thousand"},
+{"row": "General and administrative(1)", "column": "2006", "value": "91,815", "units": "thousand"},
+{"row": "General and administrative(1)", "column": "2005", "value": "91,532", "units": "thousand"},
+{"row": "General and administrative(1)", "column": "2004", "value": "77,740", "units": "thousand"},
+{"row": "General and administrative(1)", "column": "2003", "value": "52,320", "units": "thousand"},
+{"row": "Depreciation and other amortization", "column": "2007", "value": "84,338", "units": "thousand"},
+{"row": "Depreciation and other amortization", "column": "2006", "value": "65,443", "units": "thousand"},
+{"row": "Depreciation and other amortization", "column": "2005", "value": "58,565", "units": "thousand"},
+{"row": "Depreciation and other amortization", "column": "2004", "value": "62,586", "units": "thousand"},
+{"row": "Depreciation and other amortization", "column": "2003", "value": "53,948", "units": "thousand"},
+{"row": "Amortization of purchased intangibles", "column": "2007", "value": "82,294", "units": "thousand"},
+{"row": "Amortization of purchased intangibles", "column": "2006", "value": "59,597", "units": "thousand"},
+{"row": "Amortization of purchased intangibles", "column": "2005", "value": "41,142", "units": "thousand"},
+{"row": "Amortization of purchased intangibles", "column": "2004", "value": "28,812", "units": "thousand"},
+{"row": "Amortization of purchased intangibles", "column": "2003", "value": "20,613", "units": "thousand"},
+{"row": "Impairment of long-lived assets", "column": "2007", "value": "39,961", "units": "thousand"},
+{"row": "Impairment of long-lived assets", "column": "2006", "value": "-", "units": "thousand"},
+{"row": "Impairment of long-lived assets", "column": "2005", "value": "-", "units": "thousand"},
+{"row": "Impairment of long-lived assets", "column": "2004", "value": "-", "units": "thousand"},
+{"row": "Impairment of long-lived assets", "column": "2003", "value": "-", "units": "thousand"},
+{"row": "Loss on sale of assets", "column": "2007", "value": "16,045", "units": "thousand"},
+{"row": "Loss on sale of assets", "column": "2006", "value": "-", "units": "thousand"},
+{"row": "Loss on sale of assets", "column": "2005", "value": "-", "units": "thousand"},
+{"row": "Loss on sale of assets", "column": "2004", "value": "-", "units": "thousand"},
+{"row": "Loss on sale of assets", "column": "2003", "value": "-", "units": "thousand"},
+{"row": "Merger costs", "column": "2007", "value": "12,349", "units": "thousand"},
+{"row": "Merger costs", "column": "2006", "value": "-", "units": "thousand"},
+{"row": "Merger costs", "column": "2005", "value": "-", "units": "thousand"},
+{"row": "Merger costs", "column": "2004", "value": "-", "units": "thousand"},
+{"row": "Merger costs", "column": "2003", "value": "-", "units": "thousand"},
+{"row": "Total operating expenses", "column": "2007", "value": "1,946,914", "units": "thousand"},
+{"row": "Total operating expenses", "column": "2006", "value": "1,651,475", "units": "thousand"},
+{"row": "Total operating expenses", "column": "2005", "value": "1,315,829", "units": "thousand"},
+{"row": "Total operating expenses", "column": "2004", "value": "1,085,339", "units": "thousand"},
+{"row": "Total operating expenses", "column": "2003", "value": "915,755", "units": "thousand"},
+{"row": "Operating income", "column": "2007", "value": "344,275", "units": "thousand"},
+{"row": "Operating income", "column": "2006", "value": "347,267", "units": "thousand"},
+{"row": "Operating income", "column": "2005", "value": "236,608", "units": "thousand"},
+{"row": "Operating income", "column": "2004", "value": "172,099", "units": "thousand"},
+{"row": "Operating income", "column": "2003", "value": "130,789", "units": "thousand"},
+{"row": "Other expenses", "column": "2007", "value": "-", "units": "thousand"},
+{"row": "Other expenses", "column": "2006", "value": "-", "units": "thousand"},
+{"row": "Other expenses", "column": "2005", "value": "-", "units": "thousand"},
+{"row": "Other expenses", "column": "2004", "value": "-", "units": "thousand"},
+{"row": "Other expenses", "column": "2003", "value": "4,275", "units": "thousand"},
+{"row": "Fair value loss on interest rate derivative", "column": "2007", "value": "-", "units": "thousand"},
+{"row": "Fair value loss on interest rate derivative", "column": "2006", "value": "-", "units": "thousand"},
+{"row": "Fair value loss on interest rate derivative", "column": "2005", "value": "-", "units": "thousand"},
+{"row": "Fair value loss on interest rate derivative", "column": "2004", "value": "808", "units": "thousand"},
+{"row": "Fair value loss on interest rate derivative", "column": "2003", "value": "2,851", "units": "thousand"},
+{"row": "Interest expense, net", "column": "2007", "value": "69,523", "units": "thousand"},
+{"row": "Interest expense, net", "column": "2006", "value": "40,998", "units": "thousand"},
+{"row": "Interest expense, net", "column": "2005", "value": "14,482", "units": "thousand"},
+{"row": "Interest expense, net", "column": "2004", "value": "6,972", "units": "thousand"},
+{"row": "Interest expense, net", "column": "2003", "value": "14,681", "units": "thousand"},
+{"row": "Income before income taxes", "column": "2007", "value": "274,752", "units": "thousand"},
+{"row": "Income before income taxes", "column": "2006", "value": "306,269", "units": "thousand"},
+{"row": "Income before income taxes", "column": "2005", "value": "222,126", "units": "thousand"},
+{"row": "Income before income taxes", "column": "2004", "value": "164,319", "units": "thousand"},
+{"row": "Income before income taxes", "column": "2003", "value": "108,982", "units": "thousand"},
+{"row": "Provision for income taxes", "column": "2007", "value": "110,691", "units": "thousand"},
+{"row": "Provision for income taxes", "column": "2006", "value": "116,664", "units": "thousand"},
+{"row": "Provision for income taxes", "column": "2005", "value": "83,381", "units": "thousand"},
+{"row": "Provision for income taxes", "column": "2004", "value": "61,948", "units": "thousand"},
+{"row": "Provision for income taxes", "column": "2003", "value": "41,684", "units": "thousand"},
+{"row": "Net income", "column": "2007", "value": "$ 164,061", "units": "thousand"},
+{"row": "Net income", "column": "2006", "value": "$ 189,605", "units": "thousand"},
+31
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+{"row": "Net income", "column": "2005", "value": "$ 138,745", "units": "thousand"},
+{"row": "Net income", "column": "2004", "value": "$ 102,371", "units": "thousand"},
+{"row": "Net income", "column": "2003", "value": "$ 67,298", "units": "thousand"},
+{"row": "Net income per share-basic", "column": "2007", "value": "$ 2.09", "units": "null"},
+{"row": "Net income per share-basic", "column": "2006", "value": "$ 2.38", "units": "null"},
+{"row": "Net income per share-basic", "column": "2005", "value": "$ 1.69", "units": "null"},
+{"row": "Net income per share-basic", "column": "2004", "value": "$ 1.27", "units": "null"},
+{"row": "Net income per share-basic", "column": "2003", "value": "$ 0.86", "units": "null"},
+{"row": "Net income per share-diluted", "column": "2007", "value": "$ 2.03", "units": "null"},
+{"row": "Net income per share-diluted", "column": "2006", "value": "$ 2.32", "units": "null"},
+{"row": "Net income per share-diluted", "column": "2005", "value": "$ 1.64", "units": "null"},
+{"row": "Net income per share-diluted", "column": "2004", "value": "$ 1.22", "units": "null"},
+{"row": "Net income per share-diluted", "column": "2003", "value": "$ 0.84", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-basic", "column": "2007", "value": "78,403", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-basic", "column": "2006", "value": "79,735", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-basic", "column": "2005", "value": "82,208", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-basic", "column": "2004", "value": "80,614", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-basic", "column": "2003", "value": "78,003", "units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-diluted", "column": "2007", "value": "80,811",
+"units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-diluted", "column": "2006", "value": "81,686",
+"units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-diluted", "column": "2005", "value": "84,637",
+"units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-diluted", "column": "2004", "value": "84,040",
+"units": "null"},
+{"row": "Weighted average shares used in computing per share amounts-diluted", "column": "2003", "value": "80,313",
+"units": "null"}
+32
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+TabRAG: Title
+SELECTED HISTORICAL CONSOLIDATED FINANCIAL AND OPERATING INFORMATION
+Income statement data
+TabRAG: Text
+The following table sets forth our summary historical financial information for the periods ended and as of the dates indicated.
+You should read the following historical financial information along with "Management’s Discussion and Analysis of Financial
+Condition and Results of Operations" contained in this Form 10-K. The fiscal year financial information included in the table below
+for the years ended December 31, 2007, 2006, and 2005, respectively, is derived from audited financial statements. Information for
+the years ended December 31, 2004 and 2003 can be found in our previously filed Annual Reports on Form 10-K.
+Year Ended December 31,
+TabRAG: Page Overview
+Item 6. Selected Financial Data
+SELECTED HISTORICAL CONSOLIDATED FINANCIAL AND OPERATING INFORMATION
+The following table sets forth our summary historical financial information for the periods ended and as of the dates indicated.
+You should read the following historical financial information along with "Management’s Discussion and Analysis of Financial
+Condition and Results of Operations" contained in this Form 10-K. The fiscal year financial information included in the table below
+for the years ended December 31, 2007, 2006, and 2005, respectively, is derived from audited financial statements. Information for
+the years ended December 31, 2004 and 2003 can be found in our previously filed Annual Reports on Form 10-K.
+Year Ended December 31,
+2007
+2006
+2005
+2004
+2003
+(In thousands, except per share amounts)
+Income statement data
+Total revenue
+$2,291,189
+$1,998,742
+$1,552,437
+$1,257,438
+$1,046,544
+Cost of operations (exclusive of
+amortization and depreciation disclosed
+separately below)(1)
+1,631,029
+1,434,620
+1,124,590
+916,201
+788,874
+General and administrative(1)
+80,898
+91,815
+91,532
+77,740
+52,320
+Depreciation and other amortization
+84,338
+65,443
+58,565
+62,586
+53,948
+Amortization of purchased intangibles
+82,294
+59,597
+41,142
+28,812
+20,613
+Impairment of long-lived assets
+39,961
+-
+-
+-
+-
+Loss on sale of assets
+16,045
+-
+-
+-
+-
+Merger costs
+12,349
+-
+-
+-
+-
+Total operating expenses
+1,946,914
+1,651,475
+1,315,829
+1,085,339
+915,755
+Operating income
+344,275
+347,267
+236,608
+172,099
+130,789
+Other expenses
+-
+-
+-
+-
+4,275
+Fair value loss on interest rate derivative
+-
+-
+-
+808
+2,851
+Interest expense, net
+69,523
+40,998
+14,482
+6,972
+14,681
+Income before income taxes
+274,752
+306,269
+222,126
+164,319
+108,982
+Provision for income taxes
+110,691
+116,664
+83,381
+61,948
+41,684
+Net income
+$ 164,061
+$ 189,605
+$ 138,745
+$ 102,371
+$ 67,298
+Net income per share-basic
+$ 2.09
+$ 2.38
+$ 1.69
+$ 1.27
+$ 0.86
+Net income per share-diluted
+$ 2.03
+$ 2.32
+$ 1.64
+$ 1.22
+$ 0.84
+Weighted average shares used in computing
+per share amounts-basic
+78,403
+79,735
+82,208
+80,614
+78,003
+Weighted average shares used in computing
+per share amounts-diluted
+80,811
+81,686
+84,637
+84,040
+80,313
+(1) Included in general and administrative is stock compensation expense of $21.2 million, $16.1 million, $14.1 million, $13.4
+million, and $5.9 million, for the years ended December 31, 2007, 2006, 2005, 2004 and 2003, respectively. Included in cost of
+operations is stock compensation expense of $35.0 million, $27.0 million, $0, $2.3 million, and $0, for the years ended
+December 31, 2007, 2006, 2005, 2004 and 2003, respectively.
+33
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+E.3. Ablation: Structured Representation (Case Study)
+In this section, we perform a case study by providing a visual comparison of the outputs generated by each structured
+representation method used in our ablation experiments. We use a sample document from the ComTQA dataset in Figure 11.
+Figure 11. An example layout segmentation output from ComTQA.
+34
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+The following illustrates the constructed representations.
+TABRAGJSON (Table)
+{"row": "Balance at December 31, 2008", "column": "Analytical Technologies", "value": "$ 3,186.4", "units": "million"}
+{"row": "Balance at December 31, 2008", "column": "Laboratory Products and Services", "value": "$ 5,491.3", "units": "million"}
+{"row": "Balance at December 31, 2008", "column": "Total", "value": "$ 8,677.7", "units": "million"}
+{"row": "Acquisitions", "column": "Analytical Technologies", "value": "202.7", "units": "million"}
+{"row": "Acquisitions", "column": "Laboratory Products and Services", "value": "67.0", "units": "million"}
+{"row": "Acquisitions", "column": "Total", "value": "269.7", "units": "million"}
+{"row": "Finalization of purchase price allocations for 2008 acquisitions", "column": "Analytical Technologies", "value": "(0.6)",
+"units": "million"}
+{"row": "Finalization of purchase price allocations for 2008 acquisitions", "column": "Laboratory Products and Services", "value":
+"3.4", "units": "million"}
+{"row": "Finalization of purchase price allocations for 2008 acquisitions", "column": "Total", "value": "2.8", "units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Analytical Technologies", "value": "(0.7)", "units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Laboratory Products and Services", "value": "(1.6)",
+"units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Total", "value": "(2.3)", "units": "million"}
+{"row": "Currency translation", "column": "Analytical Technologies", "value": "19.4", "units": "million"}
+{"row": "Currency translation", "column": "Laboratory Products and Services", "value": "21.0", "units": "million"}
+{"row": "Currency translation", "column": "Total", "value": "40.4", "units": "million"}
+{"row": "Other", "column": "Analytical Technologies", "value": "(7.4)", "units": "million"}
+{"row": "Other", "column": "Laboratory Products and Services", "value": "2.0", "units": "million"}
+{"row": "Other", "column": "Total", "value": "(5.4)", "units": "million"}
+{"row": "Balance at December 31, 2009", "column": "Analytical Technologies", "value": "3,399.8", "units": "million"}
+{"row": "Balance at December 31, 2009", "column": "Laboratory Products and Services", "value": "5,583.1", "units": "million"}
+{"row": "Balance at December 31, 2009", "column": "Total", "value": "8,982.9", "units": "million"}
+{"row": "Acquisitions", "column": "Analytical Technologies", "value": "308.8", "units": "million"}
+{"row": "Acquisitions", "column": "Laboratory Products and Services", "value": "5.0", "units": "million"}
+{"row": "Acquisitions", "column": "Total", "value": "313.8", "units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Analytical Technologies", "value": "(7.2)", "units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Laboratory Products and Services", "value": "(14.7)",
+"units": "million"}
+{"row": "Tax benefit from Fisher equity awards", "column": "Total", "value": "(21.9)", "units": "million"}
+{"row": "Currency translation", "column": "Analytical Technologies", "value": "(11.9)", "units": "million"}
+{"row": "Currency translation", "column": "Laboratory Products and Services", "value": "6.8", "units": "million"}
+{"row": "Currency translation", "column": "Total", "value": "(5.1)", "units": "million"}
+{"row": "Other", "column": "Analytical Technologies", "value": "(7.4)", "units": "million"}
+{"row": "Other", "column": "Laboratory Products and Services", "value": "8.3", "units": "million"}
+{"row": "Other", "column": "Total", "value": "0.9", "units": "million"}
+{"row": "Balance at December 31, 2010", "column": "Analytical Technologies", "value": "$ 3,682.1", "units": "million"}
+{"row": "Balance at December 31, 2010", "column": "Laboratory Products and Services", "value": "$ 5,588.5", "units": "million"}
+{"row": "Balance at December 31, 2010", "column": "Total", "value": "$ 9,270.6", "units": "million"}
+35
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+TABRAGMD (Table)
+| | Analytical Technologies | Laboratory Products and Services | Total |\n|---|---|---|---|\n| (In millions) | | | |\n| Balance at
+December 31, 2008 | $ 3,186.4 | $ 5,491.3 | $ 8,677.7 |\n| Acquisitions | 202.7 | 67.0 | 269.7 |\n| Finalization of purchase
+price allocations for 2008 acquisitions | (0.6) | 3.4 | 2.8 |\n| Tax benefit from Fisher equity awards | (0.7) | (1.6) |
+(2.3) |\n| Currency translation | 19.4 | 21.0 | 40.4 |\n| Other | (7.4) | 2.0 | (5.4) |\n| Balance at December 31, 2009 |
+3,399.8 | 5,583.1 | 8,982.9 |\n| Acquisitions | 308.8 | 5.0 | 313.8 |\n| Tax benefit from Fisher equity awards | (7.2) |
+(14.7) | (21.9) |\n| Currency translation | (11.9) | 6.8 | (5.1) |\n| Other | (7.4) | 8.3 | 0.9 |\n| Balance at December 31,
+2010 | $ 3,682.1 | $ 5,588.5 | $ 9,270.6 |\nBalance at December 31, 2010}
+TABRAGTEXT (Table)
+The Balance at December 31, 2008 for Analytical Technologies was $3,186.4 million.
+The Balance at December 31, 2008 for Laboratory Products and Services was $5,491.3 million.
+The Balance at December 31, 2008 for the Total was $8,677.7 million.
+The Acquisitions for Analytical Technologies in 2008 were $202.7 million.
+The Acquisitions for Laboratory Products and Services in 2008 were $67.0 million.
+The Acquisitions for the Total in 2008 were $269.7 million.
+The Finalization of purchase price allocations for 2008 acquisitions for Analytical Technologies was $(0.6) million.
+The Finalization of purchase price allocations for 2008 acquisitions for Laboratory Products and Services was $3.4 million.
+The Finalization of purchase price allocations for 2008 acquisitions for the Total was $2.8 million.
+The Tax benefit from Fisher equity awards for Analytical Technologies in 2008 was $(0.7) million.
+The Tax benefit from Fisher equity awards for Laboratory Products and Services in 2008 was $(1.6) million.
+The Tax benefit from Fisher equity awards for the Total in 2008 was $(2.3) million.
+The Currency translation for Analytical Technologies in 2008 was $19.4 million.
+The Currency translation for Laboratory Products and Services in 2008 was $21.0 million.
+The Currency translation for the Total in 2008 was $40.4 million.
+The Other for Analytical Technologies in 2008 was $(7.4) million.
+The Other for Laboratory Products and Services in 2008 was $2.0 million.
+The Other for the Total in 2008 was $(5.4) million.
+The Balance at December 31, 2009 for Analytical Technologies was $3,399.8 million.
+The Balance at December 31, 2009 for Laboratory Products and Services was $5,583.1 million.
+The Balance at December 31, 2009 for the Total was $8,982.9 million.
+The Acquisitions for Analytical Technologies in 2009 were $308.8 million.
+The Acquisitions for Laboratory Products and Services in 2009 were $5.0 million.
+The Acquisitions for the Total in 2009 were $313.8 million.
+The Tax benefit from Fisher equity awards for Analytical Technologies in 2009 was $(7.2) million.
+The Tax benefit from Fisher equity awards for Laboratory Products and Services in 2009 was $(14.7) million.
+The Tax benefit from Fisher equity awards for the Total in 2009 was $(21.9) million.
+The Currency translation for Analytical Technologies in 2009 was $(11.9) million.
+The Currency translation for Laboratory Products and Services in 2009 was $6.8 million.
+The Currency translation for the Total in 2009 was $(5.1) million.
+The Other for Analytical Technologies in 2009 was $(7.4) million.
+The Other for Laboratory Products and Services in 2009 was $8.3 million.
+The Other for the Total in 2009 was $0.9 million.
+The Balance at December 31, 2010 for Analytical Technologies was $3,682.1 million.
+The Balance at December 31, 2010 for Laboratory Products and Services was $5,588.5 million.
+The Balance at December 31, 2010 for the Total was $9,270.6 million.
+36
+
+TabRAG: Improving Tabular Document Question Answering for RAG via Structured Representations
+We evaluate the generation performance using the representations with ComTQA’s QA set. For this document, it contains
+the following QAs:
+• Q1: What is the difference between the total amount of assets at the end of 2008 and the total amount of assets at the
+end of 2009?
+• A1: $305.2 million
+• Q2: What is the difference between the total amount of assets at the end of 2009 and the total amount of assets at the
+end of 2010?
+• A2: $287.7 million
+The following outline the output from the various representations.
+TABRAGJSON (Generation Output)
+Question 1 (Correct):
+The difference between the total amount of assets at the end of 2008 and the end of 2009 is calculated by subtracting the total
+assets at the end of 2008 from the total assets at the end of 2009.
+Total assets at the end of 2008: $8,677.7 million
+Total assets at the end of 2009: $8,982.9 million
+Difference: $8,982.9 million - $8,677.7 million = $305.2 million
+Question 2 (Correct): The difference between the total amount of assets at the end of 2009 and the end of 2010 is calculated by
+subtracting the total assets at the end of 2009 from the total assets at the end of 2010.
+Total assets at the end of 2009: $8,982.9 million
+Total assets at the end of 2010: $9,270.6 million
+Difference: $9,270.6 million - $8,982.9 million = $287.7 million
+TABRAGMD (Generation Output)
+Question 1 (Incorrect):
+The provided information does not include the total amount of assets at the end of 2008 and 2009, making it impossible to calculate
+the difference. Therefore, the answer is not available from the given data.
+Question 2 (Incorrect):
+The provided information does not include the total amount of assets at the end of 2009 and 2010, making it impossible to calculate
+the difference between the two amounts. The data available only provides details about goodwill and other specific assets, not the
+overall total assets for the years 2009 and 2010.
+TABRAGText (Generation Output)
+Question 1 (Incorrect):
+The difference between the total amount of assets at the end of 2008 and the end of 2009 cannot be directly calculated from the
+provided information. The text provided focuses on specific components of assets, such as goodwill, joint ventures, and other
+assets, but does not provide the total assets for the end of 2008 or 2009. To calculate the difference, the total assets for both
+years would need to be known, which are not explicitly provided in the given text.
+Question 2 (Incorrect):
+The difference between the total amount of assets at the end of 2009 and the end of 2010 cannot be directly calculated from the
+provided information. The text provided focuses on specific components of assets, such as goodwill, joint ventures, and other
+assets, but does not provide the total assets for the end of 2009 or 2010. To calculate the difference, the total assets for both
+years would need to be known, which are not explicitly provided in the text.
+37

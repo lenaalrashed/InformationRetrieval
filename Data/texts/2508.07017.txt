@@ -1,0 +1,1221 @@
+Vec2Summ: Text Summarization via Probabilistic Sentence Embeddings
+Mao Li
+Fred Conrad
+Johann Gagnon-Bartsch
+{maolee, fconrad, johanngb}@umich.edu
+Abstract
+We propose Vec2Summ, a novel method for ab-
+stractive summarization that frames the task as
+semantic compression. Vec2Summ represents a
+document collection using a single mean vector
+in the semantic embedding space, capturing the
+central meaning of the corpus. To reconstruct
+fluent summaries, we perform embedding inver-
+sion—decoding this mean vector into natural
+language using a generative language model.
+To improve reconstruction quality and capture
+some degree of topical variability, we introduce
+stochasticity by sampling from a Gaussian dis-
+tribution centered on the mean. This approach
+is loosely analogous to bagging in ensemble
+learning, where controlled randomness encour-
+ages more robust and varied outputs.
+Vec2Summ
+addresses
+key
+limitations
+of
+LLM-based summarization methods.
+It
+avoids context-length constraints, enables in-
+terpretable and controllable generation via se-
+mantic parameters, and scales efficiently with
+corpus size—requiring only O(d + d2) param-
+eters. Empirical results show that Vec2Summ
+produces coherent summaries for topically fo-
+cused, order-invariant corpora, with perfor-
+mance comparable to direct LLM summariza-
+tion in terms of thematic coverage and ef-
+ficiency, albeit with less fine-grained detail.
+These results underscore Vec2Summ’s poten-
+tial in settings where scalability, semantic con-
+trol, and corpus-level abstraction are priori-
+tized.
+1
+Introduction
+Multi-document summarization seeks to generate
+concise, coherent synopses from large collections
+of texts, yet existing paradigms face significant
+limitations (Ma et al., 2022). Extractive methods
+select and concatenate salient sentences but often
+yield disjointed summaries that sacrifice overall
+semantic coherence or omit infrequent yet impor-
+tant content (Nenkova and McKeown, 2012). Ab-
+stractive models—such as pointer–generator net-
+works—produce more fluent summaries but re-
+main bound by fixed context windows, hindering
+their ability to scale to extensive input sets (See
+et al., 2017). More recently, large language models
+(LLMs) like GPT-4 and PaLM have demonstrated
+impressive zero- and few-shot summarization per-
+formance on benchmarks (Zhang et al., 2023; Pu
+et al., 2023), yet these pipelines are computation-
+ally expensive, require extensive prompt engineer-
+ing, and operate as opaque black boxes. Moreover,
+when applied to unordered corpora (e.g., social me-
+dia posts or review streams), naive concatenation of
+inputs can exceed context-length limits and intro-
+duce positional biases—models over-attend to the
+beginning and end of long contexts while neglect-
+ing the middle (Liu et al., 2024)—and they often
+hallucinate on high-diversity collections lacking
+clear document boundaries (Belém et al., 2025).
+Embedding-based approaches offer an alterna-
+tive by representing texts as points in a seman-
+tic space. The Word2Vec paradigm demonstrated
+that vector-space operations capture analogical
+relationships (e.g., King −Man + Woman ≈
+Queen) (Mikolov et al., 2013), but subsequent
+analyses revealed that both word and sentence
+embeddings suffer from representation degenera-
+tion: high-frequency tokens cluster near the origin
+while low-frequency tokens scatter peripherally,
+producing narrow, cone-shaped distributions that
+undermine isotropy and downstream task perfor-
+mance (Gao et al., 2019; Zhang et al., 2020). Pool-
+ing strategies (mean-pooling or [CLS]-based) yield
+abstract sentence embeddings whose anisotropy
+can bias summary selection and degrade coherence.
+In this work, we reconceptualize multi-document
+summarization as an information-compression
+problem in embedding space. We observe that
+the mean vector of a corpus’s sentence embed-
+dings encodes its central semantic tendency, and
+that probabilistic sampling—via a multivariate
+arXiv:2508.07017v1 [cs.CL] 9 Aug 2025
+
+Figure 1: Vec2Summ framework
+Gaussian whose mean is this vector—can enhance
+embedding-inversion, yielding more diverse yet co-
+herent reconstructions. We propose Vec2Summ,
+as illustrated in Figure 1, a framework that:
+1. Computes the mean vector of all sentence
+embeddings to capture the central theme of
+the corpus.
+2. Models semantic variability by defining a co-
+variance around the mean (used only for sam-
+pling to improve inversion diversity).
+3. Samples representative vectors from this
+Gaussian to introduce controlled perturba-
+tions.
+4. Inverts each sampled embedding back to nat-
+ural language (sentences), producing concise
+summaries that reflect both core content and
+thematic variation.
+By relying primarily on the mean vector for
+semantic encoding and using Gaussian sampling
+as a technique to improve embedding inversion,
+Vec2Summ overcomes LLM context-length con-
+straints, captures thematic variability, and generates
+coherent summaries from arbitrarily large docu-
+ment collections without concatenating all source
+texts.
+2
+Related work
+2.1
+Embedding Spaces and Reconstruction
+Embedding spaces form the theoretical foundation
+of modern NLP approaches, where words, sen-
+tences, and documents are represented as vectors
+in high-dimensional spaces. The geometric prop-
+erties of these embedding spaces significantly im-
+pact downstream tasks. Mikolov et al.’s pioneering
+work on Word2Vec (Mikolov et al., 2013) demon-
+strated that word embeddings capture semantic rela-
+tionships in vector space, allowing for meaningful
+vector arithmetic. This discovery fundamentally
+changed how we represent and manipulate seman-
+tic information in natural language processing.
+However, research by Gao et al. (Gao et al.,
+2019) and Zhang et al. (Zhang et al., 2020) revealed
+that word embeddings are not evenly distributed in
+high-dimensional spaces—a phenomenon known
+as representation degeneration. This degeneration
+is particularly pronounced in pretrained language
+models like BERT, where embeddings cluster in
+narrow cones within the vector space, with high-
+frequency words densely distributed near the origin
+and low-frequency words sparsely scattered further
+away. Ethayarajh (Ethayarajh, 2019) demonstrated
+that in all layers of BERT, ELMo, and GPT-2, word
+representations are highly anisotropic, occupying
+a narrow cone in the embedding space rather than
+being distributed throughout. This anisotropy can
+significantly impact model performance, as shown
+by Liang et al. (Liang et al., 2021), who found that
+BERT embeddings suffer from strong anisotropy
+that deteriorates their representation capacity.
+Studies consistently show that more isotropic
+(uniformly distributed) embeddings outperform
+anisotropic ones across various natural language
+understanding benchmarks (Gao et al., 2019). The
+challenge becomes even more pronounced when
+considering sentence-level embeddings, where the
+semantic interpretation becomes increasingly ab-
+stract as word embeddings are pooled. Xu and
+Koehn (Xu and Koehn, 2021) further revealed that
+contextual embedding spaces suffer from their natu-
+ral properties of anisotropy and anisometry, requir-
+ing specialized normalization techniques to miti-
+gate these issues.
+A critical advancement in embedding research
+is the ability to reconstruct text from embeddings,
+which becomes particularly valuable when dealing
+with anisotropic embedding spaces. Recent work
+by Morris et al. (Morris et al., 2023) introduced
+Vec2Text, a framework for embedding inversion
+that demonstrates the surprising amount of informa-
+tion preserved in text embeddings despite the rep-
+resentation degeneration problem. Their approach
+frames the problem as controlled generation: gen-
+erating text that, when re-embedded, is close to a
+fixed point in latent space. Vec2Text operates by
+training two models: a hypothesizer that generates
+initial text from an embedding, and a corrector that
+iteratively refines this text to better match the target
+embedding. This framework has proven effective
+at recovering original text from its embedding with
+
+high fidelity, even in the presence of anisotropic
+distributions.
+While Vec2Text focuses primarily on recover-
+ing the original text from its embedding as a re-
+construction task, Vec2Summ extends this concept
+in a novel direction. Rather than simply invert-
+ing embeddings to recover source text, Vec2Summ
+uses embedding inversion to generate diverse sum-
+maries that capture the distribution of the origi-
+nal document collection. By modeling the seman-
+tic space probabilistically and sampling from this
+mean and distribution, Vec2Summ leverages em-
+bedding inversion as a generative tool for summa-
+rization. This approach is particularly powerful
+because it can work with the inherent anisotropy
+of pretrained language model embeddings, trans-
+forming what is often considered a limitation into
+an advantage. The probabilistic modeling helps
+Vec2Summ navigate the narrow cones of the em-
+bedding space while still capturing semantic di-
+versity, addressing the limitations of traditional
+summarization approaches while representing both
+central tendencies and semantic variability of the
+source material.
+2.2
+Probabilistic Approaches to
+Summarization
+Probabilistic topic models have a rich history in text
+summarization, with Latent Dirichlet Allocation
+(LDA) (Blei) being particularly influential. LDA
+models documents as mixtures of topics, where
+each topic is a probability distribution over words.
+This approach has been extended to summariza-
+tion tasks by selecting sentences that best repre-
+sent the dominant topics in a document collection
+(Wang et al., 2009). While these approaches share
+Vec2Summ’s probabilistic foundation, they typi-
+cally operate in discrete topic spaces rather than
+continuous embedding spaces.
+Gaussian Mixture Models (GMMs) have been
+applied to various text processing tasks, including
+document clustering (Liu et al., 2005) and text gen-
+eration (Wang et al., 2019). Zhu et al. (Zhu et al.,
+2018) demonstrated that GMMs can effectively
+model the distribution of sentence embeddings for
+text generation tasks. Vec2Summ builds on this
+foundation but focuses specifically on summariza-
+tion, using a single multivariate Gaussian as a first
+approximation of the semantic distribution.
+Recent advances in diffusion models have revo-
+lutionized generative modeling across various do-
+mains. Ho et al. (Ho et al., 2020) introduced De-
+noising Diffusion Probabilistic Models (DDPMs),
+which have been adapted for text generation by Li
+et al. (Li et al., 2022). These models operate in con-
+tinuous latent spaces, similar to Vec2Summ’s ap-
+proach. However, while diffusion models typically
+start from random noise and gradually denoise to
+generate text, Vec2Summ samples from a learned
+distribution that captures the semantic structure of
+the document collection.
+2.3
+Sentence Embeddings for Summarization
+Sentence embeddings have become increasingly
+important for summarization tasks. Reimers and
+Gurevych (Reimers and Gurevych, 2019) intro-
+duced Sentence-BERT, which produces semanti-
+cally meaningful sentence embeddings that can
+be compared using cosine similarity. More recent
+work by Ni et al. (Ni et al., 2021) on General
+Text Representations (GTR) has further improved
+sentence embedding quality, providing a solid foun-
+dation for Vec2Summ’s approach.
+A related line of research focuses on select-
+ing representative embeddings for summarization.
+Kobayashi et al. (Kobayashi et al., 2015) proposed
+a method for extractive summarization that selects
+sentences to maximize the coverage of the origi-
+nal document embeddings. Similarly, Chu and Liu
+(Chu and Liu, 2019) introduced MeanSum, which
+generates abstractive summaries by decoding from
+the mean of review embeddings.
+Vec2Summ differs from these approaches by
+treating the embedding space probabilistically
+rather than deterministically. Instead of simply
+selecting sentences based on proximity to a cen-
+troid or other heuristics, Vec2Summ models the
+full distribution of embeddings and samples from
+this distribution to capture both central tendencies
+and semantic diversity. By modeling the seman-
+tic space as a multivariate Gaussian distribution,
+Vec2Summ captures both the central tendency and
+the variance of the document collection, enabling
+more representative sampling that better reflects
+the diversity of the original content.
+3
+Vec2Summ Framework
+3.1
+Limitations of Previous Approaches and
+Our Solution
+Recent advances in LLM-based summarization
+have yielded strong results, particularly in single-
+document or short-input scenarios. However, these
+systems remain fundamentally limited by context
+
+window constraints, high inference costs, and sus-
+ceptibility to information dilution in large or noisy
+collections. As noted by Liu et al. (2024), LLMs
+can easily lose coherence or relevance when pro-
+cessing long, multi-source inputs. This is especially
+problematic in domains such as social media or cus-
+tomer reviews, where the goal is often to extract a
+broad semantic overview rather than enumerate ev-
+ery detail. Yet, most existing approaches continue
+to prioritize extractive coverage over conceptual
+abstraction.
+Vec2Summ reframes the task by operating di-
+rectly in embedding space, rather than in raw text.
+At the heart of this method is the observation that
+the mean vector of a document collection provides
+a compact and expressive representation of its cen-
+tral semantics. This enables summarization to scale
+beyond traditional context boundaries while pre-
+serving interpretability and diversity. While we
+sample from a multivariate Gaussian centered at
+the mean to support embedding inversion, the dis-
+tributional modeling is not intended to encode the
+corpus itself. Rather, it serves as a tool to gener-
+ate semantically similar but distinct reconstruction
+candidates—much like varying temperature dur-
+ing text generation. This approach enables con-
+trollable sampling and fluent decoding via recent
+advances in embedding-to-text inversion (Morris
+et al., 2023), yielding summaries that are both effi-
+cient and expressive across large document sets.
+3.2
+Framework Overview
+The Vec2Summ approach consists of four main
+steps:
+3.2.1
+Embedding Generation
+Given
+a
+collection
+of
+input
+texts
+D
+=
+{d1, d2, . . . , dn}, we first preprocess each docu-
+ment using standard text cleaning techniques to
+remove noise such as URLs, mentions, hashtags,
+and redundant whitespace. We then compute dense
+vector representations (embeddings) for each doc-
+ument using either OpenAI’s text-embedding-ada-
+002 model or the General Text Representations
+(GTR) model (Ni et al., 2021). This results in
+a set of embeddings E = {e1, e2, . . . , en} where
+ei ∈Rd and d is the dimensionality of the embed-
+ding space.
+3.2.2
+Distribution Modeling
+We model the semantic space of the document col-
+lection as a multivariate Gaussian distribution. We
+compute the mean vector µ and covariance matrix
+Σ of the embeddings:
+µ = 1
+n
+n
+X
+i=1
+ei
+(1)
+Σ = 1
+n
+n
+X
+i=1
+(ei −µ)(ei −µ)T
+(2)
+To ensure numerical stability, we verify that the
+covariance matrix is positive definite (which should
+always be true) by checking its eigenvalues. If any
+eigenvalue is negative or close to zero (below a
+threshold ϵ = 10−6), we apply regularization:
+Σreg = Σ + λI
+(3)
+where λ is a small positive constant (typically
+10−4) and I is the identity matrix. This regular-
+ization ensures that the covariance matrix remains
+well-conditioned for sampling. Our experiments
+showed that a single Gaussian offers a good bal-
+ance between model complexity and performance
+for most use cases.
+3.2.3
+Sampling from Distribution
+We sample k vectors from the multivariate Gaus-
+sian distribution N(µ, Σ):
+ˆej ∼N(µ, Σ)
+for j = 1, 2, . . . , k
+(4)
+These sampled vectors ˆE = {ˆe1, ˆe2, . . . , ˆek} rep-
+resent points in the semantic space that capture
+both the central tendency (via the mean) and the
+variance (via the covariance matrix) of the original
+document collection.
+We also explored temperature-controlled sam-
+pling by scaling the covariance matrix:
+ˆej ∼N(µ, T · Σ)
+(5)
+where T is a temperature parameter. Higher val-
+ues of T lead to more diverse samples, while lower
+values concentrate samples closer to the mean. In
+our experiments, we found that T = 1.2 provides
+a good balance between diversity and relevance.
+
+3.2.4
+Text Reconstruction
+We reconstruct text from each sampled embedding
+using the vec2text framework (Morris et al., 2023),
+which inverts embeddings back into natural lan-
+guage. The vec2text framework consists of two
+main components: a hypothesizer and a corrector.
+The hypothesizer H generates an initial text can-
+didate ˆd(0)
+j
+given a sampled embedding ˆej:
+ˆd(0)
+j
+= H(ˆej)
+(6)
+The corrector C then iteratively refines this can-
+didate to better match the target embedding:
+ˆd(t+1)
+j
+= C( ˆd(t)
+j , ˆej)
+(7)
+for t = 0, 1, . . . , T −1, where T is the number
+of correction iterations (typically 3-5).
+The corrector operates by computing the em-
+bedding of the current candidate, comparing it to
+the target embedding, and making targeted edits to
+reduce the distance between them. The objective
+function for the corrector is:
+L( ˆd, ˆe) = ||E( ˆd) −ˆe||2
+2 + λ · PPL( ˆd)
+(8)
+where E is the embedding function, PPL is a lan-
+guage model perplexity term that ensures fluency,
+and λ is a hyperparameter that balances embedding
+fidelity and text fluency.
+After T iterations, we obtain the final recon-
+structed text ˆdj = ˆd(T)
+j
+. This process is repeated
+for each sampled embedding, resulting in a set of
+reconstructed texts ˆD = { ˆd1, ˆd2, . . . , ˆdk}.
+3.3
+Algorithm
+Algorithm 1 provides the pseudocode for the
+Vec2Summ framework.
+The time complexity of Vec2Summ is dominated
+by the embedding generation step, which is O(n)
+where n is the number of documents. The dis-
+tribution modeling step is O(nd2) where d is the
+dimensionality of the embedding space. The sam-
+pling and text reconstruction steps are O(kd2) and
+O(kT) respectively, where k is the number of sam-
+ples and T is the number of correction iterations.
+Since typically k ≪n, the overall complexity is
+O(n+nd2), which scales linearly with the number
+of documents.
+Algorithm 1 Vec2Summ: Text Summarization via
+Probabilistic Sentence Embeddings
+Require: Document
+collection
+D
+=
+{d1, . . . , dn},
+1: number of samples k, embedding model E,
+2: vec2text model (H, C), summary model S,
+3: temperature T
+Ensure: Summary of document collection
+4: // Embedding Generation
+5: for i ←1 to n do
+6:
+ei ←E(di)
+7: end for
+8: E ←{e1, . . . , en}
+9: // Distribution Modeling
+10: µ ←1
+n
+Pn
+i=1 ei
+11: Σ ←1
+n
+Pn
+i=1(ei −µ)(ei −µ)T
+12: λmin ←smallest eigenvalue of Σ
+13: if λmin < ϵ then
+14:
+Σ ←Σ + (ϵ −λmin + δ) I
+15: end if
+16: // Sampling
+17: ˆE ←∅
+18: while | ˆE| < k do
+19:
+ˆe ∼N(µ, TΣ)
+20: end while
+21: // Text Reconstruction
+22: for all ˆej ∈ˆE do
+23:
+ˆd(0)
+j
+←H(ˆej)
+24:
+for t = 0 to T −1 do
+25:
+ˆd(t+1)
+j
+←C( ˆd(t)
+j , ˆej)
+26:
+end for
+27:
+ˆD ←ˆD ∪{ ˆd(T)
+j
+}
+28: end for
+29: // Summary Generation
+30: summary ←S( ˆD)
+31: return summary
+
+4
+Experiment setting
+4.1
+Data
+As previously noted, our method is particularly ef-
+fective for multi-document summarization tasks, es-
+pecially in domains featuring short documents such
+as social media posts or product reviews. To as-
+sess its performance, we conducted experiments on
+four datasets spanning social media, e-commerce
+reviews, and medical description forums. For sim-
+plicity, we refer to each individual post (from Red-
+dit or Twitter) or review as document.
+4.1.1
+Twitter 2020 Census Corpus
+The general corpus comprises ~3.5 M English
+tweets posted between 1 Jan–17 Sep 2020 that
+mention the 2020 U.S. Census, the U.S. Census
+Bureau, or one of its field surveys, harvested via
+the Sprinklr vendor.
+To make the dataset more manageable and also
+more focused, four focused slices—Biden, Trump,
+Illegal, and Citizen—were obtained by keyword
+filtering to probe topic homogeneity effects.
+4.1.2
+Amazon Book Reviews
+We used the Kaggle “Amazon Reviews” dump1
+and retained only rows whose top-level category is
+Books. A further slice (Amazon-Books) contains all
+reviews of the single most-reviewed book (Harry
+Potter and the Order of the Phoenix) in the collec-
+tion.
+4.1.3
+Reddit TIFU
+The Reddit-TIFU dataset (Kim et al., 2019) con-
+tains 122,933 informal “Today I F***ed Up” posts,
+each paired with an author-written TL;DR. In our
+experiments, we used the self-text (not TL;DR) as
+the source for the summarization task.
+4.1.4
+Reddit AskDocs
+AskDocs is a consumer health Q&A forum on Red-
+dit. We used a publicly available GitHub dump2
+containing question–answer pairs. Since this study
+focuses on user-generated content, we concentrate
+on the question side of the data.
+A symptom-
+specific subset, AskDocs-Fever, includes only ques-
+tions that mention the term fever.
+1https://www.kaggle.com/datasets/kritanjalijain/amazon-
+reviews
+2https://github.com/fostiropoulos/AskDoc?tab=
+readme-ov-file
+4.1.5
+Sampling Grid and Licensing
+For every dataset we draw stratified samples
+of {50, 100, 200, 500, 1000, 5000, 10000} docu-
+ments; any cell left blank in the following figures
+reflects an insufficient corpus size (e.g., AskDocs-
+Fever). Third-party corpora are distributed under
+permissive research licences.3
+4.2
+Implementation
+We implemented Vec2Summ in Python, leveraging
+several libraries for different components of the
+pipeline4:
+• Embedding Generation:
+The vec2text
+framework supports two embedding models:
+OpenAI’s text-embedding-ada-002 (1536 di-
+mensions) and the General Text Representa-
+tions (GTR) model (768 dimensions). Since
+the GTR model was trained on outputs with
+a fixed and truncated length, we used Ope-
+nAI embeddings in this study for both word
+embedding and text reconstruction.
+• Distribution Modeling: We use NumPy for
+computing the mean vector and covariance
+matrix, as well as for checking the eigenvalues
+of the covariance matrix to ensure positive
+definiteness.
+• Sampling:
+We
+use
+NumPy’s
+random.multivariate_normal
+func-
+tion to sample from the multivariate Gaussian
+distribution.
+• Text Reconstruction: We use the vec2text
+library to invert embeddings back into natural
+language. For OpenAI embeddings, we use
+the pretrained corrector model "vec2text/ada-
+002-corrector" with 5 correction iterations.
+We set the maximum generated text length
+to 128 tokens and use a beam size of 4 for the
+hypothesizer.
+• Summary Generation: We use OpenAI’s
+GPT-4.1 model for summarize the recon-
+structed text from previous steps, and the
+prompt can be found in the Appendix. We use
+a temperature of 0.7 and a maximum token
+length of 1024 for the summary generation.
+3Our derived Twitter corpus will be released as tweet IDs
+in compliance with platform policy.
+4The detailed code will be shared upon acceptance
+
+5
+Evaluation
+We evaluate the Vec2Summ framework along two
+dimensions: reconstruction quality and summary
+quality. Our goal is to assess both the semantic
+fidelity of the reconstructed texts and the effec-
+tiveness of the final summaries in capturing key
+information from the original corpus.
+5.1
+Reconstruction Quality
+To evaluate the semantic preservation in recon-
+structed texts, we compare the reconstructed out-
+puts to the original texts using cosine similarity in
+the embedding space. We use the text-embedding-
+ada-002 model from OpenAI. The embeddings for
+both the original and reconstructed texts are com-
+puted, and pairwise cosine similarities are calcu-
+lated.
+For each original text, we record the maximum
+similarity with any reconstructed text, and sum-
+marize these scores using the mean similarity of
+all pair-wise maximum similarities between recon-
+structed texts with each original text (i.e., the docu-
+ment).
+This analysis provides insight into how closely
+the reconstructed sentences align semantically with
+the input distribution.
+5.2
+Comparison with Direct LLM
+Summarization
+To benchmark the performance of Vec2Summ,
+we generated summaries directly from the origi-
+nal texts (documents) using GPT-4.1 (the prompt
+we use can be seen in the Appendix) and com-
+pared them to Vec2Summ outputs using the G-
+Eval framework(Liu et al., 2023). Due to context
+window limitations, we experimented with sample
+sizes of 50, 100, 200, 500, and 1000, excluding
+larger sizes such as 5000 and 10,000. The upper
+limit was set to 1000 to ensure feasibility within
+the context constraints.
+The comparison was based on four key criteria:
+(1) Coverage, (2) Conciseness, (3) Coherence, and
+(4) Factual Accuracy.
+Each summary received an overall score on a
+1–5 scale, along with detailed qualitative feedback,
+enabling us to evaluate the relative strengths and
+weaknesses of Vec2Summ in comparison to direct
+LLM-based summarization. The prompt we used
+for this task can be seen in the Appendix.
+Figure 2: Computational efficiency comparison between
+Vec2Summ and direct LLM summarization across dif-
+ferent corpus sizes.
+5.3
+Embedding Space Visualization
+To gain insight into the geometry of the sampling
+process, we visualize the embedding space using
+Principal Component Analysis (PCA). The original
+embeddings, sampled vectors, and reconstructed
+embeddings are projected into two dimensions.
+The resulting plots help validate that the sampled
+vectors occupy a semantically meaningful region
+near the original data manifold.
+6
+Results
+6.1
+Compression and Computational
+Efficiency
+Before examining the quality of the generated sum-
+maries, we first assess the efficiency of Vec2Summ
+in comparison to direct LLM-based summariza-
+tion. As discussed earlier, a core advantage of
+Vec2Summ is that it avoids the need to pass the en-
+tire corpus through the LLM to produce a meaning-
+ful summary. Instead, it operates on a compact sub-
+set of semantically representative sentences. This
+efficiency gain becomes increasingly significant
+as the size of the input corpus grows, making the
+method particularly well-suited for large-scale sum-
+marization tasks.
+To illustrate this, we used the citizen dataset
+to estimate the compression ratio achieved by
+our method relative to the total number of to-
+kens in the original corpus, as shown in Figure 2.
+Vec2Summ exhibits strong compression capabil-
+ities that scale effectively with corpus size. For
+instance, when summarizing a corpus of 100 docu-
+ments, Vec2Summ reduces the content to just 15%
+of the original token count. As the corpus size
+
+grows to 1,000 documents, the compression ratio
+improves dramatically—up to 99.9%—while the
+parameter count remains fixed at O(d + d2).
+6.2
+Semantic Representation Quality
+Figure 3 presents a heat-map of the average pair-
+wise mean cosine similarity between each recon-
+structed text and its corresponding source text, strat-
+ified by dataset (rows) and by the number of source
+passages used to build the reconstruction model
+(columns: 50 →10 000). Some datasets lack a
+10,000 sample entry because the original corpora
+simply do not contain that many distinct documents.
+Across all 56 (8 datasets × 7 sizes) experimental
+conditions, the similarity remains well above 0.78;
+46/56 cells exceed 0.82, corroborating the strong
+semantic faithfulness already noted above.
+The highest fidelity is observed on Amazon-
+Books (0.883—0.888) and Illegal (0.855–0.861),
+suggesting that our method performs particularly
+well with narrative reviews and statutory language.
+The lowest—though still notable—scores appear
+on AskDocs-Full (minimum 0.786), a forum char-
+acterized by medical jargon and long-tail personal
+stories.
+This indicates that our method is less
+suited for cases where each document represents
+a unique instance, with limited cross-document
+correlation within the corpus.
+The remaining
+datasets—Citizen, Trump, AskDocs-Fever, Biden,
+and TIFU—form a tight cluster between 0.80 and
+0.86, demonstrating robustness across political,
+conversational, and short-form narrative domains.
+Similarity varies by at most ±0.02 within each
+dataset, and no monotonic degradation is visible as
+we scale from 50 to 10,000 training items. In fact,
+several datasets (Citizen, Amazon-Books) exhibit a
+slight uptick (≈+0.01 −0.02) at the 10 000-item
+mark, while others (e.g., Trump, AskDocs-Fever)
+recover the small dip seen at medium sizes (200–
+1,000). This stability indicates our reconstruction
+module does not trade fidelity for scale; semantic
+alignment saturates quickly and stays flat thereafter.
+6.3
+Comparison with Direct LLM
+Summarization
+We conducted a comprehensive evaluation com-
+paring Vec2Summ against a direct LLM summa-
+rization baseline to assess both output quality and
+scalability. As shown in Figure 4, we report av-
+erage G-Eval scores across eight datasets using a
+fixed sample size of 1,000 documents. Each exper-
+iment was repeated five times to ensure stability,
+Figure 3: Average pair-wise mean cosine similarity be-
+tween each reconstructed text and its corresponding
+source text (lighter = lower, darker = higher).
+Figure 4: Average G-Eval scores (1—5 scale) for
+Vec2Summ and direct GPT-4 summarization across
+eight datasets. Error bars indicate 95% confidence inter-
+vals.
+and the results were averaged across runs.
+As we mentioned, summaries were evaluated on
+four criteria — coverage, factual accuracy, coher-
+ence, and conciseness — with final scores reported
+on a 1–5 scale. To provide additional insight into
+the qualitative differences between the two meth-
+ods, we include a representative example from the
+Citizen dataset (sample size 1,000) in the Appendix,
+illustrating how Vec2Summ and the direct LLM ap-
+proach diverge or are similar in structure and focus.
+As shown, the direct LLM approach consistently
+outperforms Vec2Summ in terms of raw G-Eval
+scores, often reaching near-perfect evaluations (4.8–
+5.0). Vec2Summ, while lower, still maintains a re-
+spectable range of scores (2.1–3.3), indicating that
+it is capable of generating coherent and factually
+consistent summaries, even at scale.
+We emphasize that these results should be in-
+terpreted with caution when applied to large input
+
+sizes. As the number of documents to summa-
+rize increases (e.g., 1,000 documents), the task be-
+comes more cognitively demanding for any evalua-
+tor—including both humans and G-Eval—to con-
+sistently judge the quality of a summary. Thus,
+while the scoring provides a useful benchmark, it
+may not fully capture consistency or depth of justi-
+fication at higher volumes.
+Another key observation is the difference in sum-
+mary length and structure. Vec2Summ outputs
+are typically concise—consisting of a single para-
+graph—while direct LLM summaries often span
+multiple paragraphs and include more detailed elab-
+oration. This verbosity allows the direct LLM ap-
+proach to score higher on the coverage criterion,
+which heavily influences the G-Eval composite
+score. In contrast, Vec2Summ focuses on high-
+density content selected via embedding similarity,
+producing shorter summaries that may omit low-
+frequency or peripheral details. This difference is
+also evident in the example provided in the Ap-
+pendix.
+Indeed, the most common critique in G-Eval
+comments on Vec2Summ outputs was “limited
+coverage.” However, we argue that this property
+is not necessarily a flaw. In many practical ap-
+plications—such as dashboards, monitoring tools,
+or first-pass summarization—the main goal is to
+convey the gist of a large set of documents rather
+than enumerate every specific point. From this per-
+spective, Vec2Summ offers a valuable trade-off:
+reduced length and faster readability, in exchange
+for a moderate loss in detail.
+In summary, although direct LLM summariza-
+tion remains stronger under coverage-heavy met-
+rics, our findings show that Vec2Summ delivers
+competitive performance in a more compact for-
+mat. These results are encouraging and suggest that
+Vec2Summ can scale to even larger datasets while
+still providing useful, interpretable summaries.
+6.4
+Embedding Space Preservation
+To assess the semantic similarity of our sampled
+and reconstructed texts, we visualized their embed-
+dings using PCA projection onto two components.
+As shown in Figure 5, the sampled embeddings
+(in red) retain the structure of the full embedding
+distribution (in blue), indicating that the selection
+strategy preserves the major semantic modes of the
+corpus.
+The reconstructed text embeddings (in green)
+cluster tightly around their sampled counterparts,
+Figure 5: PCA projection of embedding space from the
+Biden dataset using 500 sampled documents. Blue =
+original embeddings; red = sampled subset; green =
+reconstructed texts. Sampled points span the semantic
+space well, and reconstructions remain close to their
+targets.
+suggesting that the text-to-text generation process
+in Vec2Summ successfully captures the intent and
+meaning of the sampled inputs. This figure uses
+the Biden dataset with 500 sampled documents as
+an illustrative example, but similar patterns were
+observed across other domains and sample sizes.
+One caveat is that not every reconstructed point
+lands precisely on its sampled source in embed-
+ding space. While the reconstructions are close
+enough to retain semantic proximity, perfect re-
+covery may require domain-specific fine-tuning of
+the embedding-to-text decoder. Nonetheless, the
+spatial consistency observed here highlights that
+Vec2Summ can approximate large-scale semantic
+coverage with significantly fewer tokens and mini-
+mal distortion.
+7
+Discussion
+The results demonstrate that Vec2Summ, by lever-
+aging mean vector encoding in semantic space, ef-
+fectively captures the semantic diversity of docu-
+ment collections while preserving coherence in the
+generated summaries. Its probabilistic sampling
+approach allows for the inclusion of information
+distributed throughout the semantic space of the
+corpus, rather than concentrating solely on the most
+central or frequently occurring content.
+Vec2Summ also presents a compelling alterna-
+tive to direct LLM-based summarization, partic-
+ularly for large, topically focused corpora where
+efficiency and scalability are critical. By sampling
+
+across the full semantic distribution—including its
+tails—Vec2Summ is able to surface diverse and
+less redundant information that may be overlooked
+by direct LLM summarization methods, which of-
+ten emphasize more central content.
+The performance trade-offs observed in our ex-
+periments suggest that Vec2Summ is best suited
+for tasks where capturing the general semantic
+content is more important than preserving fine-
+grained details. Its efficiency gains become increas-
+ingly significant as the corpus size grows, mak-
+ing Vec2Summ particularly useful for summarizing
+large collections that exceed the context window of
+typical LLMs.
+That said, we acknowledge several limitations
+and areas for future improvement. First, while the
+mean vector representation of a semantic space
+works well for multi-document summarization, it
+may not generalize to other domains. For instance,
+we conducted pilot studies on book and news article
+summarization, but neither yielded results mean-
+ingful enough to include in this paper.
+Additionally, our observations suggest that
+Vec2Summ performs best when applied to datasets
+with two key characteristics:
+(1) order invari-
+ance—where shuffling the document order does
+not affect the overall content—and (2) topical co-
+herence—where the documents share a common
+theme or event. Under these conditions, the mean
+vector and multivariate distribution modeling help
+mitigate the isotropy problem commonly observed
+in embedding spaces.
+Finally, even with an off-the-shelf setup, we are
+able to generate coherent and informative sum-
+maries from the mean vector. However, we be-
+lieve performance can be further improved by fine-
+tuning the vec2text decoder on domain-specific text.
+While this would require additional effort to train,
+the process can be carried out in a self-supervised
+manner, meaning it does not require labeled exter-
+nal data—only raw text from the target domain.
+8
+Appendices
+8.1
+Prompt for generating Vec2Summ
+summarization
+You are given a set of text fragments that represent
+different aspects of a document collection. Your
+task is to generate a comprehensive summary that
+captures the key information present in these frag-
+ments. Focus on identifying common themes, im-
+portant details, and diverse perspectives.
+Text fragments: {reconstructed_texts}
+Summary:
+8.2
+Prompt for direct LLMs summarization
+Please summarize the following collection of texts.
+Focus on capturing the main points, key informa-
+tion, and overall sentiment. The summary should
+be comprehensive yet concise.
+Texts to summarize: {source_text}
+8.3
+G-Eval prompt
+You are an expert evaluator for text summarization
+systems.
+I’ll provide you with a source document and a
+summary. Your task is to evaluate how well the
+summary covers the important information in the
+source document.
+Source document: {source_text}
+Summary: {summary}
+Please evaluate the COVERAGE of this sum-
+mary on a scale of 1-5, where: 1: The summary
+misses almost all important information 2: The
+summary misses most important information 3:
+The summary covers about half of the important in-
+formation 4: The summary covers most important
+information 5: The summary covers all or almost
+all important information
+First, identify the key points in the source doc-
+ument. Then, check which of these key points are
+covered in the summary. Finally, provide your rat-
+ing and explanation.
+Your response should follow this format: Key
+points in source: [list key points] Points covered
+in summary: [list covered points] Points missing
+in summary: [list missing points] Coverage score:
+[1-5] Explanation: [your explanation]
+8.4
+Direct LLM summary vs Vec2Summ
+summary
+8.4.1
+Direct LLM summary
+The collection of texts centers on widespread de-
+bate and anxiety among politically engaged Ameri-
+cans regarding the 2020 US presidential election,
+with a particular emphasis on the unique signifi-
+cance of it being a census year. The central themes
+include concerns about Joe Biden’s candidacy, the
+Democratic Party’s prospects, and the long-term
+implications of the election for political power and
+representation.
+A major focus is the importance of the 2020
+census, which will determine congressional redis-
+tricting and potentially shape the balance of power
+
+for the next decade. Many contributors stress that
+control of state legislatures and Congress is cru-
+cial, as these bodies will oversee the redrawing of
+district maps. There is significant apprehension
+that a Republican victory in a census year could
+entrench GOP dominance through gerrymandering,
+affecting policy, representation, and the judiciary
+for years to come.
+Joe Biden is frequently discussed as the likely
+Democratic nominee. While some view him as
+a pragmatic choice to prevent further Republican
+control and protect key issues such as healthcare,
+civil rights, and the Supreme Court, others express
+skepticism about his ability to energize young, pro-
+gressive, and Latino voters. Concerns are raised
+about his record, cognitive abilities, and potential to
+depress turnout, drawing comparisons to the 2016
+election. There is also criticism of establishment
+politics and frustration with the Democratic Party’s
+strategy.
+The texts highlight the importance of down-
+ballot races, emphasizing that winning the pres-
+idency alone is insufficient; control of the Senate,
+House, and state legislatures is also necessary to
+influence redistricting and policy outcomes. Voter
+turnout, demographic shifts, and the mobilization
+of key groups—particularly young voters, African
+Americans, and Latinos—are seen as critical fac-
+tors in determining the election’s outcome.
+Additional concerns include allegations of cor-
+ruption (notably involving Hunter Biden), voter
+suppression, misinformation, and manipulation of
+both the census and the electoral process. There is
+mutual distrust between parties, with accusations
+of unethical tactics and fears of primary rigging.
+Overall, the sentiment across the texts is one
+of urgency, frustration, and strategic calculation.
+There is deep skepticism about both major candi-
+dates, but a clear recognition that the structural
+stakes of the 2020 election—especially due to
+the census and its impact on redistricting and the
+courts—make its outcome particularly consequen-
+tial for the future of American democracy and po-
+litical representation.
+8.4.2
+Vec2Summ summary
+The collection of texts presents a fragmented and
+chaotic discussion about American politics, focus-
+ing on elections, the census, and party dynamics.
+The main themes include confusion and frustra-
+tion over the electoral process, skepticism about
+the census and its impact, and criticism of both
+Democratic and Republican figures.
+There are
+repeated references to prominent politicians like
+Bernie Sanders, Joe Biden, John McCain, Barack
+Obama, Donald Trump, and others, often in contra-
+dictory or nonsensical contexts.
+The sentiment is generally negative, with expres-
+sions of distrust toward the political system, the
+census, and government institutions like the EPA
+and the Federal Reserve. There is also a sense of
+cynicism about political campaigns, polling, and
+the effectiveness of both parties. Some texts men-
+tion issues of race and representation, as well as
+concerns about economic conditions and jobless-
+ness.
+Overall, the texts reflect disillusionment, con-
+fusion, and a lack of faith in political processes,
+with scattered calls for action but little coherent
+direction. The tone is often sarcastic or mocking,
+and the content jumps between topics without clear
+resolution.
+References
+Catarina G Belém, Pouya Pezeshkpour, Hayate Iso, Seiji
+Maekawa, Nikita Bhutani, and Estevam Hruschka.
+2025. From single to multi: how LLMs hallucinate
+in multi-document summarization. In Findings of the
+Association for Computational Linguistics: NAACL
+2025, pages 5276–5309, Albuquerque, New Mexico.
+Association for Computational Linguistics.
+David M Blei. Latent dirichlet allocation. page 30.
+Eric Chu and Peter Liu. 2019. MeanSum: a neural
+model for unsupervised multi-document abstractive
+summarization. In Proceedings of the 36th Inter-
+national Conference on Machine Learning, pages
+1223–1232. PMLR.
+Kawin Ethayarajh. 2019. How Contextual are Con-
+textualized Word Representations? Comparing the
+Geometry of BERT, ELMo, and GPT-2 Embeddings.
+In Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the
+9th International Joint Conference on Natural Lan-
+guage Processing (EMNLP-IJCNLP), pages 55–65,
+Hong Kong, China. Association for Computational
+Linguistics.
+Jun Gao, Di He, Xu Tan, Tao Qin, Liwei Wang, and
+Tie-Yan Liu. 2019.
+Representation Degeneration
+Problem in Training Natural Language Generation
+Models.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. De-
+noising Diffusion Probabilistic Models.
+Byeongchang Kim, Hyunwoo Kim, and Gunhee Kim.
+2019. Abstractive summarization of reddit posts with
+multi-level memory networks.
+
+Hayato Kobayashi, Masaki Noguchi, and Taichi Yat-
+suka. 2015. Summarization Based on Embedding
+Distributions. In Proceedings of the 2015 Conference
+on Empirical Methods in Natural Language Process-
+ing, pages 1984–1989, Lisbon, Portugal. Association
+for Computational Linguistics.
+Xiang Lisa Li, John Thickstun, Ishaan Gulrajani, Percy
+Liang, and Tatsunori B. Hashimoto. 2022. Diffusion-
+LM improves controllable text generation. In Pro-
+ceedings of the 36th International Conference on
+Neural Information Processing Systems, NIPS ’22,
+pages 4328–4343, Red Hook, NY, USA. Curran As-
+sociates Inc.
+Yuxin Liang, Rui Cao, Jie Zheng, Jie Ren, and Ling Gao.
+2021. Learning to Remove: Towards Isotropic Pre-
+trained BERT Embedding. In Artificial Neural Net-
+works and Machine Learning – ICANN 2021: 30th
+International Conference on Artificial Neural Net-
+works, Bratislava, Slovakia, September 14–17, 2021,
+Proceedings, Part V, pages 448–459, Berlin, Heidel-
+berg. Springer-Verlag.
+Luying Liu, Jianchu Kang, Jing Yu, and Zhongliang
+Wang. 2005. A comparative study on unsupervised
+feature selection methods for text clustering. In 2005
+International Conference on Natural Language Pro-
+cessing and Knowledge Engineering, pages 597–601.
+Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paran-
+jape, Michele Bevilacqua, Fabio Petroni, and Percy
+Liang. 2024. Lost in the Middle: How Language
+Models Use Long Contexts. Transactions of the Asso-
+ciation for Computational Linguistics, 12:157–173.
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang,
+Ruochen Xu, and Chenguang Zhu. 2023. G-Eval:
+NLG Evaluation using Gpt-4 with Better Human
+Alignment. In Proceedings of the 2023 Conference
+on Empirical Methods in Natural Language Process-
+ing, pages 2511–2522, Singapore. Association for
+Computational Linguistics.
+Congbo Ma, Wei Emma Zhang, Mingyu Guo, Hu Wang,
+and Quan Z. Sheng. 2022. Multi-document summa-
+rization via deep learning techniques: a survey. ACM
+Comput. Surv., 55(5):102:1–102:37.
+Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey
+Dean. 2013. Efficient estimation of word representa-
+tions in vector space.
+John Morris, Volodymyr Kuleshov, Vitaly Shmatikov,
+and Alexander Rush. 2023. Text Embeddings Reveal
+(Almost) As Much As Text. In Proceedings of the
+2023 Conference on Empirical Methods in Natural
+Language Processing, pages 12448–12460, Singa-
+pore. Association for Computational Linguistics.
+Ani Nenkova and Kathleen McKeown. 2012. A survey
+of text summarization techniques. In Charu C. Ag-
+garwal and ChengXiang Zhai, editors, Mining Text
+Data, pages 43–76. Springer US, Boston, MA.
+Jianmo Ni, Chen Qu, Jing Lu, Zhuyun Dai, Gus-
+tavo Hernández Ábrego, Ji Ma, Vincent Y. Zhao,
+Yi Luan, Keith B. Hall, Ming-Wei Chang, and Yinfei
+Yang. 2021. Large Dual Encoders Are Generalizable
+Retrievers.
+Xiao Pu, Mingqi Gao, and Xiaojun Wan. 2023. Sum-
+marization is (almost) dead.
+Nils Reimers and Iryna Gurevych. 2019.
+Sentence-
+BERT: Sentence Embeddings using Siamese BERT-
+Networks. In Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natu-
+ral Language Processing (EMNLP-IJCNLP), pages
+3982–3992, Hong Kong, China. Association for Com-
+putational Linguistics.
+Abigail See, Peter J. Liu, and Christopher D. Manning.
+2017. Get to the point: summarization with pointer-
+generator networks. In Proceedings of the 55th An-
+nual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 1073–
+1083, Vancouver, Canada. Association for Computa-
+tional Linguistics.
+Dingding Wang, Shenghuo Zhu, Tao Li, and Yihong
+Gong. 2009. Multi-Document Summarization us-
+ing Sentence-based Topic Models. In Proceedings
+of the ACL-IJCNLP 2009 Conference Short Papers,
+pages 297–300, Suntec, Singapore. Association for
+Computational Linguistics.
+Wenlin Wang, Zhe Gan, Hongteng Xu, Ruiyi Zhang,
+Guoyin Wang, Dinghan Shen, Changyou Chen, and
+Lawrence Carin. 2019. Topic-Guided Variational
+Auto-Encoder for Text Generation. In Proceedings
+of the 2019 Conference of the North American Chap-
+ter of the Association for Computational Linguistics:
+Human Language Technologies, Volume 1 (Long and
+Short Papers), pages 166–177, Minneapolis, Min-
+nesota. Association for Computational Linguistics.
+Haoran Xu and Philipp Koehn. 2021. Cross-Lingual
+BERT Contextual Embedding Space Mapping with
+Isotropic and Isometric Conditions.
+Tianyi Zhang, Faisal Ladhak, Esin Durmus, Percy Liang,
+Kathleen McKeown, and Tatsunori B. Hashimoto.
+2023. Benchmarking large language models for news
+summarization.
+Zhong Zhang, Chongming Gao, Cong Xu, Rui Miao,
+Qinli Yang, and Junming Shao. 2020. Revisiting
+Representation Degeneration Problem in Language
+Modeling. In Findings of the Association for Compu-
+tational Linguistics: EMNLP 2020, pages 518–527,
+Online. Association for Computational Linguistics.
+Yaoming Zhu, Sidi Lu, Lei Zheng, Jiaxian Guo, Weinan
+Zhang, Jun Wang, and Yong Yu. 2018. Texygen: A
+Benchmarking Platform for Text Generation Models.
+In The 41st International ACM SIGIR Conference on
+Research & Development in Information Retrieval,
+SIGIR ’18, pages 1097–1100, New York, NY, USA.
+
+Association for Computing Machinery. TLDR: The
+Texygen platform could help standardize the research
+on text generation and improve the reproductivity and
+reliability of future research work in text generation.

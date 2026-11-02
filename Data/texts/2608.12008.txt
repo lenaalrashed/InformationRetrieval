@@ -1,0 +1,1373 @@
+Asymptotic Risk Calibration for Selective Question Answering
+Shufan Lin
+3240103707@zju.edu.cn
+Zhangjiang University
+Hangzhou, Zhangjiang, China
+Sijin Dong∗
+24nd305h@vc.ibaraki.ac.jp
+Ibaraki University
+Ibaraki, Japan
+Abstract
+Large language models (LLMs) may generate fluent but incorrect
+answers, making uncertainty quantification important for reliable
+question answering. However, heuristic uncertainty scores can-
+not perfectly distinguish correct predictions from incorrect ones,
+and directly applying a fixed uncertainty threshold provides no
+statistical control over the error rate among accepted answers. To
+address this limitation, we propose A-CRC-QA, a post-hoc calibra-
+tion framework for uncertainty-aware selective question answering.
+The proposed method reformulates selection-conditioned error con-
+trol as a linear expectation constraint and applies a monotonized
+empirical-risk calibration procedure inspired by conformal risk
+control. Since the resulting instance-wise loss is generally non-
+monotone with respect to the acceptance threshold, our framework
+targets asymptotic rather than finite-sample risk control. A-CRC-
+QA is model-agnostic, requires no additional training, and can be
+combined with different uncertainty estimators. Experiments on
+CoQA and MedMCQA demonstrate its applicability to both open-
+ended and closed-ended question answering, achieving a favorable
+trade-off between accepted-answer reliability and answer retention
+compared with uncalibrated and confidence-bound-based baselines.
+Keywords
+selective question answering, uncertainty quantification, risk cali-
+bration, abstention
+ACM Reference Format:
+Shufan Lin and Sijin Dong. 2018. Asymptotic Risk Calibration for Selective
+Question Answering. In Proceedings of Make sure to enter the correct con-
+ference title from your rights confirmation email (Conference acronym ’XX).
+ACM, New York, NY, USA, 9 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Large language models (LLMs) have achieved impressive perfor-
+mance in question answering and knowledge-intensive generation.
+However, their responses are not always trustworthy. LLMs may
+generate factually incorrect or hallucinated answers while present-
+ing them in a fluent and confident manner [7, 16]. This problem is
+particularly concerning in high-stakes domains such as medicine,
+∗Corresponding Author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+where users may be unable to independently verify the generated
+content. A reliable question-answering system should therefore not
+only produce an answer, but also determine when that answer is
+sufficiently reliable to be returned.
+Uncertainty quantification provides a practical signal for esti-
+mating the reliability of LLM outputs. Existing approaches use
+token probabilities, sequence likelihoods, self-evaluation, or the
+consistency of multiple sampled responses [21, 24]. For closed-
+ended question answering, predictive entropy can be calculated
+from the probability distribution over candidate options. For open-
+ended generation, semantic entropy groups semantically equivalent
+responses before measuring disagreement, while Word-Sequence
+Entropy considers the unequal uncertainty contributions of dif-
+ferent words and sequences [9, 38]. Although these methods are
+useful for ranking answers, their uncertainty scores are heuristic
+and cannot perfectly distinguish correct predictions from incorrect
+ones.
+A common solution is selective question answering, in which
+the model answers questions with low uncertainty and abstains
+from questions with high uncertainty. Nevertheless, directly choos-
+ing an uncertainty threshold does not guarantee the reliability of
+the accepted answers. The distributions of correct and incorrect
+predictions often overlap, and confidently incorrect responses may
+still receive low uncertainty scores. Consequently, an empirically
+selected threshold may perform well on one dataset but fail un-
+der another model, task, or data split. It is therefore necessary
+to statistically calibrate the uncertainty threshold according to a
+user-specified error tolerance.
+Conformal prediction offers a model-agnostic approach for con-
+verting heuristic uncertainty signals into statistically calibrated
+decisions. Existing studies have applied conformal methods to open-
+ended and set-valued language generation. ConU constructs confor-
+mal answer sets with correctness coverage guarantees, while SConU
+introduces selective mechanisms to improve the usefulness of con-
+formal uncertainty sets [36, 39]. Conformal Language Modeling
+and subsequent studies further investigate calibrated response sets,
+sampling feasibility, and miscoverage decomposition for free-form
+generation [14, 22, 27]. Related risk-calibration ideas have also been
+explored in multimodal foundation models [2, 4, 5, 18, 19, 26, 29, 34],
+medical image segmentation, and cascaded retrieval-augmented
+generation systems [17, 23, 30–33]. However, set-valued methods
+may return multiple candidates and are less suitable when the
+system must provide a single answer or abstain.
+Recent work has therefore focused on controlling the error
+rate among accepted point predictions. COIN calibrates selective
+question-answering thresholds using statistical upper confidence
+bounds and provides high-probability risk guarantees [37]. LEC
+reformulates selection-conditioned error control as a linear expec-
+tation constraint involving prediction selection and correctness,
+arXiv:2608.12008v1 [cs.CL] 12 Aug 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Lin et al.
+enabling less conservative calibration for selective prediction and
+model routing [35]. Conformal Risk Control further generalizes
+conformal prediction to the control of expected bounded losses [1].
+However, its standard finite-sample guarantee requires the loss
+to be monotone with respect to the calibration parameter. The
+LEC-style instance loss used for selective answering is generally
+non-monotone because accepting a correct answer and accepting an
+incorrect answer change the loss in opposite directions. Therefore,
+the standard finite-sample CRC result cannot be directly applied.
+In this work, we present A-CRC-QA, a lightweight asymptotic
+risk-calibration framework for uncertainty-aware selective ques-
+tion answering. The proposed method uses a held-out calibration
+set to evaluate candidate uncertainty thresholds and selects the
+largest admissible threshold satisfying an empirically corrected
+linear expectation constraint. Unlike approaches that require addi-
+tional training or modifications to the LLM, A-CRC-QA is a post-hoc
+and model-agnostic framework that can be combined with differ-
+ent LLMs and uncertainty estimators. Under exchangeability and
+standard regularity conditions, the calibrated decision rule provides
+asymptotic control of the error rate among accepted answers.
+We evaluate A-CRC-QA on CoQA and MedMCQA, representing
+open-ended conversational question answering and closed-ended
+medical multiple-choice question answering, respectively. Experi-
+ments are conducted using LLaMA-3.1-8B-Instruct and Qwen2.5-7B-
+Instruct. Semantic entropy and Word-Sequence Entropy are used
+for CoQA, while predictive entropy and maximum option probabil-
+ity are used for MedMCQA. At a target accepted-answer error rate
+of 0.15, A-CRC-QA achieves average error rates of 0.143 and 0.138
+on CoQA and MedMCQA, while retaining 46.2% and 58.7% of test
+answers, respectively. Compared with a Hoeffding-based upper-
+confidence-bound method, the proposed approach improves the
+acceptance rate by approximately 6.1 percentage points on CoQA
+and 7.4 percentage points on MedMCQA.
+The main contributions of this work are summarized as follows:
+• We formulate uncertainty-aware selective question answer-
+ing as the problem of controlling the error rate among ac-
+cepted LLM responses.
+• We combine the linear expectation constraint used in LEC
+with the asymptotic treatment of non-monotone losses in
+conformal risk control, resulting in a simple post-hoc threshold-
+calibration method.
+• We evaluate the proposed framework on both open-ended
+and closed-ended question answering tasks, demonstrating
+its applicability across different models and uncertainty sig-
+nals.
+2
+Related Work
+2.1
+Uncertainty Quantification for Large
+Language Models
+Large language models (LLMs) can generate fluent but factually
+incorrect responses [3, 6, 15, 38, 40, 41], which limits their reliabil-
+ity in question answering and other knowledge-intensive applica-
+tions. Uncertainty quantification (UQ) aims to associate each gen-
+erated answer with a scalar signal indicating its potential correct-
+ness or reliability [11]. Existing approaches can be broadly divided
+into confidence-based and consistency-based methods. Confidence-
+based methods estimate reliability using token probabilities, se-
+quence likelihoods, or explicit self-evaluation scores such as the
+probability that a generated answer is correct [21]. However, likelihood-
+based confidence may be poorly aligned with semantic correctness,
+particularly for free-form answers with multiple valid surface forms.
+Sampling-based methods instead estimate uncertainty from the
+agreement among multiple stochastic generations. SelfCheckGPT
+detects hallucinations by measuring the consistency between an
+original response and additional sampled responses [24]. Semantic
+entropy further groups semantically equivalent generations before
+computing entropy, thereby reducing sensitivity to lexical varia-
+tion [9]. Word-Sequence Entropy extends this direction by account-
+ing for the unequal contributions of different words and sequences
+when estimating uncertainty in free-form question answering [38].
+These methods provide useful ranking signals for identifying unre-
+liable answers. Nevertheless, an uncertainty score alone does not
+specify an operational acceptance threshold, nor does it guaran-
+tee that the error rate among accepted answers remains below a
+user-defined level.
+2.2
+Conformal Calibration and Selective Risk
+Control
+Conformal prediction provides model-agnostic statistical guaran-
+tees by calibrating prediction sets on held-out data. Its applications
+to language generation have mainly focused on set-valued outputs.
+Conformal Language Modeling calibrates sampling and filtering
+rules to construct candidate response sets containing an acceptable
+answer with high probability [27]. ConU establishes correctness
+coverage guarantees for open-ended LLM outputs, while SConU in-
+troduces selective mechanisms to improve the informativeness and
+feasibility of conformal uncertainty sets [36, 39]. Recent studies fur-
+ther address miscoverage decomposition, sampling feasibility, and
+reliable set-valued generation [14, 22]. Related conformal frame-
+works have also been developed for multimodal foundation models,
+medical image segmentation, and cascaded retrieval-augmented
+generation systems [17, 30, 33]. Although prediction sets provide
+coverage guarantees, they may contain multiple or unreliable can-
+didates and are less actionable when a system must return one
+answer or abstain.
+Selective prediction provides an alternative decision mechanism
+by accepting low-uncertainty outputs and abstaining from high-
+uncertainty ones [12, 20]. Classical approaches characterize the
+trade-off between selective risk and coverage, or jointly train pre-
+diction and rejection functions [10]. However, their acceptance
+thresholds do not generally provide distribution-free control of
+the error rate among accepted predictions. Conformal Risk Con-
+trol (CRC) extends conformal prediction from miscoverage to the
+expected value of bounded monotone losses [1]. For selective ques-
+tion answering, COIN calibrates uncertainty thresholds using up-
+per confidence bounds, providing high-probability control of the
+accepted-answer error rate [37]. More recently, LEC reformulates
+selection-conditioned error control as a linear expectation con-
+straint involving the selection and error indicators, enabling less
+conservative threshold calibration and extensions to model rout-
+ing [35].
+
+Asymptotic Risk Calibration for Selective Question Answering
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Our work connects CRC with the LEC-style linear loss for uncertainty-
+based selective question answering. Unlike standard CRC appli-
+cations, the resulting sample-wise loss can be non-monotone in
+the acceptance threshold because admitting a correct answer de-
+creases the loss whereas admitting an incorrect answer increases it.
+Consequently, the standard finite-sample CRC theorem cannot be
+directly applied. We instead study threshold calibration under the
+asymptotic treatment of non-monotone, approximately monotone
+population risks, providing a lightweight post-hoc mechanism for
+controlling the error rate of accepted LLM answers.
+3
+Methodology
+3.1
+Problem Formulation
+Let G : X →Y denote a pretrained large language model. Given
+a question 𝑥∈X, the model produces an answer ˆ𝑦= G(𝑥). We
+consider a scalar uncertainty estimator U that assigns an uncer-
+tainty score 𝑢= U(𝑥, ˆ𝑦; G), where a smaller value indicates that
+the model is more confident in its answer. The uncertainty estima-
+tor may be based on predictive entropy, semantic entropy, sequence
+likelihood, self-consistency, or any other scalar reliability signal.
+For notational convenience, we convert uncertainty into a relia-
+bility score 𝑟= ℎ(𝑢), where ℎis any strictly decreasing function.
+For example, one may directly use 𝑟= −𝑢. This transformation
+changes neither the ordering of model predictions nor the resulting
+selective decision.
+Let 𝑦∗denote the reference answer. We define a task-specific
+correctness function 𝐴(𝑦∗, ˆ𝑦) ∈{0, 1}, where 𝐴(𝑦∗, ˆ𝑦) = 1 indicates
+that the generated answer is correct and 𝐴(𝑦∗, ˆ𝑦) = 0 otherwise.
+The corresponding error indicator is 𝐸= 1 −𝐴(𝑦∗, ˆ𝑦). For closed-
+ended question answering, correctness can be determined by exact
+option matching. For open-ended question answering, it can be
+determined using a fixed token-level or semantic-equivalence cri-
+terion. Importantly, the correctness rule must be specified before
+calibration and remain unchanged during evaluation.
+Given a reliability threshold 𝜆, the selective question-answering
+system accepts an answer if its reliability is sufficiently high:
+𝑆(𝜆) = 1{𝑟≥𝜆}.
+(1)
+A larger 𝜆corresponds to a more conservative system that accepts
+fewer answers.
+The error rate among accepted answers is defined as
+SCER(𝜆) = Pr 𝐸= 1 | 𝑆(𝜆) = 1 = E[𝑆(𝜆)𝐸]
+E[𝑆(𝜆)] ,
+(2)
+whenever E[𝑆(𝜆)] > 0. We refer to this quantity as the selection-
+conditioned error rate (SCER). Given a user-specified risk level 𝛼∈
+(0, 1), our objective is to select a threshold that retains as many
+answers as possible while satisfying
+SCER(𝜆) ≤𝛼.
+(3)
+3.2
+Linear Expectation Reformulation
+Directly calibrating the conditional risk in Eq. (2) is difficult because
+both its numerator and denominator depend on the selected thresh-
+old. Following the linear expectation constraint formulation in [35],
+we define the accepted-error indicator 𝑍(𝜆) = 𝑆(𝜆)𝐸. The condition
+in Eq. (3) is equivalent to E[𝑍(𝜆)] −𝛼E[𝑆(𝜆)] ≤0, provided that
+E[𝑆(𝜆)] > 0. Therefore, we introduce the instance-wise linear loss
+𝐿(𝜆) = 𝑆(𝜆)(𝐸−𝛼).
+(4)
+Its population risk is
+𝑔(𝜆) = E[𝐿(𝜆)] = E[𝑆(𝜆)𝐸] −𝛼E[𝑆(𝜆)].
+(5)
+Consequently,
+𝑔(𝜆) ≤0
+⇐⇒
+SCER(𝜆) ≤𝛼,
+(6)
+as long as the selection probability is positive.
+The loss in Eq. (4) is bounded:
+−𝛼≤𝐿(𝜆) ≤1 −𝛼.
+(7)
+This boundedness makes the loss suitable for calibration using the
+general risk-control perspective of conformal prediction [1].
+3.3
+Non-Monotonicity of the Selective Loss
+A key difficulty is that the loss in Eq. (4) is not monotone with
+respect to the selection threshold. Consider increasing 𝜆until a
+previously accepted example is rejected. If that example is correct,
+its contribution changes from −𝛼to zero, which increases the loss.
+If the example is incorrect, its contribution changes from 1 −𝛼to
+zero, which decreases the loss. Thus, correct and incorrect examples
+change the loss in opposite directions.
+Formally, for two thresholds 𝜆1 < 𝜆2, neither 𝐿(𝜆1) ≤𝐿(𝜆2) nor
+𝐿(𝜆1) ≥𝐿(𝜆2) holds uniformly over all examples. The standard
+finite-sample result of Conformal Risk Control (CRC) requires the
+loss to be monotone in the calibration parameter [1]. It therefore
+cannot be directly applied to the loss in Eq. (4).
+Rather than imposing an incorrect monotonicity assumption, we
+adopt the asymptotic treatment of general non-monotone losses
+proposed in CRC. The central idea is to monotonize the empirical
+population-level risk instead of assuming that each instance-wise
+loss is monotone.
+3.4
+Monotonized Empirical Risk
+Let Dcal = {(𝑥𝑖,𝑦∗
+𝑖)}𝑛
+𝑖=1 be a held-out calibration set. For each cali-
+bration example, we obtain the model answer ˆ𝑦𝑖, reliability score 𝑟𝑖,
+and error indicator 𝐸𝑖. For a candidate threshold 𝜆, the empirical
+linear risk is
+b𝑔𝑛(𝜆) = 1
+𝑛
+𝑛
+∑︁
+𝑖=1
+𝑆𝑖(𝜆)(𝐸𝑖−𝛼).
+(8)
+Although b𝑔𝑛(𝜆) is generally non-monotone, thresholds larger
+than 𝜆correspond to more conservative selection rules. We there-
+fore define the monotonized empirical risk as
+b𝑔↑
+𝑛(𝜆) = sup
+𝑡≥𝜆
+b𝑔𝑛(𝑡).
+(9)
+By construction, b𝑔↑
+𝑛(𝜆) is non-increasing in 𝜆. Moreover, b𝑔𝑛(𝜆) ≤
+b𝑔↑
+𝑛(𝜆), so the monotonized risk is an upper envelope of the original
+empirical risk.
+Intuitively, requiring b𝑔↑
+𝑛(𝜆) ≤0 ensures that the empirical linear
+constraint is satisfied not only at 𝜆, but also at every more conser-
+vative threshold. This removes isolated feasible thresholds caused
+by random fluctuations in the calibration data.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Lin et al.
+3.5
+Asymptotic Risk Calibration
+We define a non-negative calibration correction 𝛾𝑛satisfying
+𝛾𝑛→0
+as
+𝑛→∞.
+Following the finite-sample correction used in CRC, our default
+choice is
+𝛾𝑛= 1 −𝛼
+𝑛+ 1,
+(10)
+where 1 −𝛼is the upper bound of the loss in Eq. (7). This term adds
+a small conservative margin for finite calibration samples while
+vanishing asymptotically.
+The calibrated threshold is defined as
+b𝜆𝑛= inf
+n
+𝜆∈Λ : b𝑔↑
+𝑛(𝜆) + 𝛾𝑛≤0
+o
+.
+(11)
+Since a smaller reliability threshold accepts more answers, Eq. (11)
+selects the least conservative threshold satisfying the monotonized
+constraint. It therefore maximizes empirical retention within the
+feasible threshold family.
+If the feasible set in Eq. (11) is empty, the requested risk level is
+declared infeasible. In this case, the system uses an all-abstention
+rule, denoted by 𝜆⊥, for which
+𝑆𝑖(𝜆⊥) = 0
+for all 𝑖.
+The resulting conditional risk is vacuous because no answer is
+returned.
+3.6
+Efficient Threshold Computation
+The empirical risk changes only when the threshold crosses an
+observed calibration score. Therefore, it is sufficient to search over
+the unique reliability scores in the calibration set.
+Let 𝑟(1) ≥𝑟(2) ≥· · · ≥𝑟(𝑛) denote the calibration reliability
+scores sorted in descending order, with corresponding error indica-
+tors 𝐸(1), . . . , 𝐸(𝑛). A threshold at 𝑟(𝑘) accepts the first 𝑘calibration
+examples. Its empirical linear risk is
+𝐶𝑘= 1
+𝑛
+𝑘
+∑︁
+𝑗=1
+ 𝐸(𝑗) −𝛼 .
+(12)
+The monotonized risk at this threshold is the prefix maximum
+𝑀𝑘= max
+1≤𝑗≤𝑘𝐶𝑗.
+(13)
+The calibrated number of accepted calibration examples is therefore
+𝑘∗= max {𝑘∈{1, . . . ,𝑛} : 𝑀𝑘+ 𝛾𝑛≤0} .
+(14)
+When this set is nonempty, the calibrated threshold is b𝜆𝑛= 𝑟(𝑘∗).
+Equal reliability scores are processed as a single block so that the
+resulting selection rule is deterministic and does not use correctness
+labels to break ties.
+3.7
+Asymptotic Risk Guarantee
+We now state the asymptotic guarantee of the proposed procedure.
+The result follows by applying the monotonized non-monotone
+risk argument of CRC to the linear loss in Eq. (4).
+Theorem 1 (Asymptotic SCER control). Assume that the cali-
+bration examples and a future test example are independently and
+identically distributed. Assume that the loss functions {𝐿𝑖(𝜆) : 𝜆∈Λ}
+are bounded and right-continuous under a fixed deterministic tie con-
+vention. Let 𝛾𝑛≥0 satisfy 𝛾𝑛→0, and let b𝜆𝑛be obtained from
+Eq. (11). Then
+lim sup
+𝑛→∞
+E
+h
+𝐿𝑛+1(b𝜆𝑛)
+i
+≤0.
+(15)
+Equivalently,
+lim sup
+𝑛→∞
+n
+E
+h
+𝑆𝑛+1(b𝜆𝑛)𝐸𝑛+1
+i
+−𝛼E
+h
+𝑆𝑛+1(b𝜆𝑛)
+io
+≤0.
+(16)
+Furthermore, if
+lim inf
+𝑛→∞E
+h
+𝑆𝑛+1(b𝜆𝑛)
+i
+> 0,
+(17)
+then
+lim sup
+𝑛→∞
+E
+h
+𝑆𝑛+1(b𝜆𝑛)𝐸𝑛+1
+i
+E
+h
+𝑆𝑛+1(b𝜆𝑛)
+i
+≤𝛼.
+(18)
+Proof sketch. Define the monotonized population risk as 𝑔↑(𝜆) =
+sup𝑡≥𝜆𝑔(𝑡). Because the test example is independent of the cal-
+ibration set, E
+h
+𝐿𝑛+1(b𝜆𝑛) | b𝜆𝑛
+i
+= 𝑔(b𝜆𝑛) ≤𝑔↑(b𝜆𝑛). The class of
+one-dimensional threshold functions is a Glivenko–Cantelli class.
+Boundedness therefore implies uniform convergence of the em-
+pirical risk to the population risk: sup𝜆∈Λ |b𝑔𝑛(𝜆) −𝑔(𝜆)|
+a.s.
+−−→0.
+Taking a supremum over more conservative thresholds preserves
+this convergence: sup𝜆∈Λ
+b𝑔↑
+𝑛(𝜆) −𝑔↑(𝜆)
+
+a.s.
+−−→0. By construction,
+b𝑔↑
+𝑛(b𝜆𝑛) ≤−𝛾𝑛≤0. Since 𝛾𝑛→0, uniform convergence and bound-
+edness yield Eq. (15). Substituting the definition of 𝐿gives Eq. (16);
+dividing by the non-vanishing expected selection probability gives
+Eq. (18).
+□
+Remark 1 (Scope of the guarantee). Theorem 1 is an asymp-
+totic marginal guarantee over the joint randomness of the calibration
+set and a future test example. Because the instance-wise linear loss is
+non-monotone, the result should not be presented as a finite-sample or
+conditional-on-calibration guarantee. Finite-sample validity must in-
+stead be empirically assessed through repeated calibration–test splits
+and risk-violation frequencies.
+3.8
+Test-Time Selective Answering
+After calibration, b𝜆𝑛is fixed and no test labels are used. For a
+new question 𝑥test, the model first generates an answer ˆ𝑦test and
+computes its uncertainty 𝑢test. The corresponding reliability score
+is 𝑟test = ℎ(𝑢test). The final decision is
+Decision(𝑥test) =
+
+
+accept ˆ𝑦test,
+𝑟test ≥b𝜆𝑛,
+abstain,
+𝑟test < b𝜆𝑛.
+(19)
+The proposed procedure is entirely post-hoc. It does not require
+retraining or modifying the underlying language model, and it can
+be applied to both white-box and black-box uncertainty estimators
+as long as they provide a scalar score for each generated answer.
+4
+Experiments
+4.1
+Experimental Setup
+Datasets. We consider one open-ended and one closed-ended QA
+benchmark. CoQA is a conversational question-answering dataset
+that requires models to generate free-form textual answers based
+
+Asymptotic Risk Calibration for Selective Question Answering
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+on a passage and dialogue history [28]. MedMCQA is a large-scale
+medical multiple-choice benchmark covering multiple subjects and
+levels of medical knowledge [25]. These two datasets allow us
+to evaluate whether the calibration framework generalizes across
+substantially different output spaces and correctness criteria.
+Language Models. We use LLaMA-3.1-8B-Instruct and Qwen2.5-
+7B-Instruct as representative open-source LLMs. The former pro-
+vides a widely used general-purpose instruction-following model,
+while the latter offers a complementary model family with strong
+multilingual and reasoning capabilities. No model is fine-tuned on
+the evaluation datasets.
+Answer Generation and Correctness Evaluation. For CoQA, the pri-
+mary answer is generated using greedy decoding with a maximum
+of 64 new tokens. Following the standard token-level evaluation
+protocol, the generated answer is compared with all available ref-
+erence answers. We regard an answer as correct if its maximum
+token-level F1 score is at least 0.5. This threshold is fixed before
+calibration and is not selected using test data.
+For MedMCQA, the model is instructed to return one option
+from A, B, C, and D. We compute the normalized likelihood of each
+candidate option and select the option with the largest probability.
+A prediction is correct if and only if the selected option matches
+the ground-truth label.
+Uncertainty Estimators. We use two uncertainty signals for each
+dataset. For CoQA, we adopt Semantic Entropy (SemEnt), which
+aggregates semantically equivalent sampled responses before com-
+puting their entropy [9], and Word-Sequence Entropy (WSE), which
+considers the unequal semantic contributions of tokens and word
+sequences [38]. For each question, we sample ten responses using
+temperature 0.7 and top-𝑝sampling with 𝑝= 0.9.
+For MedMCQA, we use Predictive Entropy (PE) over the four
+candidate options and maximum-softmax-probability uncertainty
+(MSP), defined as one minus the largest option probability. Smaller
+uncertainty indicates a more reliable prediction for all evaluated
+estimators.
+Compared Methods. We compare the following threshold-selection
+methods.
+• Fixed-50: The threshold is set to the median calibration
+uncertainty, thereby accepting approximately 50% of calibra-
+tion predictions without explicit risk control.
+• Empirical: The largest threshold whose empirical calibra-
+tion SCER does not exceed 𝛼is selected. No statistical cor-
+rection or monotonization is applied.
+• UCB-HFD: A Hoeffding-style upper confidence bound is
+constructed for the error rate among accepted calibration
+predictions [13]. We use confidence level 𝛿= 0.05.
+• UCB-CLP: The exact one-sided Clopper–Pearson confidence
+bound is used instead of the Hoeffding bound [8]. This base-
+line corresponds to the confidence-bound calibration strat-
+egy used in selective QA methods such as COIN [37].
+• LEC-Direct: The largest threshold satisfying the original
+finite-sample linear expectation condition in LEC is selected [35].
+• A-CRC-QA (Ours): The proposed method applies the CRC-
+style correction to the monotonized empirical linear risk
+described in Section 3.
+All calibration methods operate on identical model outputs, un-
+certainty scores, error labels, and calibration–test splits. The model
+predictions and uncertainty scores are generated once and reused
+across methods to ensure a fair comparison.
+Evaluation Metrics. We report the following metrics over 100
+independent calibration–test splits.
+• SCER: The proportion of erroneous predictions among ac-
+cepted test predictions.
+• Acceptance Rate (AR): The proportion of all test predic-
+tions accepted by the selective system.
+• Power: The proportion of correct test predictions that are
+accepted.
+• Violation Rate (VR): The proportion of random splits for
+which the observed test SCER exceeds the target level 𝛼.
+• Infeasibility Rate (IF): The proportion of splits for which
+no nonempty threshold satisfies the calibration condition.
+• AUROC: The area under the ROC curve when uncertainty
+is used to distinguish incorrect from correct predictions.
+SCER evaluates average risk control, whereas VR measures the
+stability of the calibrated rule across different calibration samples.
+Because the theoretical result of A-CRC-QA is asymptotic and
+marginal, VR is reported as an empirical diagnostic rather than as
+a theoretically controlled quantity.
+Unless otherwise specified, the target risk level is 𝛼= 0.15. We
+report means over random splits, with standard deviations included
+in the calibration-size experiment.
+4.2
+Main Results
+Table 1 reports the main results at 𝛼= 0.15. Fixed-50 and Empirical
+calibration frequently exceed the prescribed risk level because they
+do not account for calibration uncertainty. In particular, their viola-
+tion rates range from 61% to 93%, demonstrating that an uncertainty
+ranking alone is insufficient for reliable selective answering.
+Both confidence-bound methods maintain conservative test risks,
+but their acceptance rates are substantially lower. Averaged over
+the two models, A-CRC-QA improves the acceptance rate over
+UCB-CLP by 7.2 percentage points on CoQA and 7.4 percentage
+points on MedMCQA. The improvement is also reflected in power,
+indicating that the additional accepted answers are predominantly
+correct.
+LEC-Direct achieves the highest retention among the statistically
+calibrated methods. However, its threshold is more sensitive to local
+non-monotonic fluctuations in the empirical risk curve. Compared
+with LEC-Direct, A-CRC-QA reduces the average violation rate
+from 25.5% to 12.5% on CoQA and from 19.0% to 8.0% on MedMCQA,
+at the cost of approximately 3.3 percentage points in acceptance rate.
+These results suggest that empirical-risk monotonization provides
+a useful stability– retention trade-off.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Lin et al.
+0.05
+0.10
+0.15
+0.20
+0.25
+Target risk level α
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+Test SCER
+CoQA
+Empirical
+UCB-HFD
+UCB-CLP
+LEC-Direct
+A-CRC-QA
+Target risk
+(a) CoQA: test SCER.
+0.05
+0.10
+0.15
+0.20
+0.25
+Target risk level α
+0
+20
+40
+60
+80
+100
+Acceptance rate (\%)
+CoQA
+Empirical
+UCB-HFD
+UCB-CLP
+LEC-Direct
+A-CRC-QA
+(b) CoQA: acceptance rate.
+0.05
+0.10
+0.15
+0.20
+0.25
+Target risk level α
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+Test SCER
+MedMCQA
+Empirical
+UCB-HFD
+UCB-CLP
+LEC-Direct
+A-CRC-QA
+Target risk
+(c) MedMCQA: test SCER.
+0.05
+0.10
+0.15
+0.20
+0.25
+Target risk level α
+0
+20
+40
+60
+80
+100
+Acceptance rate (\%)
+MedMCQA
+Empirical
+UCB-HFD
+UCB-CLP
+LEC-Direct
+A-CRC-QA
+(d) MedMCQA: acceptance rate.
+Figure 1: Risk control and acceptance-rate trade-offs across target risk levels. Curves show the mean over repeated calibration–
+test splits, and shaded regions denote one standard deviation.
+Table 1: Main results at target risk 𝛼= 0.15. SCER is reported
+as a proportion; AR, Power, and VR are percentages. Lower
+SCER and VR are preferred, while higher AR and Power are
+preferred.
+Dataset
+Model
+Method
+SCER
+AR
+Power
+VR
+CoQA
+LLaMA-3.1-8B
+Fixed-50
+0.168
+50.0
+61.0
+79
+Empirical
+0.166
+55.8
+68.2
+67
+UCB-HFD
+0.111
+30.1
+39.2
+1
+UCB-CLP
+0.126
+35.4
+45.4
+3
+LEC-Direct
+0.148
+45.8
+57.2
+27
+A-CRC-QA
+0.145
+42.6
+53.4
+14
+Qwen2.5-7B
+Fixed-50
+0.156
+50.0
+59.1
+68
+Empirical
+0.161
+61.4
+72.1
+61
+UCB-HFD
+0.108
+36.4
+45.5
+0
+UCB-CLP
+0.122
+42.7
+52.5
+2
+LEC-Direct
+0.147
+53.2
+63.6
+24
+A-CRC-QA
+0.141
+49.8
+59.9
+11
+MedMCQA
+LLaMA-3.1-8B
+Fixed-50
+0.191
+50.0
+69.9
+93
+Empirical
+0.170
+62.0
+88.9
+72
+UCB-HFD
+0.103
+41.2
+63.8
+0
+UCB-CLP
+0.119
+47.8
+72.7
+2
+LEC-Direct
+0.146
+58.7
+86.6
+20
+A-CRC-QA
+0.139
+55.3
+82.2
+9
+Qwen2.5-7B
+Fixed-50
+0.174
+50.0
+67.3
+88
+Empirical
+0.164
+66.5
+90.5
+65
+UCB-HFD
+0.102
+48.6
+71.1
+0
+UCB-CLP
+0.116
+54.9
+79.0
+1
+LEC-Direct
+0.145
+65.2
+90.8
+18
+A-CRC-QA
+0.137
+62.1
+87.3
+7
+4.3
+Performance across Target Risk Levels
+Table 2 evaluates A-CRC-QA under target risk levels from 0.05 to
+0.25. The reported results are averaged over the two models using
+WSE on CoQA and PE on MedMCQA.
+The empirical SCER remains below the target level across all
+settings. As expected, increasing 𝛼permits the system to accept
+more answers and substantially improves power. For example, the
+average acceptance rate on CoQA increases from 11.6% at 𝛼= 0.05
+to 78.6% at 𝛼= 0.25.
+Very small risk levels can be infeasible when the base model
+does not produce a sufficiently reliable low-uncertainty subset. At
+𝛼= 0.05, the infeasibility rates are 16% on CoQA and 22% on
+MedMCQA. This observation is important in practice: calibration
+Table 2: Performance of A-CRC-QA across target risk levels,
+averaged over the two evaluated models. AR, Power, VR, and
+IF are reported as percentages.
+Dataset
+𝛼
+SCER
+AR
+Power
+VR
+IF
+CoQA
+0.05
+0.043
+11.6
+15.9
+12
+16
+0.10
+0.093
+28.4
+36.9
+13
+3
+0.15
+0.143
+46.2
+56.7
+13
+0
+0.20
+0.192
+64.1
+74.2
+13
+0
+0.25
+0.241
+78.6
+85.5
+14
+0
+MedMCQA
+0.05
+0.044
+9.8
+15.7
+10
+22
+0.10
+0.093
+34.7
+52.8
+9
+4
+0.15
+0.138
+58.7
+84.8
+8
+0
+0.20
+0.188
+70.5
+96.0
+9
+0
+0.25
+0.236
+76.5
+98.0
+10
+0
+cannot create reliable answers when the underlying model and
+uncertainty signal do not support the requested operating point.
+4.4
+Robustness to Uncertainty Estimators
+Table 3 compares different uncertainty signals at 𝛼= 0.15. All
+uncertainty estimators support average risk control after calibra-
+tion, showing that A-CRC-QA does not depend on one particular
+definition of uncertainty.
+Nevertheless, uncertainty quality strongly affects retention. On
+CoQA, WSE achieves higher AUROC and accepts approximately
+four percentage points more answers than Semantic Entropy. On
+MedMCQA, PE consistently outperforms MSP. These results con-
+firm that calibration and uncertainty estimation play complemen-
+tary roles: calibration specifies a statistically meaningful operat-
+ing point, whereas a more discriminative uncertainty estimator
+increases the number of answers that can be safely accepted.
+4.5
+Effect of Calibration-Set Size
+Because A-CRC-QA provides an asymptotic rather than an exact
+finite-sample guarantee, calibration-set size is a central experimen-
+tal variable. We vary the number of calibration examples from 100
+
+Asymptotic Risk Calibration for Selective Question Answering
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 3: Robustness of A-CRC-QA to different uncertainty
+estimators at 𝛼= 0.15.
+Dataset
+Model
+UQ
+AUROC
+SCER
+AR
+Power
+CoQA
+LLaMA-3.1-8B
+SemEnt
+0.691
+0.144
+39.1
+49.1
+WSE
+0.735
+0.145
+42.6
+53.4
+Qwen2.5-7B
+SemEnt
+0.724
+0.142
+46.3
+55.6
+WSE
+0.762
+0.141
+49.8
+59.9
+MedMCQA
+LLaMA-3.1-8B
+MSP
+0.719
+0.140
+51.4
+76.4
+PE
+0.746
+0.139
+55.3
+82.2
+Qwen2.5-7B
+MSP
+0.756
+0.138
+58.8
+82.6
+PE
+0.781
+0.137
+62.1
+87.3
+Table 4: Effect of calibration-set size at 𝛼= 0.15. SCER is
+shown as mean ± standard deviation over random splits.
+Dataset
+𝑛cal
+SCER
+AR
+VR
+IF
+CoQA
+100
+0.127 ± 0.036
+30.8
+26
+8
+250
+0.135 ± 0.027
+37.2
+21
+3
+500
+0.139 ± 0.021
+41.8
+17
+1
+1,000
+0.143 ± 0.016
+46.2
+13
+0
+1,500
+0.145 ± 0.013
+48.0
+12
+0
+MedMCQA
+100
+0.124 ± 0.032
+42.1
+20
+5
+250
+0.131 ± 0.024
+49.7
+16
+1
+500
+0.135 ± 0.019
+54.3
+12
+0
+1,000
+0.138 ± 0.014
+58.7
+8
+0
+1,500
+0.141 ± 0.012
+60.2
+8
+0
+to 1,500 while fixing 𝛼= 0.15. The remaining examples are used
+for testing, and results are averaged over the two models.
+As shown in Table 4, small calibration sets yield conservative
+thresholds and relatively high variability. As the calibration size
+increases, the finite-sample correction becomes smaller, the aver-
+age SCER approaches the target level from below, and the system
+accepts more predictions. On CoQA, the acceptance rate increases
+from 30.8% with 100 calibration examples to 48.0% with 1,500 ex-
+amples. At the same time, the violation rate decreases from 26% to
+12%.
+These trends are consistent with the asymptotic motivation of the
+method. However, the nonzero violation frequencies also confirm
+that the procedure should not be described as providing conditional
+or high-probability finite-sample risk control.
+4.6
+Ablation Study
+We conduct an ablation study to isolate the effects of the two main
+components of A-CRC-QA.
+• Without monotonization directly selects the largest thresh-
+old satisfying the corrected empirical constraint at that thresh-
+old.
+• Without correction uses the monotonized empirical risk
+but removes the vanishing finite-sample correction.
+Table 5: Ablation study at 𝛼= 0.15, averaged over the two
+evaluated models.
+Dataset
+Variant
+SCER
+AR
+VR
+CoQA
+Without monotonization
+0.164
+55.7
+65
+Without correction
+0.151
+49.4
+41
+Instance-wise envelope
+0.073
+12.8
+0
+Full A-CRC-QA
+0.143
+46.2
+13
+MedMCQA
+Without monotonization
+0.171
+69.4
+72
+Without correction
+0.154
+61.5
+46
+Instance-wise envelope
+0.068
+18.9
+0
+Full A-CRC-QA
+0.138
+58.7
+8
+• Instance-wise envelope replaces each non-monotone in-
+stance loss with its monotone upper envelope before averag-
+ing, corresponding to the direct finite-sample construction
+for general losses discussed in CRC [1].
+Table 5 shows that removing monotonization produces the largest
+acceptance rate but fails to maintain the target risk. Removing the
+correction leads to average SCER values close to or above 𝛼and
+substantially increases the violation rate. In contrast, monotonizing
+each instance-wise loss is extremely conservative, accepting fewer
+than 20% of predictions on both datasets. The full method provides a
+more useful compromise between retention and empirical stability.
+4.7
+Discussion
+The experiments provide three main observations. First, uncali-
+brated uncertainty thresholds do not reliably control the error rate
+among accepted answers, even when uncertainty has reasonable
+error-discrimination ability. Second, confidence-bound-based cal-
+ibration provides strong finite-sample conservativeness but may
+reject many correct predictions. Third, monotonizing the empir-
+ical linear risk reduces sensitivity to isolated feasible thresholds
+and provides a practical middle ground between the aggressive
+LEC-Direct rule and conservative UCB methods.
+The results should nevertheless be interpreted according to the
+scope of the theory. A-CRC-QA targets asymptotic marginal risk
+control and does not guarantee that every realized calibration split
+will satisfy the target risk. Therefore, average SCER should al-
+ways be reported together with violation rate, infeasibility rate,
+and calibration-size sensitivity. This reporting protocol prevents
+an average-risk guarantee from being incorrectly presented as a
+high-probability finite-sample guarantee.
+5
+Conclusion
+In this paper, we studied uncertainty-aware selective question an-
+swering for large language models. Since uncertainty scores cannot
+perfectly distinguish correct from incorrect answers, we proposed
+A-CRC-QA, a post-hoc calibration framework that combines the
+linear expectation constraint of LEC with the asymptotic treatment
+of non-monotone losses in conformal risk control. The method cali-
+brates an uncertainty threshold using held-out data and selectively
+accepts model answers under a user-specified target risk.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Lin et al.
+Experiments on CoQA and MedMCQA show that the proposed
+framework can maintain low error rates among accepted answers
+while retaining more predictions than conservative confidence-
+bound baselines. The results also demonstrate its applicability
+across open-ended and closed-ended QA, different language models,
+and multiple uncertainty estimators. Future work will investigate
+finite-sample guarantees, distribution shift, and extensions to multi-
+model routing and human–AI collaboration.
+References
+[1] Anastasios Nikolas Angelopoulos, Stephen Bates, Adam Fisch, Lihua Lei, and Tal
+Schuster. 2024. Conformal Risk Control. In The Twelfth International Conference
+on Learning Representations.
+[2] Aniri, Jinhe Bi, Peng Liao, Zengjie Jin, Volker Tresp, Fei Shen, Yunpu Ma, and
+Tat-Seng Chua. 2026. OPD-V: Visual On-Policy Self-Distillation with Modality
+Balance. arXiv:2608.05131 [cs.CV] https://arxiv.org/abs/2608.05131
+[3] Jinhe Bi, Aniri, Minglai Yang, Xingcheng Zhou, Wenke Huang, Sikuan Yan, Yujun
+Wang, Zixuan Cao, Michael Färber, Xun Xiao, Volker Tresp, and Yunpu Ma. 2026.
+EchoRL: Reinforcement Learning via Rollout Echoing. In Forty-third International
+Conference on Machine Learning. https://openreview.net/forum?id=A6az59SGtF
+[4] Jinhe Bi, Yujun Wang, Haokun Chen, Xun Xiao, Artur Hecker, Volker Tresp, and
+Yunpu Ma. 2025. LLaVA Steering: Visual Instruction Tuning with 500x Fewer
+Parameters through Modality Linear Representation-Steering. In Proceedings of
+the 63rd Annual Meeting of the Association for Computational Linguistics (Volume
+1: Long Papers), Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Moham-
+mad Taher Pilehvar (Eds.). Association for Computational Linguistics, Vienna,
+Austria, 15230–15250. https://aclanthology.org/2025.acl-long.739/
+[5] Jinhe Bi, Yifan Wang, Danqi Yan, Xun Xiao, Artur Hecker, Volker Tresp, and
+Yunpu Ma. 2025. PRISM: Self-Pruning Intrinsic Selection Method for Training-
+Free Multimodal Data Selection.
+ArXiv abs/2502.12119 (2025).
+https://api.
+semanticscholar.org/CorpusID:276421326
+[6] Jinhe Bi, Danqi Yan, Yifan Wang, Wenke Huang, Haokun Chen, Guancheng
+Wan, Mang Ye, Xun Xiao, Hin rich Schuetze, Volker Tresp, and Yunpu Ma. 2025.
+CoT-Kinetics: A Theoretical Modeling Assessing LRM Reasoning Process. ArXiv
+abs/2505.13408 (2025). https://api.semanticscholar.org/CorpusID:278769227
+[7] Jinhe Bi, Chennan Zhou, Zengjie Jin, Aniri, Shuo Lu, Wenke Huang, Hu Cao, Xun
+Xiao, Zhihong Zhu, Volker Tresp, Fei Shen, Yunpu Ma, and Tat-Seng Chua. 2026.
+ReflectRL: Learning from Golden Negative Trajectories via Reflective-to-Direct
+Reasoning. arXiv:2608.03972 [cs.AI] https://arxiv.org/abs/2608.03972
+[8] Charles J Clopper and Egon S Pearson. 1934. The use of confidence or fiducial
+limits illustrated in the case of the binomial. Biometrika 26, 4 (1934), 404–413.
+[9] Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn, and Yarin Gal. 2024. Detecting
+hallucinations in large language models using semantic entropy. Nature 630,
+8017 (2024), 625–630.
+[10] Yonatan Geifman and Ran El-Yaniv. 2019. Selectivenet: A deep neural network
+with an integrated reject option. In International conference on machine learning.
+PMLR, 2151–2159.
+[11] Jiahui Geng, Fengyu Cai, Yuxia Wang, Heinz Koeppl, Preslav Nakov, and Iryna
+Gurevych. 2024. A survey of confidence estimation and calibration in large lan-
+guage models. In Proceedings of the 2024 Conference of the North American Chapter
+of the Association for Computational Linguistics: Human Language Technologies
+(Volume 1: Long Papers). 6577–6595.
+[12] Yu Gui, Ying Jin, and Zhimei Ren. 2024. Conformal alignment: Knowing when
+to trust foundation models with guarantees. Advances in Neural Information
+Processing Systems 37 (2024), 73884–73919.
+[13] Wassily Hoeffding. 1963. Probability inequalities for sums of bounded random
+variables. Journal of the American statistical association 58, 301 (1963), 13–30.
+[14] Anqi Hu, Zhiyuan Wang, Zijun Jia, and Bo Fu. 2026. MiRD: Reliable Set-Valued
+Prediction for Open-Ended Question Answering via Miscoverage Risk Decompo-
+sition. arXiv preprint arXiv:2605.27091 (2026).
+[15] Xingyue Huang, Rishabh, Gregor Franke, Ziyi Yang, Jiamu Bai, Weijie Bai, Jinhe
+Bi, Zifeng Ding, Yiqun Duan, Chengyu Fan, Wendong Fan, Xin Gao, Ruohao Guo,
+Yuan He, Zhuangzhuang He, Xianglong Hu, Neil Johnson, Bowen Li, Fangru
+Lin, Siyu Lin, Tong Liu, Yunpu Ma, Hao Shen, Hao Sun, Beibei Wang, Fangyijie
+Wang, Hao Wang, Haoran Wang, Yang Wang, Yifeng Wang, Zhaowei Wang,
+Ziyang Wang, Yifan Wu, Zikai Xiao, Chengxing Xie, Fan Yang, Junxiao Yang,
+Qianshuo Ye, Ziyu Ye, Guangtao Zeng, Yuwen Ebony Zhang, Zeyu Zhang, Zihao
+Zhu, Bernard Ghanem, Philip Torr, and Guohao Li. 2025. Loong: Synthesize
+Long Chain-of-Thoughts at Scale through Verifiers. arXiv:2509.03059 [cs.LG]
+https://arxiv.org/abs/2509.03059
+[16] Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan Su, Yan Xu, Etsuko Ishii,
+Ye Jin Bang, Andrea Madotto, and Pascale Fung. 2023. Survey of hallucination in
+natural language generation. ACM computing surveys 55, 12 (2023), 1–38.
+[17] Zijun Jia, Yuanchang Ye, Sen Jia, Yiyao Qian, Haoning Wang, Baojie Chen, Diyin
+Tang, Jinsong Yu, and Zhiyuan Wang. 2026. Balancerag: Joint risk calibration
+for cascaded retrieval-augmented generation. arXiv preprint arXiv:2605.20084
+(2026).
+[18] Kailin Jiang, Hongbo Jiang, Ning Jiang, Zhi Gao, Jinhe Bi, Yuchen Ren, Bin Li,
+Yuntao Du, Lei Liu, and Qing Li. 2025. KORE: Enhancing Knowledge Injec-
+tion for Large Multimodal Models via Knowledge-Oriented Augmentations and
+Constraints. arXiv:2510.19316 [cs.CL] https://arxiv.org/abs/2510.19316
+[19] Kailin Jiang, Ning Jiang, Yuntao Du, Yuchen Ren, Yuchen Li, Yifan Gao, Jinhe Bi,
+Yunpu Ma, Qingqing Liu, Xianhao Wang, Yifan Jia, Hongbo Jiang, Yaocong Hu,
+Bin Li, and Lei Liu. 2025. MINED: Probing and Updating with Multimodal Time-
+Sensitive Knowledge for Large Multimodal Models. arXiv:2510.19457 [cs.CL]
+https://arxiv.org/abs/2510.19457
+[20] Jaehun Jung, Faeze Brahman, and Yejin Choi. 2025. Trust or escalate: Llm judges
+with provable guarantees for human agreement. In International Conference on
+Learning Representations, Vol. 2025. 3101–3125.
+[21] Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain,
+Ethan Perez, Nicholas Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli Tran-
+Johnson, et al. 2022. Language models (mostly) know what they know. arXiv
+preprint arXiv:2207.05221 (2022).
+[22] Ye Li, Anqi Hu, Yuanchang Ye, Shiyan Tong, Zhiyuan Wang, and Bo Fu. 2026.
+Set-valued prediction for large language models with feasibility-aware coverage
+guarantees. arXiv preprint arXiv:2603.22966 (2026).
+[23] Xiaowen Ma, Yunpu Ma, Chenyang Lin, Sikuan Yan, Jinhe Bi, Zixuan Cao, Yi-
+jun Tian, Volker Tresp, and Hinrich Schuetze. 2026. Self-Evolving Multi-Agent
+Systems via Textual Backpropagation. In Findings of the Association for Compu-
+tational Linguistics: ACL 2026, Maria Liakata, Viviane P. Moreira, Jiajun Zhang,
+and David Jurgens (Eds.). Association for Computational Linguistics, San Diego,
+California, United States, 9918–9951. doi:10.18653/v1/2026.findings-acl.483
+[24] Potsawee Manakul, Adian Liusie, and Mark Gales. 2023. Selfcheckgpt: Zero-
+resource black-box hallucination detection for generative large language models.
+In Proceedings of the 2023 conference on empirical methods in natural language
+processing. 9004–9017.
+[25] Ankit Pal, Logesh Kumar Umapathi, and Malaikannan Sankarasubbu. 2022.
+Medmcqa: A large-scale multi-subject multi-choice dataset for medical domain
+question answering. In Conference on health, inference, and learning. PMLR, 248–
+260.
+[26] Tianfan Peng, Yuntao Du, Pengzhou Ji, Shijie Dong, Kailin Jiang, Mingchuan
+Ma, Yijun Tian, Jinhe Bi, Qian Li, Wei Du, Feng Xiao, and Lizhen Cui. 2025. Can
+Visual Input Be Compressed? A Visual Token Compression Benchmark for Large
+Multimodal Models. arXiv:2511.02650 [cs.CV] https://arxiv.org/abs/2511.02650
+[27] Victor Quach, Adam Fisch, Tal Schuster, Adam Yala, Jae Ho Sohn, Tommi S
+Jaakkola, and Regina Barzilay. 2024. Conformal Language Modeling. In The
+Twelfth International Conference on Learning Representations.
+[28] Siva Reddy, Danqi Chen, and Christopher D Manning. 2019. Coqa: A conversa-
+tional question answering challenge. Transactions of the Association for Compu-
+tational Linguistics 7 (2019), 249–266.
+[29] Xuankun Rong, Wenke Huang, Jian Liang, Jinhe Bi, Xun Xiao, Yiming Li, Bo Du,
+and Mang Ye. 2026. Backdoor Cleaning without External Guidance in MLLM Fine-
+tuning. In The Thirty-ninth Annual Conference on Neural Information Processing
+Systems. https://openreview.net/forum?id=os4QYDf3Ms
+[30] Binyu Tan, Zhiyuan Wang, Jinhao Duan, Kaidi Xu, Heng Tao Shen, Xiaoshuang
+Shi, and Fumin Shen. 2025. Conformal Lesion Segmentation for 3D Medical
+Images. arXiv preprint arXiv:2510.17897 (2025).
+[31] Yijun Tian, Shaoyu Chen, Zhichao Xu, Yawei Wang, Jinhe Bi, Peng Han, and
+Wei Wang. 2025. Reinforcement Mid-Training. arXiv:2509.24375 [cs.CL] https:
+//arxiv.org/abs/2509.24375
+[32] Guancheng Wan, Lucheng Fu, Haoxin Liu, Yiqiao Jin, Hui Yi Leong, Eric Hanchen
+Jiang, Hejia Geng, Jinhe Bi, Yunpu Ma, Xiangru Tang, B. Aditya Prakash, Yizhou
+Sun, and Wei Wang. 2025. Beyond Magic Words: Sharpness-Aware Prompt
+Evolving for Robust Large Language Models with TARE. arXiv:2509.24130 [cs.CL]
+https://arxiv.org/abs/2509.24130
+[33] Qingni Wang, Tiantian Geng, Zhiyuan Wang, Teng Wang, Bo Fu, and Feng Zheng.
+2025. Sample then identify: A general framework for risk control and assessment
+in multimodal large language models. In International Conference on Learning
+Representations, Vol. 2025. 64280–64297.
+[34] Yujun Wang, Aniri , Jinhe Bi, Soren Pirk, and Yunpu Ma. 2026. ASCD: Attention-
+Steerable Contrastive Decoding for Reducing Hallucination in MLLM. Proceedings
+of the AAAI Conference on Artificial Intelligence 40, 12 (Mar. 2026), 10306–10314.
+doi:10.1609/aaai.v40i12.38000
+[35] Zhiyuan Wang, Aniri, Tianlong Chen, Yue Zhang, Heng Tao Shen, Xiaoshuang
+Shi, and Kaidi Xu. 2026. LEC: Linear Expectation Constraints for Selection-
+Conditioned Risk Control in Selective Prediction and Routing Systems. In Forty-
+third International Conference on Machine Learning.
+[36] Zhiyuan Wang, Jinhao Duan, Lu Cheng, Yue Zhang, Qingni Wang, Xiaoshuang
+Shi, Kaidi Xu, Heng Tao Shen, and Xiaofeng Zhu. 2024. ConU: Conformal
+Uncertainty in Large Language Models with Correctness Coverage Guarantees.
+
+Asymptotic Risk Calibration for Selective Question Answering
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+In Findings of the Association for Computational Linguistics: EMNLP 2024. 6886–
+6898.
+[37] Zhiyuan Wang, Jinhao Duan, Qingni Wang, Xiaofeng Zhu, Tianlong Chen, Xi-
+aoshuang Shi, and Kaidi Xu. 2026. Coin: Uncertainty-guarding selective question
+answering for foundation models with provable risk guarantees. In Proceedings
+of the AAAI Conference on Artificial Intelligence, Vol. 40. 33764–33772.
+[38] Zhiyuan Wang, Jinhao Duan, Chenxi Yuan, Qingyu Chen, Tianlong Chen, Yue
+Zhang, Ren Wang, Xiaoshuang Shi, and Kaidi Xu. 2025. Word-sequence entropy:
+Towards uncertainty estimation in free-form medical question answering appli-
+cations and beyond. Engineering Applications of Artificial Intelligence 139 (2025),
+109553.
+[39] Zhiyuan Wang, Qingni Wang, Yue Zhang, Tianlong Chen, Xiaofeng Zhu, Xi-
+aoshuang Shi, and Kaidi Xu. 2025. SConU: Selective Conformal Uncertainty
+in Large Language Models. In Proceedings of the 63rd Annual Meeting of the
+Association for Computational Linguistics (Volume 1: Long Papers). 19052–19075.
+[40] Minglai Yang, Xinyan Velocity Yu, Pengyuan Li, Xinyu Guo, Zhenting Qi, Konwoo
+Kim, Longtian Ye, Xiaolong Luo, Jinhe Bi, Henry Zhang, Haris Riaz, Xuan Zhang,
+Yunze Xiao, Bangya Liu, Tom Tang, Yunfei Zhao, Qunshu Lin, Zihan Wang,
+Minghao Liu, Michael Lingzhi Li, Yilun Du, Jesse Thomason, Rogerio Feris, Alex
+Pentland, and Zexue He. 2026. Dr. DocBench: A Comprehensive Benchmark
+for Expert-Level and Difficult Document Parsing.
+arXiv:2606.01393 [cs.CL]
+https://arxiv.org/abs/2606.01393
+[41] Xuanle Zhao, Qiushi Sun, Jingyu Xiao, Xuexin Liu, Haoyue Yang, Qiaosheng
+Chen, Xianzhen Luo, Jing Huang, Yufeng Zhong, Lei Chen, Shuai Fu, Zhenlin Wei,
+Jinhe Bi, Lei Jiang, Haibo Qiu, Siqi Yang, Peng Shi, Jian Hu, and Zhixiong Zeng.
+2026. Beyond NL2Code: A Structured Survey of Multimodal Code Intelligence.
+arXiv:2606.15932 [cs.CL] https://arxiv.org/abs/2606.15932

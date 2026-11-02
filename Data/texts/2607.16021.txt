@@ -1,0 +1,870 @@
+Candidate Attended Dialogue State Tracking Using BERT
+Junyuan Zheng, Onkar Salvi, John Chan
+OneConnect US Research Institute, New York, NY, 10019
+{zhengjunyuan616, onkar.salvi7, jchan.jc}@gmail.com
+Abstract
+Dialogue state tracking (DST) is one of the core components
+in task-oriented dialogue systems. At each turn in a conver-
+sation, DST estimates the user belief or dialogue state, which
+is used as input for downstream modules to predict system
+actions and generate responses. The increasingly popular di-
+alogue system applications like Google Assistant, Siri and
+Alexa need to support a large number of services and APIs,
+resulting in growing attention to the scalability of such sys-
+tems. Especially for some domains with little or no train-
+ing data, the capability of transferring existing knowledge
+of other domains is highly desired. In this paper, we present
+a novel scalable framework for multi-domain dialogue state
+tracking. The proposed system leverages the pretrained BERT
+model to achieve zero-shot generalization, making it easy to
+quickly adapt to new domains without additional training.
+The performance of our model is evaluated on recently re-
+leased schema-based dialogue (SGD) dataset, showing sig-
+niﬁcant improvement compared to previous baseline.
+1
+Introduction
+Task-oriented dialogue systems are playing an important
+role in facilitating our daily life in the form of personal vir-
+tual assistants, customer service agents, website chat sys-
+tems, etc. These applications, by providing a conversational
+interface to different backends, help users easily accomplish
+tasks in a wide range of domains, such as restaurant reser-
+vation, ﬂight booking, and music recommendation. While
+sequence-to-sequence learning (Sutskever, Vinyals, and Le
+2014) has inspired lots of studies in building non-task-
+oriented dialogue systems, task-oriented systems still heav-
+ily rely on modularized pipeline. Typically, a task-oriented
+dialogue system has four components: a Natural Language
+Understanding (NLU) module semantically to parse the user
+utterance, a Dialogue State Tracking (DST) module to main-
+tain the dialogue states throughout the conversation, a Dia-
+logue Policy module to predict the next system action based
+on the current dialogue state, and a Natural Language Gen-
+eration module to convert system actions into natural lan-
+guage responses (Rudnicky et al. 1999; Zue et al. 2000;
+Chen et al. 2017).
+In recent years, the research community is paying signiﬁ-
+cant attention to enhancing the scalability of dialogue sys-
+tem in order to quickly and easily add more functionali-
+ties. For popular commercial applications such as Google
+Assistant, Siri, or Alexa, the generalization capability is de-
+sired when developers want to integrate support for addi-
+tional services or APIs. Given limited data in an unseen
+service or a new domain, the dialogue systems are ex-
+pected to perform robustly without laborious data collec-
+tion and annotation. Motivated by this expectation, several
+studies have focused on zero-shot language understanding
+and scalable dialogue state tracking (Bapna et al. 2017;
+Rastogi, Hakkani-T¨ur, and Heck 2017; Ren et al. 2018;
+Shah et al. 2019; Chao and Lane 2019).
+Recently in the 8th Dialog System Technology Chal-
+lenges (Seokhwan Kim 2019), Rastogi et al. (2019) intro-
+duce the Schema-Guided Dialogue (SGD) dataset, which
+exceeds existing task-oriented corpura like MultiWOZ
+(Budzianowski et al. 2018) in scale. In the proposed shcema-
+guided paradigm, a service’s schema is deﬁned by a set of in-
+tents and slots, where a natural language description is given
+for each intent and slot (as shown in Figure 1). Meanwhile,
+the emergence of pretrained models like BERT (Devlin et al.
+2018) and XLNet (Yang et al. 2019) make it easier to utilize
+the natural language elements as inputs to achieve zero-shot
+generalization, since these models are pretrained on large
+corpura. Thanks to the advances in natural language pro-
+cessing, the path towards scalable dialogue system modeling
+becomes clearer.
+In this work, we propose a dialogue system that is capa-
+ble of dealing with a previously unseen domain via param-
+eter sharing. The system focuses on NLU and DST compo-
+nents, both of which leverage BERT model to encode the
+natural language descriptions of intents and slots predeﬁned
+in schema. In each dialogue turn, a slot tagger identiﬁes
+non-categorical slot values mentioned in the user utterance,
+and a state tracker sequentially predicts the active intent, re-
+quested slots, and slot values of the user belief. Here, we
+frame DST as a natural language inference problem (Bow-
+man et al. 2015). Given a user utterance as premise, we use a
+BERT model to identify the entailment relationships among
+a set of hypotheses. Varying from task to task, the hypothesis
+sentences could be: (1) intent descriptions for intent classiﬁ-
+cation; (2) slot descriptions for requested slot detection; (3)
+
+Figure 1: An example of dialogue for a taxi service. On the left demonstrates the schema of the service. For each intent and
+slot, a natural language description is given, along with other ﬁelds such as required slots for a intent or possible values for a
+categorical slot. The dialogue states of each user turn is displayed on the right panel, in the format of ”Intent [requested slots]
+(slot values)”.
+slot description and value pairs for candidate classiﬁcation.
+By ﬁne-tuning BERT weights, we expect the summary em-
+bedding (i.e. embedding of the [CLS] token) of the premise-
+hypothesis pair will capture enough information about the
+logic relationship, so as to facilitate DST (e.g. helping select
+the right candidate for a slot).
+The rest of the paper is organized as follows: Section 2
+describes related work. In Section 3, we detail our model
+architecture, followed by Section 4 presenting evaluation re-
+sults and ablation studies. Finally, we discuss and conclude
+in Section 5 and 6.
+2
+Related Work
+DST aims to maintain dialogue states in a complicated con-
+versation. Dialogue state is usually represented as a set
+of slot-value pairs, which serves as parameters to inter-
+act with backend APIs and as inputs for downstream Di-
+alogue Policy module to predict next system action. Tra-
+ditional methods (Henderson, Thomson, and Young 2014;
+Mrkˇsi´c et al. 2015; Wen et al. 2016) predict the slot-value
+pairs by performing classiﬁcation over a predeﬁned candi-
+date list. These models rely on delexicalization (i.e. replac-
+ing the slot types and values with generic tokens), which
+requires hand-crafted ontology with domain-speciﬁc lexi-
+cons. In practice, the ontology is not always available and
+the semantic dictionaries could be dynamically changing or
+hard to exhaust, limiting the generalization of these mod-
+els. To this end, approaches have been proposed that score
+over a ﬁxed (Mrkˇsi´c et al. 2016; Zhong, Xiong, and Socher
+2018) or dynamic (Rastogi, Hakkani-T¨ur, and Heck 2017;
+Rastogi, Gupta, and Hakkani-Tur 2018; Ren et al. 2018)
+candidate list, extending the ﬂexibility and scalablility of
+DST to rarely observed or unseen values in the training data.
+Other systems try to predict dialogue states directly from the
+dialogue context to handle previously unseen values, by ap-
+plying pointer network (Xu and Hu 2018) or copy mecha-
+nism (Wu et al. 2019). These approaches are based on the
+assumption that the values are available in the conversation
+history, which may not be always true. To this end, some
+models combine the candidate-list-based and span-based ap-
+proaches to take advantages from both sides (Goel, Paul, and
+Hakkani-T¨ur 2019; Zhang et al. 2019).
+On the other hand, pretrained models such as BERT
+are gaining increasing attention in research community be-
+cause of their promising performances on diverse down-
+stream tasks. Many studies are seeking to leverage BERT
+in DST. Particularly, inspired by the success of BERT in
+reading comprehension tasks, most of the studies leverag-
+ing BERT in DST choose the span-based approach (Lee,
+Lee, and Kim 2019; Gao et al. 2019; Chao and Lane 2019;
+Zhang et al. 2019). In our study, we formulate DST as a natu-
+ral language inference problem and utilize BERT to achieve
+zero-shot generalization.
+3
+Models
+Our dialogue system consists of two major components:
+Natural Language Understanding (NLU) and Dialogue State
+Tracking (DST). These two components work successively
+to predict the user belief, i.e. dialogue state. Let each turn
+in a dialogue be a user utterance and its preceding system
+utterance. In the ﬁrst stage, the slot tagger predicts all val-
+ues of non-categorical slots mentioned in the user utterance.
+The tagged slot values are then used to update the candidate
+tracker. In the second stage, the user utterance is paired with
+
+intent descriptions, slot descriptions and slot-value pairs to
+get according embeddings from BERT. These embeddings
+are used as inputs of intent classiﬁer, requested slot detector
+and candidate classiﬁer respectively to get ﬁnal predictions
+of the dialogue state.
+Figure 2: Slot tagger architecture.
+3.1
+Natural Language Understanding
+Slot Tagger
+Slot tagger is the only model in the NLU com-
+ponent, whose task is to identify any possible values men-
+tioned in the current user utterance for all non-categorical
+slots. We use IOB tagging schema introduced in (Sang and
+Buchholz 2000) to assign a label to each token xm in the
+user utterance (Figure 2), where 0 < m ≤M, M being
+the total number of tokens in the user utterance. The distri-
+bution over B, I and O tags is calculated using Equations
+1–4. For a given non-categorical slot, the slot description is
+passed through BERT and the embedding of [CLS] token
+is captured as the summary embedding e. Then the system
+utterance and user utterance pair is encoded by BERT to ob-
+tain token level representations tm. Each tm is concatenated
+with e and then projected to get a representation rm through
+a linear layer. The sequence {rm} is fed into a bidirectional
+LSTM to get hidden states sequence {hm}.
+rm = W token(tm ⊕e) + btoken
+(1)
+hm = LSTM(rm)
+(2)
+ltag
+m = W taghm + btag
+(3)
+ptag
+m = softmax(ltag
+m )
+(4)
+Finally, hm is projected into a 3-dimension logit ltag
+m , and
+ptag
+m is calculated using softmax. During inference, we pre-
+dict the label for each token xm as argmax(ptag
+m ), and values
+labeled with B and I tags are added into the tagged slots.
+3.2
+Dialogue State Tracking
+Intent Classiﬁer
+Active intent in a given service denotes
+a speciﬁc task the user wants to complete (e.g. ﬁnding a
+restaurant or booking a ﬂight ticket). The user’s active in-
+tent remains the same until s/he ends the conversation (i.e.
+”NONE” intent) or changes to another intent. In the middle
+of a dialogue, the user may talk about many things that are
+not strongly related to the active intent. In consideration of
+this, we predict the intent change instead of the actual active
+intent. More speciﬁcally, let I be the intent set for a given
+service. φ and ψ denote ”NONE” and ”UNCHANGED” in-
+tent respectively. The distribution over all intents for a given
+service is calculated as follows.
+lint
+i
+= W intrint
+i
++ bint
+(5)
+lint
+φ
+= W int
+φ rint + bint
+φ
+(6)
+lint
+ψ = W int
+ψ rint + bint
+ψ
+(7)
+pint = softmax(lint
+α ), α ∈I ∪{φ, ψ}
+(8)
+Here, rint
+i
+= ei ⊕ai is the intent related feature where
+ei is the summary embedding of user utterance and in-
+tent description pair, and ai is a one-hot encoding indicat-
+ing whether the speciﬁc intent is offered in preceding sys-
+tem acts, for intent i ∈I. rint = u ⊕a where u is the
+user utterance embedding and a is a one-hot encoding in-
+dicating whether any intent is offered in preceding system
+acts. W int, bint, W int
+φ , bint
+φ , W int
+ψ , and bint
+ψ
+are trainable
+parameters shared across different services. During infer-
+ence, argmax(pint) is taken as the intent label. If ”UN-
+CHANGED” intent ψ is predicted, we use the same intent
+from the previous turn.
+Requested Slot Detector
+Requested slots are the slots
+whose values the user is asking for (e.g. what is the address
+of the restaurant). Let S be the slot set of a given service.
+The probability of a given slot s ∈S is calculated as below.
+lreq
+s
+= W reqes + breq
+(9)
+preq
+s
+= sigmoid(lreq
+s )
+(10)
+Here, es is the summary embedding of user utterance and
+slot description pair for slot s. W req, breq are trainable pa-
+rameters. At inference time, we predict a slot as requested if
+the probability preq
+s
+> 0.5.
+Candidate Tracker
+For each slot s in a given service, we
+keep track of a candidate set Cs. A special candidate δ de-
+noting ”dontcare” is always in the set Cs. For categorical
+slots, the set Cs = {δ}∪Vs will be constant, where Vs is the
+set of possible values. For non-categorical slots, apart from
+candidate δ, the most recent K candidates are maintained
+in the set Cs, where K is an arbitrary hyper-parameter. The
+candidate tracker is also used to calculate candidate related
+source features asrc
+s,c.
+
+Figure 3: Architecture of Dialogue State Tracker.
+Candidate Classiﬁer
+Given a candidate set Cs for slot s,
+the candidate classiﬁer predicts the dialogue state updates by
+calculating the distribution over the candidate set. We deﬁne
+a dialogue state update for a slot s as the difference between
+the dialogue state of current turn and that of preceding turn.
+If the system asks for conﬁrmation and the user conﬁrms the
+slot, the state is also considered updated, although the value
+in the current state may not be different from the preceding
+turn. When a slot s is not updated, a special candidate label
+ϕ is assigned, denoting the ”none” state.
+To predict the distribution over the candidate set, we use
+an architecture inspired by the attention mechanism (Graves,
+Wayne, and Danihelka 2014; Luong, Pham, and Manning
+2015). First, for a given slot s, a slot related query vector
+qs is calculated by Equation 11. Here, rs = u ⊕as, where
+as is the one-hot encoding for slot related system acts. For
+each candidate c, the key vector is calculated by Equation
+12. rs,c = es,c ⊕asrc
+s,c, where es,c is the summary embed-
+ding of user utterance and slot-value pair. W query, bquery,
+W key
+ϕ
+, bkey
+ϕ , W key, and bkey are trainable parameter. Con-
+sequentially, slot related query vector qs attends over candi-
+date related vectors ks,c via Equation 13 to get logits lcand
+s,c .
+Trainable parameters W cand ∈Rd×d, bcand here function
+similarly to general attention mechanism introduced in (Lu-
+ong, Pham, and Manning 2015).
+qs = W queryrs + bquery
+(11)
+ks,c =
+
+W key
+ϕ
+es + bkey
+ϕ
+if c = ϕ
+W keyrs,c + bkey
+for c ∈Cs
+(12)
+lcand
+s,c
+= qT
+s W candks,c + bcand
+(13)
+pcand
+s
+= softmax(lcand
+s,c )
+(14)
+The logits lcand
+s,c
+are normalized by softmax to get distri-
+bution over all candidate values. During inference time, the
+candidate with maximal probability is predicted. If a slot is
+
+Active Int Acc
+Req Slot F1
+Average GA
+Joint GA
+Slot Tagging F1
+Dev
+Test
+Dev
+Test
+Dev
+Test
+Dev
+Test
+Dev
+Test
+SGD baseline
+0.908
+-
+0.973
+-
+0.740
+-
+0.411
+-
+-
+-
+CA-DST
+0.945
+0.923
+0.989
+0.982
+0.949
+0.895
+0.835
+0.695
+0.977
+0.959
+CA-DST+joint loss
+0.944
+0.923
+0.992
+0.988
+0.956
+0.871
+0.850
+0.653
+0.977
+0.959
+(-pair encoding)
+0.943
+0.912
+0.973
+0.961
+0.884
+0.840
+0.674
+0.578
+0.977
+0.959
+(-attention)
+0.951
+0.932
+0.991
+0.986
+0.882
+0.783
+0.673
+0.468
+0.977
+0.959
+Table 1: Evaluation results of our Candidate Attended Dialogue State Tracking (CA-DST) system. For Ablation study, all
+models are training with joint goal loss described in Section 4.1.
+predicted to be ”none”, its value is set the same as in preced-
+ing turn.
+4
+Evaluation
+4.1
+Experiments
+We evaluate our system on SGD dataset. The sample dia-
+logue and schema are described in Figure 1. In our system,
+NLU module and DST module are trained separately. For
+slot tagger, we use a large cased BERT model in a feature-
+based approach, without updating any of its parameters. For
+state tracker, we ﬁne-tune a base uncased BERT model while
+the embedding layer and ﬁrst 6 layers are ﬁxed. This is a
+compromise due to the hardware limits. To facilitate con-
+vergence, we ﬁrst ﬁne-tune the BERT models on masked
+language modeling task using dialogues from SGD dataset
+before training each component. In DST module, intent clas-
+siﬁer, requested slot detector and candidate classiﬁer are
+trained jointly. Additionally, concerning all slots are treated
+independently, we add a joint goal loss penalizing incorrect
+prediction on what slots appear in the current turn. The joint
+goal loss is calculated as cross entropy of ”none” logits for
+all slots.
+Figure 4: Joint Goal Accuracy on All services, services seen
+in training data, services not seen in training data.
+We use the same metrics described in Rastogi et al. (2019)
+for evaluation: Active Intent Accuracy, Requested Slot F1,
+Average Goal Accuracy, Joint Goal Accuracy, Slot Tagging
+F1. The results are showed in Table 1. We also report here
+the results of the baseline model (Rastogi et al. 2019) as
+comparison.
+As showed in Table 1, our system shows signiﬁcant im-
+provement in intent classiﬁcation, requested slot detection
+and joint goal prediction compared to baseline, doubling the
+joint goal accuracy. However, the performance of our system
+exhibits a remarkable deterioration on the test set, indicat-
+ing the models may suffer from over-ﬁtting. Figure 4 shows
+the Joint Goal Accuracy in all, seen and unseen services. In
+those services that appear in training set, the model performs
+similarly, while in unseen services the Joint Goal Accuracy
+on test set is notably less than on dev set.
+4.2
+Ablation Studies
+We perform ablation studies over two of the most impor-
+tant architecture designs of our system. The results are also
+shown in Table 1. The ﬁrst one is that we pair each natural
+language element (intent description, slot description, or slot
+description plus value) with user utterance before entering
+BERT model. In this way the model can leverage the power
+of self-attention in BERT. To study the effectiveness of this
+pair encoding approach, we singly encode natural language
+elements and fuse the embeddings with user utterance em-
+bedding using the same projection layer described in base-
+line model (Rastogi et al. 2019). While in easier tasks like
+intent classiﬁcation and requested slot prediction the perfor-
+mances are similar, the model without pair encoding shows
+a notable decline in Joint Goal Accuracy.
+Second, we replace the attention-based bi-linear layer in
+the candidate classiﬁer with feed forward layers. Model
+without attention performs signiﬁcantly worse in Joint Goal
+Accuracy.
+5
+Discussion
+The challenges towards scalable multi-domain DST come
+from three folds. First, during inference time, there are many
+unseen services which include several slots very different
+from those in training data. The only clues to identify those
+unseen slots are the natural language descriptions. Second,
+in multi-domain dialogues, the system is expected to infer
+certain slot values from other services when user changes a
+topic. Third, the expression diversity of natural language in
+dialogues further complicates the DST tasks. In this section
+we discuss the limitation and possible improvement direc-
+tion based on these aspects.
+In Table 2, we list Average Goal Accuracy and Joint Goal
+Accuracy per services in the dev set and test set. By examin-
+ing those poorly performing services, we identify some chal-
+
+Service
+Average GA
+Joint GA
+Dev
+Test
+Dev
+Test
+Alarm 1*
+0.929
+0.939
+0.927
+0.909
+Banks 2*
+0.982
+-
+0.952
+-
+Buses 1
+0.973
+-
+0.919
+-
+Buses 3*
+-
+0.896
+-
+0.622
+Events 1
+0.981
+-
+0.913
+-
+Events 3*
+-
+0.895
+-
+0.681
+Flights 3*
+0.836
+-
+0.470
+-
+Flights 4*
+-
+0.681
+-
+0.322
+Homes 1
+0.987
+-
+0.938
+-
+Homes 2*
+-
+0.956
+-
+0.563
+Hotels 1
+0.949
+-
+0.884
+-
+Hotels 2
+-
+0.928
+-
+0.859
+Hotels 4*
+0.936
+0.939
+0.844
+0.859
+Media 2*
+0.911
+-
+0.761
+-
+Media 3*
+-
+0.791
+-
+0.594
+Messaging 1*
+-
+0.769
+-
+0.683
+Movie 1
+-
+0.957
+-
+0.819
+Movie 2*
+0.911
+-
+0.761
+-
+Media 3*
+-
+0.683
+-
+0.700
+Music 1
+0.936
+-
+0.823
+-
+Music 3*
+-
+0.754
+-
+0.299
+Payment 1*
+-
+0.846
+-
+0.608
+RentalCars 1
+-
+0.947
+-
+0.772
+RentalCars 3*
+-
+0.897
+-
+0.486
+Restaurants 2*
+0.947
+0.949
+0.747
+0.730
+RideSharing 1
+0.958
+-
+0.909
+-
+RideSharing 2
+-
+0.944
+-
+0.840
+Services 1
+-
+0.987
+-
+0.960
+Services 4*
+0.989
+0.986
+0.892
+0.876
+Trains 1*
+-
+0.895
+-
+0.666
+Travel 1
+0.965
+0.862
+0.930
+0.778
+Weather 1*
+0.968
+0.966
+0.929
+0.916
+Table 2: Model performance per service. Services masked
+with ”*” denote that they are unseen in the training set.
+lenging cases. For example, in service ”Movies 2” there is a
+slot ”starring” with the description ”Name of actor starring
+in movie”. Similarly service ”Movies 3” has a slot ”cast”
+described as ”Actors in the movie”. Both unseen services
+include two slots of the person name type: one for direc-
+tor and one for actor. However, in training set, there is only
+one slot for director slot, which demands for higher level of
+generalization. The system not only needs to understand the
+actor slots refer to person names, but also has to understand
+that the person should be the actor instead of the director.
+This requires building a semantic correlation between word
+”actor” and others such as ”act”, ”starring” or ”plays”. The
+BERT pretrained on large-scale corpura should have some
+capability to resolve such semantic ambiguity, but it seems
+to fail. Moreover, some cases are even difﬁcult for human.
+For example, in the utterance ”Do you have any movies with
+Mike Colter?”, one needs to know that Mike Colter is an ac-
+tor to correctly identify this value as an actor instead of a
+director. Possibly, the system may leverage external knowl-
+edge to deal with such problems.
+Another challenge is the slot transfer in multi-domain di-
+alogues. For instance, when a user just checked the weather
+in Toronto and asks to book a hotel, the system is expected
+to assume the city slot in hotel domain is Toronto. Because
+there are unseen domains, it is difﬁcult to come up with an
+exhausted slot-to-slot mapping list across different domains.
+Currently, our system collects all possible slot values from
+previous domain as the candidates, and relies on the seman-
+tic validity provided by BERT to solve the slot transferring
+problem (e.g. the probability of ”The location of the hotel is
+Toronto” is much higher than that of ”The location of the ho-
+tel is today”). This approach is not robust enough especially
+in certain domains like Flights, where it is hard to tell a city
+appeared in the dialogue history would be transferred to des-
+tination or origin. Additionally, in a more complicated situa-
+tion, this slot-to-slot mapping could be dynamic, depending
+on the dialogue history. Take Flights and Hotels as example.
+A user just booked a ﬂight from NY to LA, and then asks
+for a hotel on Friday. Practically, if the ﬂight date is Thurs-
+day, we assume the user is looking for a hotel in LA. Yet,
+if the ﬂight starts on Saturday, one should expect the user
+wants the hotel to be in NY. To distinguish such nuances, a
+dialogue system needs to incorporate adequate level of com-
+mon sense reasoning.
+Finally, the diversiﬁed expressions in natural language
+sometimes make it hard to predict dialogue states. For cat-
+egorical slots, possible slot values are given in advance,
+where the task of DST is to map the words or phrases in user
+utterance to one of the candidate values. In most cases the
+mapping is trivial (e.g. ”three” to ”3”, ”checking” to ”check-
+ing account”). However, sometimes the mapping could be
+logically difﬁcult for machine if not for human. For exam-
+ple, ”two years ago” for categorical slot ”year” is mapped to
+”2017” given this year is 2019, which involves elementary
+level of mathematical calculation. This mapping may even
+change as time goes. As for non-categorical slots, the Joint
+Goal Accuracy is highly depending on the outputs of slot
+tagger. One major drawback of separating slot tagger and di-
+alogue state tracker is the error propagation. If a slot is failed
+to be tagged by the NLU module, the downstream DST com-
+ponent would not select the correct candidate. Nevertheless,
+the pipeline approach on the other hand make it more ﬂex-
+ible to plug in additional modules. By incorporating open-
+domain Named Entity Resolution (NER) tools or domain-
+speciﬁc slot tagger, the system is easy to ﬁx some poorly
+performed domains without signiﬁcant architecture changes.
+6
+Conclusions
+To address the scalability challenge in task-oriented dia-
+logue state tracking, we frame the problem as a natural
+language inference problem and propose a multi-domain
+schema-based dialog system. The system leverages pre-
+trained BERT model to achieve zero-shot generalization via
+parameter sharing. The experiments on the newly released
+Schema-Guided Dialogue dataset show the effectiveness of
+the proposed system.
+
+Acknowledgement
+We would like to thank Surya Kasturi, Xin Chen, and anony-
+mous reviewers for their constructive discussions and feed-
+back.
+References
+Bapna, A.; Tur, G.; Hakkani-Tur, D.; and Heck, L. 2017. To-
+wards zero-shot frame semantic parsing for domain scaling.
+arXiv preprint arXiv:1707.02363.
+Bowman, S. R.; Angeli, G.; Potts, C.; and Manning, C. D.
+2015. A large annotated corpus for learning natural language
+inference. arXiv preprint arXiv:1508.05326.
+Budzianowski, P.; Wen, T.-H.; Tseng, B.-H.; Casanueva,
+I.; Ultes, S.; Ramadan, O.; and Gaˇsi´c, M.
+2018.
+Multiwoz-a large-scale multi-domain wizard-of-oz dataset
+for task-oriented dialogue modelling.
+arXiv preprint
+arXiv:1810.00278.
+Chao, G.-L., and Lane, I.
+2019.
+Bert-dst: Scalable
+end-to-end dialogue state tracking with bidirectional en-
+coder representations from transformer.
+arXiv preprint
+arXiv:1907.03040.
+Chen, H.; Liu, X.; Yin, D.; and Tang, J. 2017. A survey on
+dialogue systems: Recent advances and new frontiers. Acm
+Sigkdd Explorations Newsletter 19(2):25–35.
+Devlin, J.; Chang, M.-W.; Lee, K.; and Toutanova, K. 2018.
+Bert: Pre-training of deep bidirectional transformers for lan-
+guage understanding. arXiv preprint arXiv:1810.04805.
+Gao, S.; Sethi, A.; Aggarwal, S.; Chung, T.; and Hakkani-
+Tur, D. 2019. Dialog state tracking: A neural reading com-
+prehension approach. arXiv preprint arXiv:1908.01946.
+Goel, R.; Paul, S.; and Hakkani-T¨ur, D. 2019. Hyst: A hy-
+brid approach for ﬂexible and accurate dialogue state track-
+ing. arXiv preprint arXiv:1907.00883.
+Graves, A.; Wayne, G.; and Danihelka, I.
+2014.
+Neural
+turing machines. arXiv preprint arXiv:1410.5401.
+Henderson, M.; Thomson, B.; and Young, S. 2014. Word-
+based dialog state tracking with recurrent neural networks.
+In Proceedings of the 15th Annual Meeting of the Special
+Interest Group on Discourse and Dialogue (SIGDIAL), 292–
+299.
+Lee, H.; Lee, J.; and Kim, T.-Y. 2019. Sumbt: Slot-utterance
+matching for universal and scalable belief tracking. arXiv
+preprint arXiv:1907.07421.
+Luong, M.-T.; Pham, H.; and Manning, C. D. 2015. Effec-
+tive approaches to attention-based neural machine transla-
+tion. arXiv preprint arXiv:1508.04025.
+Mrkˇsi´c, N.; S´eaghdha, D. O.; Thomson, B.; Gaˇsi´c, M.; Su,
+P.-H.; Vandyke, D.; Wen, T.-H.; and Young, S. 2015. Multi-
+domain dialog state tracking using recurrent neural net-
+works. arXiv preprint arXiv:1506.07190.
+Mrkˇsi´c, N.; S´eaghdha, D. O.; Wen, T.-H.; Thomson, B.; and
+Young, S. 2016. Neural belief tracker: Data-driven dialogue
+state tracking. arXiv preprint arXiv:1606.03777.
+Rastogi, A.; Zang, X.; Sunkara, S.; Gupta, R.; and Khai-
+tan, P. 2019. Towards scalable multi-domain conversational
+agents: The schema-guided dialogue dataset. arXiv preprint
+arXiv:1909.05855.
+Rastogi, A.; Gupta, R.; and Hakkani-Tur, D. 2018. Multi-
+task learning for joint language understanding and dialogue
+state tracking. arXiv preprint arXiv:1811.05408.
+Rastogi, A.; Hakkani-T¨ur, D.; and Heck, L. 2017. Scalable
+multi-domain dialogue state tracking.
+In 2017 IEEE Au-
+tomatic Speech Recognition and Understanding Workshop
+(ASRU), 561–568. IEEE.
+Ren, L.; Xie, K.; Chen, L.; and Yu, K.
+2018.
+To-
+wards universal dialogue state tracking.
+arXiv preprint
+arXiv:1810.09587.
+Rudnicky, A. I.; Thayer, E.; Constantinides, P.; Tchou, C.;
+Shern, R.; Lenzo, K.; Xu, W.; and Oh, A. 1999. Creating nat-
+ural dialogs in the carnegie mellon communicator system. In
+Sixth European Conference on Speech Communication and
+Technology.
+Sang, E. F., and Buchholz, S. 2000. Introduction to the conll-
+2000 shared task: Chunking. arXiv preprint cs/0009008.
+Seokhwan Kim, Michel Galley, C. G. S. L. A. A. B. P. H. S.
+J. G. J. L. M. A. M. H. L. L. J. K. K. W. S. L. C. H. A. C.
+T. K. M. A. R. X. Z. S. S. R. G. 2019. The eighth dialog
+system technology challenge. arXiv preprint.
+Shah, D. J.; Gupta, R.; Fayazi, A. A.; and Hakkani-Tur, D.
+2019. Robust zero-shot cross-domain slot ﬁlling with exam-
+ple values. arXiv preprint arXiv:1906.06870.
+Sutskever, I.; Vinyals, O.; and Le, Q. 2014. Sequence to
+sequence learning with neural networks. Advances in NIPS.
+Wen, T.-H.; Vandyke, D.; Mrksic, N.; Gasic, M.; Rojas-
+Barahona, L. M.; Su, P.-H.; Ultes, S.; and Young, S. 2016. A
+network-based end-to-end trainable task-oriented dialogue
+system. arXiv preprint arXiv:1604.04562.
+Wu, C.-S.; Madotto, A.; Hosseini-Asl, E.; Xiong, C.; Socher,
+R.; and Fung, P.
+2019.
+Transferable multi-domain state
+generator for task-oriented dialogue systems. arXiv preprint
+arXiv:1905.08743.
+Xu, P., and Hu, Q. 2018. An end-to-end approach for han-
+dling unknown slot values in dialogue state tracking. arXiv
+preprint arXiv:1805.01555.
+Yang, Z.; Dai, Z.; Yang, Y.; Carbonell, J.; Salakhutdinov,
+R.; and Le, Q. V.
+2019.
+Xlnet: Generalized autoregres-
+sive pretraining for language understanding. arXiv preprint
+arXiv:1906.08237.
+Zhang, J.-G.; Hashimoto, K.; Wu, C.-S.; Wan, Y.; Yu, P. S.;
+Socher, R.; and Xiong, C. 2019. Find or classify? dual strat-
+egy for slot-value predictions on multi-domain dialog state
+tracking. arXiv preprint arXiv:1910.03544.
+Zhong, V.; Xiong, C.; and Socher, R. 2018. Global-locally
+self-attentive encoder for dialogue state tracking. In Pro-
+ceedings of the 56th Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers), 1458–
+1467.
+Zue, V.; Seneff, S.; Glass, J. R.; Polifroni, J.; Pao, C.; Hazen,
+T. J.; and Hetherington, L. 2000. Juplter: a telephone-based
+conversational interface for weather information.
+IEEE
+Transactions on speech and audio processing 8(1):85–96.
