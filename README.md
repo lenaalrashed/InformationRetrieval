@@ -100,7 +100,4 @@ pip install -r requirements.txt
 
 **AI usage**
 
-AI tools were used in this phase. Transcripts and an index (tool, version,
-
-what each covers) are in `ai-History`.
-
+AI tools were used in this phase. Transcripts 
