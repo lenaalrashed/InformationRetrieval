@@ -93,14 +93,3 @@ pip install -r requirements.txt
 \- \[ ] Spelling correction, abbreviation expansion, phrase matching
 
 \- \[ ] GUI
-
-
-
-
-
-**AI usage**
-
-AI tools were used in this phase. Transcripts and an index (tool, version,
-
-what each covers) are in `ai-History`.
-
